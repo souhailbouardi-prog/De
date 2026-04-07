@@ -2794,6 +2794,16 @@ class GatewayRunner:
                 return None
             return QQAdapter(config)
 
+        elif platform == Platform.HUB:
+            from gateway.platforms.hub import HubAdapter, check_hub_requirements
+            if not check_hub_requirements():
+                logger.warning("Hub: httpx or websockets not installed")
+                return None
+            if not config.extra.get("agent_secret"):
+                logger.warning("Hub: agent_secret not configured")
+                return None
+            return HubAdapter(config)
+
         return None
 
     def _is_user_authorized(self, source: SessionSource) -> bool:
@@ -2812,7 +2822,10 @@ class GatewayRunner:
         # connection, so HA events are always authorized.
         # Webhook events are authenticated via HMAC signature validation in
         # the adapter itself — no user allowlist applies.
-        if source.platform in (Platform.HOMEASSISTANT, Platform.WEBHOOK):
+        # Hub agents authenticate with Hub via agent secrets — the per-user
+        # allowlist model doesn't apply to agent-to-agent messaging.  Hub is
+        # NOT in platform_env_map/platform_allow_all_map intentionally.
+        if source.platform in (Platform.HOMEASSISTANT, Platform.WEBHOOK, Platform.HUB):
             return True
 
         user_id = source.user_id
@@ -7440,7 +7453,7 @@ class GatewayRunner:
         Platform.TELEGRAM, Platform.DISCORD, Platform.SLACK, Platform.WHATSAPP,
         Platform.SIGNAL, Platform.MATTERMOST, Platform.MATRIX,
         Platform.HOMEASSISTANT, Platform.EMAIL, Platform.SMS, Platform.DINGTALK,
-        Platform.FEISHU, Platform.WECOM, Platform.WECOM_CALLBACK, Platform.WEIXIN, Platform.BLUEBUBBLES, Platform.QQBOT, Platform.LOCAL,
+        Platform.FEISHU, Platform.WECOM, Platform.WECOM_CALLBACK, Platform.WEIXIN, Platform.BLUEBUBBLES, Platform.QQBOT, Platform.LOCAL, Platform.HUB,
     })
 
     async def _handle_debug_command(self, event: MessageEvent) -> str:
