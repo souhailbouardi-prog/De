@@ -143,17 +143,17 @@ class TestMemoryManager:
         mgr.add_provider(p2)
         assert [p.name for p in mgr.providers] == ["builtin", "external"]
 
-    def test_second_external_rejected(self):
-        """Only one non-builtin provider is allowed."""
+    def test_multiple_externals_accepted(self):
+        """Multiple non-builtin providers can run simultaneously."""
         mgr = MemoryManager()
         builtin = FakeMemoryProvider("builtin")
         ext1 = FakeMemoryProvider("mem0")
         ext2 = FakeMemoryProvider("hindsight")
         mgr.add_provider(builtin)
         mgr.add_provider(ext1)
-        mgr.add_provider(ext2)  # should be rejected
-        assert [p.name for p in mgr.providers] == ["builtin", "mem0"]
-        assert len(mgr.providers) == 2
+        mgr.add_provider(ext2)
+        assert mgr.provider_names == ["builtin", "mem0", "hindsight"]
+        assert len(mgr.providers) == 3
 
     def test_system_prompt_merges_blocks(self):
         mgr = MemoryManager()
@@ -167,6 +167,24 @@ class TestMemoryManager:
         result = mgr.build_system_prompt()
         assert "Block from builtin" in result
         assert "Block from external" in result
+
+    def test_system_prompt_merges_multiple_externals(self):
+        """System prompt collects blocks from builtin + multiple externals."""
+        mgr = MemoryManager()
+        p1 = FakeMemoryProvider("builtin")
+        p1._prompt_block = "Block from builtin"
+        p2 = FakeMemoryProvider("honcho")
+        p2._prompt_block = "Block from honcho"
+        p3 = FakeMemoryProvider("hindsight")
+        p3._prompt_block = "Block from hindsight"
+        mgr.add_provider(p1)
+        mgr.add_provider(p2)
+        mgr.add_provider(p3)
+
+        result = mgr.build_system_prompt()
+        assert "Block from builtin" in result
+        assert "Block from honcho" in result
+        assert "Block from hindsight" in result
 
     def test_system_prompt_skips_empty(self):
         mgr = MemoryManager()
@@ -194,6 +212,26 @@ class TestMemoryManager:
         assert "Memory from external" in result
         assert p1.prefetch_queries == ["what do you know?"]
         assert p2.prefetch_queries == ["what do you know?"]
+
+    def test_prefetch_merges_multiple_externals(self):
+        """Prefetch concatenates context from builtin + multiple externals."""
+        mgr = MemoryManager()
+        p1 = FakeMemoryProvider("builtin")
+        p1._prefetch_result = "Builtin recall"
+        p2 = FakeMemoryProvider("honcho")
+        p2._prefetch_result = "Honcho recall"
+        p3 = FakeMemoryProvider("hindsight")
+        p3._prefetch_result = "Hindsight recall"
+        mgr.add_provider(p1)
+        mgr.add_provider(p2)
+        mgr.add_provider(p3)
+
+        result = mgr.prefetch_all("query")
+        assert "Builtin recall" in result
+        assert "Honcho recall" in result
+        assert "Hindsight recall" in result
+        assert p2.prefetch_queries == ["query"]
+        assert p3.prefetch_queries == ["query"]
 
     def test_prefetch_skips_empty(self):
         mgr = MemoryManager()
@@ -229,6 +267,21 @@ class TestMemoryManager:
         assert p1.synced_turns == [("user msg", "assistant msg")]
         assert p2.synced_turns == [("user msg", "assistant msg")]
 
+    def test_sync_all_multiple_externals(self):
+        """Sync dispatches to builtin + all external providers."""
+        mgr = MemoryManager()
+        p1 = FakeMemoryProvider("builtin")
+        p2 = FakeMemoryProvider("honcho")
+        p3 = FakeMemoryProvider("hindsight")
+        mgr.add_provider(p1)
+        mgr.add_provider(p2)
+        mgr.add_provider(p3)
+
+        mgr.sync_all("user msg", "assistant msg")
+        assert p1.synced_turns == [("user msg", "assistant msg")]
+        assert p2.synced_turns == [("user msg", "assistant msg")]
+        assert p3.synced_turns == [("user msg", "assistant msg")]
+
     def test_sync_failure_doesnt_block_others(self):
         """If one provider's sync fails, others still run."""
         mgr = MemoryManager()
@@ -241,6 +294,21 @@ class TestMemoryManager:
         mgr.sync_all("user", "assistant")
         # p1 failed but p2 still synced
         assert p2.synced_turns == [("user", "assistant")]
+
+    def test_sync_failure_in_one_external_doesnt_block_other_external(self):
+        """Failure in one external provider doesn't block another external."""
+        mgr = MemoryManager()
+        builtin = FakeMemoryProvider("builtin")
+        ext1 = FakeMemoryProvider("honcho")
+        ext1.sync_turn = MagicMock(side_effect=RuntimeError("honcho down"))
+        ext2 = FakeMemoryProvider("hindsight")
+        mgr.add_provider(builtin)
+        mgr.add_provider(ext1)
+        mgr.add_provider(ext2)
+
+        mgr.sync_all("user", "assistant")
+        assert builtin.synced_turns == [("user", "assistant")]
+        assert ext2.synced_turns == [("user", "assistant")]
 
     # -- Tool routing -------------------------------------------------------
 
@@ -258,6 +326,44 @@ class TestMemoryManager:
         schemas = mgr.get_all_tool_schemas()
         names = {s["name"] for s in schemas}
         assert names == {"recall_builtin", "recall_ext"}
+
+    def test_tool_schemas_collected_multiple_externals(self):
+        """Tool schemas from all providers (builtin + multiple externals) are collected."""
+        mgr = MemoryManager()
+        p1 = FakeMemoryProvider("builtin", tools=[
+            {"name": "builtin_tool", "description": "Builtin", "parameters": {}}
+        ])
+        p2 = FakeMemoryProvider("honcho", tools=[
+            {"name": "honcho_recall", "description": "Honcho recall", "parameters": {}}
+        ])
+        p3 = FakeMemoryProvider("hindsight", tools=[
+            {"name": "hindsight_recall", "description": "Hindsight recall", "parameters": {}},
+            {"name": "hindsight_retain", "description": "Hindsight retain", "parameters": {}},
+        ])
+        mgr.add_provider(p1)
+        mgr.add_provider(p2)
+        mgr.add_provider(p3)
+
+        schemas = mgr.get_all_tool_schemas()
+        names = {s["name"] for s in schemas}
+        assert names == {"builtin_tool", "honcho_recall", "hindsight_recall", "hindsight_retain"}
+
+    def test_tool_routing_multiple_externals(self):
+        """Tools from different external providers route to the correct handler."""
+        mgr = MemoryManager()
+        p1 = FakeMemoryProvider("honcho", tools=[
+            {"name": "honcho_recall", "description": "Honcho", "parameters": {}}
+        ])
+        p2 = FakeMemoryProvider("hindsight", tools=[
+            {"name": "hindsight_recall", "description": "Hindsight", "parameters": {}}
+        ])
+        mgr.add_provider(p1)
+        mgr.add_provider(p2)
+
+        r1 = json.loads(mgr.handle_tool_call("honcho_recall", {"q": "a"}))
+        assert r1["handled"] == "honcho_recall"
+        r2 = json.loads(mgr.handle_tool_call("hindsight_recall", {"q": "b"}))
+        assert r2["handled"] == "hindsight_recall"
 
     def test_tool_name_conflict_first_wins(self):
         mgr = MemoryManager()
@@ -331,6 +437,23 @@ class TestMemoryManager:
 
         mgr.shutdown_all()
         assert order == ["external", "builtin"]  # reverse order
+
+    def test_shutdown_all_reverse_order_multiple_externals(self):
+        """Shutdown runs in reverse registration order with multiple externals."""
+        mgr = MemoryManager()
+        order = []
+        p1 = FakeMemoryProvider("builtin")
+        p1.shutdown = lambda: order.append("builtin")
+        p2 = FakeMemoryProvider("honcho")
+        p2.shutdown = lambda: order.append("honcho")
+        p3 = FakeMemoryProvider("hindsight")
+        p3.shutdown = lambda: order.append("hindsight")
+        mgr.add_provider(p1)
+        mgr.add_provider(p2)
+        mgr.add_provider(p3)
+
+        mgr.shutdown_all()
+        assert order == ["hindsight", "honcho", "builtin"]
 
     def test_initialize_all(self):
         mgr = MemoryManager()
