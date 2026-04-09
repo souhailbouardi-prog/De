@@ -650,11 +650,25 @@ class ProcessRegistry:
             session = self._running.get(session_id) or self._finished.get(session_id)
         return self._refresh_detached_session(session)
 
-    def poll(self, session_id: str) -> dict:
+    def get_for_task(self, session_id: str, task_id: str = "") -> Optional[ProcessSession]:
+        """Get a session by ID, but only if it belongs to the calling task.
+
+        Returns None when the session does not exist or belongs to a different
+        task. This avoids leaking the existence of background processes across
+        task/session boundaries.
+        """
+        session = self.get(session_id)
+        if session is None:
+            return None
+        if task_id and session.task_id and session.task_id != task_id:
+            return None
+        return session
+
+    def poll(self, session_id: str, task_id: str = "") -> dict:
         """Check status and get new output for a background process."""
         from tools.ansi_strip import strip_ansi
 
-        session = self.get(session_id)
+        session = self.get_for_task(session_id, task_id=task_id)
         if session is None:
             return {"status": "not_found", "error": f"No process with ID {session_id}"}
 
@@ -677,11 +691,11 @@ class ProcessRegistry:
             result["note"] = "Process recovered after restart -- output history unavailable"
         return result
 
-    def read_log(self, session_id: str, offset: int = 0, limit: int = 200) -> dict:
+    def read_log(self, session_id: str, offset: int = 0, limit: int = 200, task_id: str = "") -> dict:
         """Read the full output log with optional pagination by lines."""
         from tools.ansi_strip import strip_ansi
 
-        session = self.get(session_id)
+        session = self.get_for_task(session_id, task_id=task_id)
         if session is None:
             return {"status": "not_found", "error": f"No process with ID {session_id}"}
 
@@ -708,7 +722,7 @@ class ProcessRegistry:
             self._completion_consumed.add(session_id)
         return result
 
-    def wait(self, session_id: str, timeout: int = None) -> dict:
+    def wait(self, session_id: str, timeout: int = None, task_id: str = "") -> dict:
         """
         Block until a process exits, timeout, or interrupt.
 
@@ -740,7 +754,7 @@ class ProcessRegistry:
         else:
             effective_timeout = requested_timeout or max_timeout
 
-        session = self.get(session_id)
+        session = self.get_for_task(session_id, task_id=task_id)
         if session is None:
             return {"status": "not_found", "error": f"No process with ID {session_id}"}
 
@@ -781,9 +795,9 @@ class ProcessRegistry:
             result["timeout_note"] = f"Waited {effective_timeout}s, process still running"
         return result
 
-    def kill_process(self, session_id: str) -> dict:
+    def kill_process(self, session_id: str, task_id: str = "") -> dict:
         """Kill a background process."""
-        session = self.get(session_id)
+        session = self.get_for_task(session_id, task_id=task_id)
         if session is None:
             return {"status": "not_found", "error": f"No process with ID {session_id}"}
 
@@ -841,9 +855,9 @@ class ProcessRegistry:
         except Exception as e:
             return {"status": "error", "error": str(e)}
 
-    def write_stdin(self, session_id: str, data: str) -> dict:
+    def write_stdin(self, session_id: str, data: str, task_id: str = "") -> dict:
         """Send raw data to a running process's stdin (no newline appended)."""
-        session = self.get(session_id)
+        session = self.get_for_task(session_id, task_id=task_id)
         if session is None:
             return {"status": "not_found", "error": f"No process with ID {session_id}"}
         if session.exited:
@@ -868,13 +882,13 @@ class ProcessRegistry:
         except Exception as e:
             return {"status": "error", "error": str(e)}
 
-    def submit_stdin(self, session_id: str, data: str = "") -> dict:
+    def submit_stdin(self, session_id: str, data: str = "", task_id: str = "") -> dict:
         """Send data + newline to a running process's stdin (like pressing Enter)."""
-        return self.write_stdin(session_id, data + "\n")
+        return self.write_stdin(session_id, data + "\n", task_id=task_id)
 
-    def close_stdin(self, session_id: str) -> dict:
+    def close_stdin(self, session_id: str, task_id: str = "") -> dict:
         """Close a running process's stdin / send EOF without killing the process."""
-        session = self.get(session_id)
+        session = self.get_for_task(session_id, task_id=task_id)
         if session is None:
             return {"status": "not_found", "error": f"No process with ID {session_id}"}
         if session.exited:
@@ -1179,20 +1193,24 @@ def _handle_process(args, **kw):
         if not session_id:
             return tool_error(f"session_id is required for {action}")
         if action == "poll":
-            return _json.dumps(process_registry.poll(session_id), ensure_ascii=False)
+            return _json.dumps(process_registry.poll(session_id, task_id=task_id or ""), ensure_ascii=False)
         elif action == "log":
             return _json.dumps(process_registry.read_log(
-                session_id, offset=args.get("offset", 0), limit=args.get("limit", 200)), ensure_ascii=False)
+                session_id,
+                offset=args.get("offset", 0),
+                limit=args.get("limit", 200),
+                task_id=task_id or "",
+            ), ensure_ascii=False)
         elif action == "wait":
-            return _json.dumps(process_registry.wait(session_id, timeout=args.get("timeout")), ensure_ascii=False)
+            return _json.dumps(process_registry.wait(session_id, timeout=args.get("timeout"), task_id=task_id or ""), ensure_ascii=False)
         elif action == "kill":
-            return _json.dumps(process_registry.kill_process(session_id), ensure_ascii=False)
+            return _json.dumps(process_registry.kill_process(session_id, task_id=task_id or ""), ensure_ascii=False)
         elif action == "write":
-            return _json.dumps(process_registry.write_stdin(session_id, str(args.get("data", ""))), ensure_ascii=False)
+            return _json.dumps(process_registry.write_stdin(session_id, str(args.get("data", "")), task_id=task_id or ""), ensure_ascii=False)
         elif action == "submit":
-            return _json.dumps(process_registry.submit_stdin(session_id, str(args.get("data", ""))), ensure_ascii=False)
+            return _json.dumps(process_registry.submit_stdin(session_id, str(args.get("data", "")), task_id=task_id or ""), ensure_ascii=False)
         elif action == "close":
-            return _json.dumps(process_registry.close_stdin(session_id), ensure_ascii=False)
+            return _json.dumps(process_registry.close_stdin(session_id, task_id=task_id or ""), ensure_ascii=False)
     return tool_error(f"Unknown process action: {action}. Use: list, poll, log, wait, kill, write, submit, close")
 
 
