@@ -111,6 +111,9 @@ def _check_disk_usage_warning():
 # Session-cached sudo password (persists until CLI exits)
 _cached_sudo_password: str = ""
 
+# Session-cached local sudo -n probe result (None = not checked yet)
+_cached_passwordless_sudo: bool | None = None
+
 # Optional UI callbacks for interactive prompts. When set, these are called
 # instead of the default /dev/tty or input() readers. The CLI registers these
 # so prompts route through prompt_toolkit's event loop.
@@ -130,6 +133,29 @@ def set_approval_callback(cb):
     """Register a callback for dangerous command approval prompts (used by CLI)."""
     global _approval_callback
     _approval_callback = cb
+
+
+def _can_use_passwordless_sudo() -> bool:
+    """Return True when the current local machine already allows ``sudo -n``."""
+    global _cached_passwordless_sudo
+
+    if _cached_passwordless_sudo is not None:
+        return _cached_passwordless_sudo
+
+    try:
+        probe = subprocess.run(
+            ["sudo", "-n", "true"],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=5,
+            check=False,
+        )
+        _cached_passwordless_sudo = probe.returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        _cached_passwordless_sudo = False
+
+    return _cached_passwordless_sudo
 
 # =============================================================================
 # Dangerous Command Approval System
@@ -381,7 +407,31 @@ def _read_shell_token(command: str, start: int) -> tuple[str, int]:
     return command[start:i], i
 
 
-def _rewrite_real_sudo_invocations(command: str) -> tuple[str, bool]:
+def _consume_existing_sudo_dash_n(command: str, start: int) -> int | None:
+    """Return the position after an immediate ``sudo -n`` token, if present.
+
+    Only consumes ``-n`` when it appears as the next token in the same command
+    after horizontal whitespace. Newlines are intentionally not crossed so we do
+    not merge separate shell commands while normalizing an already
+    non-interactive sudo invocation.
+    """
+    i = start
+    n = len(command)
+
+    while i < n and command[i] in " \t":
+        i += 1
+
+    if i == start or i >= n or command[i] in "\r\n":
+        return None
+
+    token, next_i = _read_shell_token(command, i)
+    if token == "-n":
+        return next_i
+
+    return None
+
+
+def _rewrite_real_sudo_invocations(command: str, replacement: str = "sudo -S -p ''") -> tuple[str, bool]:
     """Rewrite only real unquoted sudo command words, not plain text mentions."""
     out: list[str] = []
     i = 0
@@ -428,8 +478,12 @@ def _rewrite_real_sudo_invocations(command: str) -> tuple[str, bool]:
 
         token, next_i = _read_shell_token(command, i)
         if command_start and token == "sudo":
-            out.append("sudo -S -p ''")
+            out.append(replacement)
             found = True
+            if replacement == "sudo -n":
+                maybe_skip = _consume_existing_sudo_dash_n(command, next_i)
+                if maybe_skip is not None:
+                    next_i = maybe_skip
         else:
             out.append(token)
 
@@ -484,8 +538,13 @@ def _transform_sudo_command(command: str | None) -> tuple[str | None, str | None
     if not has_real_sudo:
         return command, None
 
+    env_type = os.getenv("TERMINAL_ENV", "local")
     has_configured_password = "SUDO_PASSWORD" in os.environ
     sudo_password = os.environ.get("SUDO_PASSWORD", "") if has_configured_password else _cached_sudo_password
+
+    if not has_configured_password and not sudo_password and env_type == "local" and _can_use_passwordless_sudo():
+        transformed_passwordless = _rewrite_real_sudo_invocations(command, replacement="sudo -n")[0]
+        return transformed_passwordless, None
 
     if not has_configured_password and not sudo_password and os.getenv("HERMES_INTERACTIVE"):
         sudo_password = _prompt_for_sudo_password(timeout_seconds=45)
