@@ -353,10 +353,12 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
         provider_menu_key = f"custom:{provider_key_norm}" if provider_key_norm else ""
         if requested_norm not in {name_norm, menu_key, provider_key_norm, provider_menu_key}:
             continue
+        _env_ref = str(entry.get("api_key_env", "") or "").strip()
+        _resolved_key = os.getenv(_env_ref, "") if _env_ref else str(entry.get("api_key", "") or "").strip()
         result = {
             "name": name.strip(),
             "base_url": base_url.strip(),
-            "api_key": str(entry.get("api_key", "") or "").strip(),
+            "api_key": _resolved_key,
         }
         key_env = str(entry.get("key_env", "") or "").strip()
         if key_env:
@@ -401,9 +403,11 @@ def _resolve_named_custom_runtime(
             pool_result["model"] = model_name
         return pool_result
 
+    _cp_env_ref = str(custom_provider.get("api_key_env", "") or "").strip()
+    _cp_key = os.getenv(_cp_env_ref, "") if _cp_env_ref else str(custom_provider.get("api_key", "") or "").strip()
     api_key_candidates = [
         (explicit_api_key or "").strip(),
-        str(custom_provider.get("api_key", "") or "").strip(),
+        _cp_key,
         os.getenv(str(custom_provider.get("key_env", "") or "").strip(), "").strip(),
         os.getenv("OPENAI_API_KEY", "").strip(),
         os.getenv("OPENROUTER_API_KEY", "").strip(),
@@ -436,11 +440,16 @@ def _resolve_openrouter_runtime(
     cfg_base_url = model_cfg.get("base_url") if isinstance(model_cfg.get("base_url"), str) else ""
     cfg_provider = model_cfg.get("provider") if isinstance(model_cfg.get("provider"), str) else ""
     cfg_api_key = ""
-    for k in ("api_key", "api"):
-        v = model_cfg.get(k)
-        if isinstance(v, str) and v.strip():
-            cfg_api_key = v.strip()
-            break
+    # Prefer api_key_env (env-var reference) over inline api_key for security
+    _api_key_env = model_cfg.get("api_key_env")
+    if isinstance(_api_key_env, str) and _api_key_env.strip():
+        cfg_api_key = os.getenv(_api_key_env.strip(), "")
+    if not cfg_api_key:
+        for k in ("api_key", "api"):
+            v = model_cfg.get(k)
+            if isinstance(v, str) and v.strip():
+                cfg_api_key = v.strip()
+                break
     requested_norm = (requested_provider or "").strip().lower()
     cfg_provider = cfg_provider.strip().lower()
 
