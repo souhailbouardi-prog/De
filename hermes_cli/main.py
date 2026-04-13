@@ -6890,7 +6890,9 @@ For more help on a command:
         "--deliver",
         help="Delivery target: origin, local, telegram, discord, signal, or platform:chat_id",
     )
-    cron_create.add_argument("--repeat", type=int, help="Optional repeat count")
+    cron_create.add_argument(
+        "--repeat", type=int, help="Optional repeat count"
+    )
     cron_create.add_argument(
         "--skill",
         dest="skills",
@@ -6900,6 +6902,10 @@ For more help on a command:
     cron_create.add_argument(
         "--script",
         help="Path to a Python script whose stdout is injected into the prompt each run",
+    )
+    cron_create.add_argument(
+        "--interpreter",
+        help="Optional Python interpreter/executable for the pre-run script",
     )
 
     # cron edit
@@ -6938,6 +6944,10 @@ For more help on a command:
     cron_edit.add_argument(
         "--script",
         help="Path to a Python script whose stdout is injected into the prompt each run. Pass empty string to clear.",
+    )
+    cron_edit.add_argument(
+        "--interpreter",
+        help="Optional Python interpreter/executable for the pre-run script. Pass empty string to clear.",
     )
 
     # lifecycle actions
