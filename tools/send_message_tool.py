@@ -1476,7 +1476,7 @@ async def _send_hub(extra, chat_id, message):
 
     agent_id = extra.get("agent_id", "")
     agent_secret = extra.get("agent_secret", "")
-    api_base = extra.get("api_base", "https://admin.slate.ceo/oc/brain")
+    api_base = extra.get("api_base", "https://hub.slate.ceo")
 
     recipient = chat_id[4:] if chat_id.startswith("hub:") else chat_id
 
