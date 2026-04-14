@@ -1007,6 +1007,50 @@ class GatewayRunner:
             thread_sessions_per_user=getattr(config, "thread_sessions_per_user", False),
         )
 
+    # Platforms where identity is not enforced by the transport layer.
+    # Owner detection is skipped for these to avoid false positives from
+    # spoofed user_ids.
+    _UNTRUSTED_IDENTITY_PLATFORMS = frozenset({
+        Platform.WEBHOOK,
+        Platform.API_SERVER,
+    })
+
+    def _is_owner_source(self, source) -> bool:
+        """Return True if this inbound source is the provisioned owner.
+
+        Strict check: only recognizes DM-shaped home channels where the
+        chat_id matches, the platform enforces identity, and chat_type was
+        explicitly set to "dm". Group-chat home channels and untrusted
+        platforms fall through to False.
+
+        On False, callers should continue to pass source.user_id to AIAgent
+        so non-owner callers land on their own transport-level peer.
+        """
+        if not source or not source.platform:
+            return False
+        if source.platform in self._UNTRUSTED_IDENTITY_PLATFORMS:
+            return False
+        # Defensive: test fixtures sometimes skip self.config entirely or
+        # stub it with a SimpleNamespace that lacks get_home_channel. Treat
+        # missing config surface as "no home channel known → not the owner".
+        _cfg = getattr(self, "config", None)
+        _get_hc = getattr(_cfg, "get_home_channel", None) if _cfg is not None else None
+        if not callable(_get_hc):
+            return False
+        hc = _get_hc(source.platform)
+        if not hc:
+            return False
+        if str(source.chat_id) != str(hc.chat_id):
+            return False
+        # Strict DM check. SessionSource.chat_type defaults to "dm"
+        # (gateway/session.py:78), so an adapter that forgets to set it for a
+        # group chat would pass this check — a false-positive vector. Adapters
+        # MUST set chat_type explicitly for non-DM sources. This is already
+        # the case for all shipped adapters (Discord, Telegram, Signal, etc.).
+        if getattr(source, "chat_type", None) != "dm":
+            return False
+        return True
+
     def _resolve_session_agent_runtime(
         self,
         *,
@@ -6309,6 +6353,12 @@ class GatewayRunner:
             self._service_tier = self._load_service_tier()
             turn_route = self._resolve_turn_agent_config(prompt, model, runtime_kwargs)
 
+            _is_owner = self._is_owner_source(source)
+            _legacy_peers = (
+                [str(hc.chat_id) for p in Platform
+                 if (hc := self.config.get_home_channel(p))]
+            ) if _is_owner else []
+
             def run_sync():
                 agent = AIAgent(
                     model=turn_route["model"],
@@ -6328,7 +6378,8 @@ class GatewayRunner:
                     provider_data_collection=pr.get("data_collection"),
                     session_id=task_id,
                     platform=platform_key,
-                    user_id=source.user_id,
+                    user_id=None if _is_owner else source.user_id,
+                    legacy_peer_ids=_legacy_peers,
                     session_db=self._session_db,
                     fallback_model=self._fallback_model,
                 )
@@ -8291,7 +8342,11 @@ class GatewayRunner:
                             break
                     if adapter and source.chat_id:
                         try:
+                            import dataclasses as _dc
                             from gateway.platforms.base import MessageEvent, MessageType
+                            # Force chat_type="synthetic" so owner-detection doesn't
+                            # treat the synthetic bg notification as a real DM turn.
+                            source = _dc.replace(source, chat_type="synthetic")
                             synth_event = MessageEvent(
                                 text=synth_text,
                                 message_type=MessageType.TEXT,
@@ -9492,6 +9547,12 @@ class GatewayRunner:
 
             turn_route = self._resolve_turn_agent_config(message, model, runtime_kwargs)
 
+            _is_owner = self._is_owner_source(source)
+            _legacy_peers = (
+                [str(hc.chat_id) for p in Platform
+                 if (hc := self.config.get_home_channel(p))]
+            ) if _is_owner else []
+
             # Check agent cache — reuse the AIAgent from the previous message
             # in this session to preserve the frozen system prompt and tool
             # schemas for prompt cache hits.
@@ -9546,8 +9607,9 @@ class GatewayRunner:
                     provider_data_collection=pr.get("data_collection"),
                     session_id=session_id,
                     platform=platform_key,
-                    user_id=source.user_id,
+                    user_id=None if _is_owner else source.user_id,
                     gateway_session_key=session_key,
+                    legacy_peer_ids=_legacy_peers,
                     session_db=self._session_db,
                     fallback_model=self._fallback_model,
                 )
