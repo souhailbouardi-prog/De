@@ -225,8 +225,6 @@ class HonchoMemoryProvider(MemoryProvider):
         self._lazy_init_kwargs: Optional[dict] = None
         self._lazy_init_session_id: Optional[str] = None
 
-        # Port #4053: cron guard — when True, plugin is fully inactive
-        self._cron_skipped = False
 
     @property
     def name(self) -> str:
@@ -271,20 +269,11 @@ class HonchoMemoryProvider(MemoryProvider):
     def initialize(self, session_id: str, **kwargs) -> None:
         """Initialize Honcho session manager.
 
-        Handles: cron guard, recall_mode, session name resolution,
+        Handles: recall_mode, session name resolution,
         peer memory mode, SOUL.md ai_peer sync, memory file migration,
         and pre-warming context at init.
         """
         try:
-            # ----- Port #4053: cron guard -----
-            agent_context = kwargs.get("agent_context", "")
-            platform = kwargs.get("platform", "cli")
-            if agent_context in ("cron", "flush") or platform == "cron":
-                logger.debug("Honcho skipped: cron/flush context (agent_context=%s, platform=%s)",
-                             agent_context, platform)
-                self._cron_skipped = True
-                return
-
             from plugins.memory.honcho.client import HonchoClientConfig, get_honcho_client
             from plugins.memory.honcho.session import HonchoSessionManager
 
@@ -292,6 +281,16 @@ class HonchoMemoryProvider(MemoryProvider):
             if not cfg.enabled or not (cfg.api_key or cfg.base_url):
                 logger.debug("Honcho not configured — plugin inactive")
                 return
+
+            # Override peer_name with the caller-supplied user_id so each caller
+            # gets their own Honcho peer.  For owner sessions the gateway will
+            # stop passing user_id once user-unify ships — until then, owner
+            # messages fragment across transport-level peers (pre-#6995 behavior,
+            # preferable to the active stranger/cron pollution #6995 introduced).
+            _gw_user_id = kwargs.get("user_id")
+            if _gw_user_id:
+                cfg.peer_name = _gw_user_id
+
 
             self._config = cfg
 
@@ -442,8 +441,6 @@ class HonchoMemoryProvider(MemoryProvider):
         """
         if self._manager and self._session_initialized:
             return True
-        if self._cron_skipped:
-            return False
         if not self._config or not self._lazy_init_kwargs:
             return False
 
@@ -497,8 +494,6 @@ class HonchoMemoryProvider(MemoryProvider):
         that doesn't change between turns (prompt-cache friendly).
         Live context (representation, card) is injected via prefetch().
         """
-        if self._cron_skipped:
-            return ""
         if not self._manager or not self._session_key:
             # tools-only mode without session yet still returns a minimal block
             if self._recall_mode == "tools" and self._config:
@@ -551,9 +546,6 @@ class HonchoMemoryProvider(MemoryProvider):
         B5: Respects injection_frequency — "first-turn" returns cached/empty after turn 0.
         Port #3265: Truncates to context_tokens budget.
         """
-        if self._cron_skipped:
-            return ""
-
         # B1: tools-only mode — no auto-injection
         if self._recall_mode == "tools":
             return ""
@@ -702,8 +694,6 @@ class HonchoMemoryProvider(MemoryProvider):
         Context refresh updates the base layer (representation + card).
         Dialectic fires the LLM reasoning supplement.
         """
-        if self._cron_skipped:
-            return
         if not self._manager or not self._session_key or not query:
             return
 
@@ -1062,8 +1052,6 @@ class HonchoMemoryProvider(MemoryProvider):
         Messages exceeding the Honcho API limit (default 25k chars) are
         split into multiple messages with continuation markers.
         """
-        if self._cron_skipped:
-            return
         if not self._manager or not self._session_key:
             return
 
@@ -1091,8 +1079,6 @@ class HonchoMemoryProvider(MemoryProvider):
         """Mirror built-in user profile writes as Honcho conclusions."""
         if action != "add" or target != "user" or not content:
             return
-        if self._cron_skipped:
-            return
         if not self._manager or not self._session_key:
             return
 
@@ -1107,8 +1093,6 @@ class HonchoMemoryProvider(MemoryProvider):
 
     def on_session_end(self, messages: List[Dict[str, Any]]) -> None:
         """Flush all pending messages to Honcho on session end."""
-        if self._cron_skipped:
-            return
         if not self._manager:
             return
         # Wait for pending sync
@@ -1124,16 +1108,12 @@ class HonchoMemoryProvider(MemoryProvider):
 
         B1: context-only mode hides all tools.
         """
-        if self._cron_skipped:
-            return []
         if self._recall_mode == "context":
             return []
         return list(ALL_TOOL_SCHEMAS)
 
     def handle_tool_call(self, tool_name: str, args: dict, **kwargs) -> str:
         """Handle a Honcho tool call, with lazy session init for tools-only mode."""
-        if self._cron_skipped:
-            return tool_error("Honcho is not active (cron context).")
 
         # Port #1957: ensure session is initialized for tools-only mode
         if not self._session_initialized:
