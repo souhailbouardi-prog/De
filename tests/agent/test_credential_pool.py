@@ -1083,6 +1083,11 @@ def test_load_pool_seeds_copilot_via_gh_auth_token(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
     _write_auth_store(tmp_path, {"version": 1, "credential_pool": {}})
 
+    # Clear env vars that _seed_from_env would pick up for copilot
+    monkeypatch.delenv("COPILOT_GITHUB_TOKEN", raising=False)
+    monkeypatch.delenv("GH_TOKEN", raising=False)
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+
     monkeypatch.setattr(
         "hermes_cli.copilot_auth.resolve_copilot_token",
         lambda: ("gho_fake_token_abc123", "gh auth token"),
@@ -1103,6 +1108,11 @@ def test_load_pool_does_not_seed_copilot_when_no_token(tmp_path, monkeypatch):
     """Copilot pool should be empty when resolve_copilot_token() returns nothing."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
     _write_auth_store(tmp_path, {"version": 1, "credential_pool": {}})
+
+    # Clear env vars that _seed_from_env would pick up for copilot
+    monkeypatch.delenv("COPILOT_GITHUB_TOKEN", raising=False)
+    monkeypatch.delenv("GH_TOKEN", raising=False)
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
 
     monkeypatch.setattr(
         "hermes_cli.copilot_auth.resolve_copilot_token",
