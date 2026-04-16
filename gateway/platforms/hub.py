@@ -9,6 +9,7 @@ import asyncio
 import json
 import logging
 import random
+import re
 from datetime import datetime, timezone
 from typing import Optional, Dict, Any
 
@@ -38,6 +39,32 @@ _SUPPRESSED_INTERNAL_PREFIXES = (
     "Operation interrupted:",
     "API call failed after",
 )
+
+# Silent-reply token. When the LLM decides an inbound Hub message does not
+# warrant a response, it emits only this token and the adapter drops the
+# send. This is the agent's first-class "decline to reply" signal — without
+# it, the LLM's default to produce output turns every acknowledgement
+# ("Holding.", "Silent.", "Got it.") into a new Hub message, which the peer
+# answers in kind, creating stable 10-second oscillations between two
+# agents with nothing left to say.
+#
+# Convention and streaming edge cases are ported from openclaw's
+# auto-reply/tokens.ts and auto-reply/reply/normalize-reply.ts.
+NO_REPLY_TOKEN = "NO_REPLY"
+_NO_REPLY_EXACT_RE = re.compile(rf"^\s*{re.escape(NO_REPLY_TOKEN)}\s*$")
+_NO_REPLY_TRAILING_RE = re.compile(
+    rf"(?:^|\s+|\*+){re.escape(NO_REPLY_TOKEN)}\s*$"
+)
+
+
+def _is_no_reply(text: str) -> bool:
+    """Exact-match check for the silent-reply token (with optional whitespace)."""
+    return bool(_NO_REPLY_EXACT_RE.match(text))
+
+
+def _strip_trailing_no_reply(text: str) -> str:
+    """Strip a trailing NO_REPLY token from mixed-content text."""
+    return _NO_REPLY_TRAILING_RE.sub("", text).strip()
 
 
 def check_hub_requirements() -> bool:
@@ -149,6 +176,29 @@ class HubAdapter(BasePlatformAdapter):
                 chat_id, len(content),
             )
             return SendResult(success=True, message_id="")
+
+        # Silent-reply token: exact-only match is the agent's explicit
+        # decline-to-reply. Mixed content has the trailing token stripped
+        # (the LLM sometimes appends it to a real reply despite system-prompt
+        # guidance); if stripping leaves nothing, treat as silent.
+        if content:
+            if _is_no_reply(content):
+                logger.info("[Hub] NO_REPLY suppressed (exact) to %s", chat_id)
+                return SendResult(success=True, message_id="")
+            if NO_REPLY_TOKEN in content:
+                stripped = _strip_trailing_no_reply(content)
+                if not stripped:
+                    logger.info(
+                        "[Hub] NO_REPLY suppressed (mixed→empty) to %s",
+                        chat_id,
+                    )
+                    return SendResult(success=True, message_id="")
+                if stripped != content:
+                    logger.info(
+                        "[Hub] Stripped trailing NO_REPLY from message to %s",
+                        chat_id,
+                    )
+                    content = stripped
 
         recipient = chat_id[4:] if chat_id.startswith("hub:") else chat_id
 

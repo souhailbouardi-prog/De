@@ -258,6 +258,82 @@ async def test_send_forwards_normal_content():
 
 
 @pytest.mark.asyncio
+async def test_send_suppresses_exact_no_reply_token():
+    # The agent's first-class decline-to-reply: exact NO_REPLY is suppressed.
+    adapter = _make_adapter()
+    mock_client = AsyncMock()
+    mock_client.post = AsyncMock()
+    mock_client.aclose = AsyncMock()
+    adapter._http_client = mock_client
+
+    for text in ("NO_REPLY", "  NO_REPLY  ", "NO_REPLY\n"):
+        result = await adapter.send("hub:brain", text)
+        assert result.success is True
+        assert result.message_id == ""
+    mock_client.post.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_send_suppresses_mixed_content_that_strips_to_empty():
+    # The LLM sometimes emits NO_REPLY with leading markdown-emphasis chars
+    # or whitespace but no substantive content. Those strip to empty and
+    # must be suppressed like a bare NO_REPLY.
+    adapter = _make_adapter()
+    mock_client = AsyncMock()
+    mock_client.post = AsyncMock()
+    mock_client.aclose = AsyncMock()
+    adapter._http_client = mock_client
+
+    for text in ("**NO_REPLY", "  \n  NO_REPLY\n\n"):
+        result = await adapter.send("hub:brain", text)
+        assert result.success is True
+        assert result.message_id == ""
+    mock_client.post.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_send_strips_trailing_no_reply_from_real_content():
+    # The LLM sometimes appends NO_REPLY to a genuine reply. Strip the token
+    # but still deliver the substantive content.
+    adapter = _make_adapter()
+    mock_response = MagicMock()
+    mock_response.status_code = 200
+    mock_response.json.return_value = {"message_id": "msg-strip"}
+    mock_client = AsyncMock()
+    mock_client.post.return_value = mock_response
+    mock_client.aclose = AsyncMock()
+    adapter._http_client = mock_client
+
+    result = await adapter.send("hub:brain", "On it — starting now NO_REPLY")
+    assert result.success is True
+    assert mock_client.post.call_count == 1
+    sent_body = mock_client.post.call_args.kwargs["json"]["message"]
+    assert sent_body == "On it — starting now"
+    assert "NO_REPLY" not in sent_body
+
+
+@pytest.mark.asyncio
+async def test_send_forwards_content_that_mentions_no_reply_in_prose():
+    # Regression: discussing the token in prose ("we use NO_REPLY to...") must
+    # pass through — only exact-match and trailing-position are suppressed.
+    adapter = _make_adapter()
+    mock_response = MagicMock()
+    mock_response.status_code = 200
+    mock_response.json.return_value = {"message_id": "msg-prose"}
+    mock_client = AsyncMock()
+    mock_client.post.return_value = mock_response
+    mock_client.aclose = AsyncMock()
+    adapter._http_client = mock_client
+
+    text = "We use NO_REPLY as a silence signal on Hub — see the guide."
+    result = await adapter.send("hub:brain", text)
+    assert result.success is True
+    mock_client.post.assert_called_once()
+    sent_body = mock_client.post.call_args.kwargs["json"]["message"]
+    assert sent_body == text  # unchanged
+
+
+@pytest.mark.asyncio
 async def test_send_http_error():
     adapter = _make_adapter()
     mock_response = MagicMock()
