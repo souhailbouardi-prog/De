@@ -90,6 +90,7 @@ logger = logging.getLogger(__name__)
 
 _MCP_AVAILABLE = False
 _MCP_HTTP_AVAILABLE = False
+_MCP_SSE_AVAILABLE = False
 _MCP_SAMPLING_TYPES = False
 _MCP_NOTIFICATION_TYPES = False
 _MCP_MESSAGE_HANDLER_SUPPORTED = False
@@ -102,6 +103,14 @@ try:
         _MCP_HTTP_AVAILABLE = True
     except ImportError:
         _MCP_HTTP_AVAILABLE = False
+    # SSE transport — used by servers that only speak the older MCP SSE
+    # protocol (e.g. postgres-mcp). Auto-selected when the URL ends in
+    # `/sse`, or explicitly via `transport: sse` in the server config.
+    try:
+        from mcp.client.sse import sse_client
+        _MCP_SSE_AVAILABLE = True
+    except ImportError:
+        _MCP_SSE_AVAILABLE = False
     # Prefer the non-deprecated API (mcp >= 1.24.0); fall back to the
     # deprecated wrapper for older SDK versions.
     try:
@@ -982,8 +991,27 @@ class MCPServerTask:
             with _lock:
                 _stdio_pids.difference_update(new_pids)
 
+    @staticmethod
+    def _resolve_http_transport(url: str, config: dict) -> str:
+        """Pick between streamable_http and sse based on config + URL.
+
+        Explicit `transport: sse|streamable_http` in config wins. Otherwise,
+        URLs ending in `/sse` default to SSE (that's how postgres-mcp and
+        other older MCP servers expose themselves). Everything else defaults
+        to streamable_http, which is the current MCP spec transport.
+        """
+        explicit = str(config.get("transport") or "").strip().lower()
+        if explicit in ("sse", "streamable_http", "streamable-http", "streamablehttp"):
+            return "sse" if explicit == "sse" else "streamable_http"
+        # Strip query string / fragment before the suffix check.
+        from urllib.parse import urlsplit
+        path = urlsplit(url).path or ""
+        if path.rstrip("/").endswith("/sse"):
+            return "sse"
+        return "streamable_http"
+
     async def _run_http(self, config: dict):
-        """Run the server using HTTP/StreamableHTTP transport."""
+        """Run the server using HTTP/StreamableHTTP or SSE transport."""
         if not _MCP_HTTP_AVAILABLE:
             raise ImportError(
                 f"MCP server '{self.name}' requires HTTP transport but "
@@ -994,6 +1022,7 @@ class MCPServerTask:
         url = config["url"]
         headers = dict(config.get("headers") or {})
         connect_timeout = config.get("connect_timeout", _DEFAULT_CONNECT_TIMEOUT)
+        transport = self._resolve_http_transport(url, config)
 
         # OAuth 2.1 PKCE: route through the central MCPOAuthManager so the
         # same provider instance is reused across reconnects, pre-flow
@@ -1015,6 +1044,31 @@ class MCPServerTask:
         sampling_kwargs = self._sampling.session_kwargs() if self._sampling else {}
         if _MCP_NOTIFICATION_TYPES and _MCP_MESSAGE_HANDLER_SUPPORTED:
             sampling_kwargs["message_handler"] = self._make_message_handler()
+
+        if transport == "sse":
+            if not _MCP_SSE_AVAILABLE:
+                raise ImportError(
+                    f"MCP server '{self.name}' is configured for SSE transport "
+                    "(URL ends in /sse or transport: sse) but mcp.client.sse is "
+                    "not available. Upgrade the mcp package."
+                )
+            # sse_client API: (url, headers, timeout, sse_read_timeout)
+            # It doesn't accept an httpx.Auth directly; header-based auth
+            # (e.g. Bearer token) is the common case and is already covered
+            # by `headers`.
+            _sse_kwargs = {
+                "timeout": float(connect_timeout),
+            }
+            if headers:
+                _sse_kwargs["headers"] = headers
+            async with sse_client(url, **_sse_kwargs) as (read_stream, write_stream):
+                async with ClientSession(read_stream, write_stream, **sampling_kwargs) as session:
+                    await session.initialize()
+                    self.session = session
+                    await self._discover_tools()
+                    self._ready.set()
+                    await self._shutdown_event.wait()
+            return
 
         if _MCP_NEW_HTTP:
             # New API (mcp >= 1.24.0): build an explicit httpx.AsyncClient
