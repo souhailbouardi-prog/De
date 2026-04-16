@@ -43,6 +43,44 @@ def _resolve_args() -> list[str]:
     return shlex.split(raw)
 
 
+def _resolve_home_dir() -> str:
+    """Return a stable HOME for child ACP processes."""
+
+    try:
+        from hermes_constants import get_subprocess_home
+
+        profile_home = get_subprocess_home()
+        if profile_home:
+            return profile_home
+    except Exception:
+        pass
+
+    home = os.environ.get("HOME", "").strip()
+    if home:
+        return home
+
+    expanded = os.path.expanduser("~")
+    if expanded and expanded != "~":
+        return expanded
+
+    try:
+        import pwd
+
+        resolved = pwd.getpwuid(os.getuid()).pw_dir.strip()
+        if resolved:
+            return resolved
+    except Exception:
+        pass
+
+    return "/home/openclaw"
+
+
+def _build_subprocess_env() -> dict[str, str]:
+    env = os.environ.copy()
+    env["HOME"] = _resolve_home_dir()
+    return env
+
+
 def _jsonrpc_error(message_id: Any, code: int, message: str) -> dict[str, Any]:
     return {
         "jsonrpc": "2.0",
@@ -367,6 +405,7 @@ class CopilotACPClient:
                 text=True,
                 bufsize=1,
                 cwd=self._acp_cwd,
+                env=_build_subprocess_env(),
             )
         except FileNotFoundError as exc:
             raise RuntimeError(
