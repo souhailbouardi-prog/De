@@ -204,12 +204,15 @@ Then launch the Hermes CLI and run `/browser connect`.
 
 When connected via CDP, all browser tools (`browser_navigate`, `browser_click`, etc.) operate on your live Chrome instance instead of spinning up a cloud session.
 
+Hermes now reuses one persistent `agent-browser` session for the active live-CDP task instead of reconnecting via `--cdp` on every browser command. That reduces repeated attach overhead and makes repeated `navigate` / `snapshot` / `click` flows more continuous, but it does **not** change the shared-state model of the underlying live browser.
+
 :::warning Shared live-browser state
 `/browser connect` attaches Hermes to **one real Chrome instance**. This mode is great for using your own cookies, sessions, and already-logged-in sites, but it is **not task-isolated** the way managed cloud/local browser sessions are.
 
 Practical implications:
 - only run **one browser task at a time** against a live CDP-connected browser
 - concurrent tasks/subagents can interfere with each other by changing the active tab/page
+- the persistent `agent-browser` session improves continuity for that one active task, but it is not a per-task tab sandbox
 - if you need strong task isolation, use the default local/cloud browser modes instead of `/browser connect`
 :::
 
