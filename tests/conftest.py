@@ -249,6 +249,22 @@ def _hermetic_environment(tmp_path, monkeypatch):
     except Exception:
         pass
 
+    # 6. Reset gateway session contextvars. Unsetting HERMES_SESSION_* env
+    #    vars (step 2) isn't enough — gateway.session_context holds per-task
+    #    ContextVars that override os.environ. Tests that call
+    #    set_session_vars() or clear_session_vars() leak state into later
+    #    tests on the same xdist worker (same thread/context), causing
+    #    get_session_env("HERMES_SESSION_PLATFORM") to return the stale
+    #    contextvar value even when the test sets HERMES_SESSION_PLATFORM
+    #    via monkeypatch.setenv. Reset to the _UNSET sentinel so subsequent
+    #    lookups fall through to os.environ.
+    try:
+        from gateway.session_context import _VAR_MAP, _UNSET
+        for _var in _VAR_MAP.values():
+            _var.set(_UNSET)
+    except Exception:
+        pass
+
 
 # Backward-compat alias — old tests reference this fixture name. Keep it
 # as a no-op wrapper so imports don't break.
