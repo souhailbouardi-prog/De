@@ -6230,6 +6230,26 @@ class HermesCLI:
         except Exception:
             return False
 
+    @staticmethod
+    def _get_browser_cdp_status_target() -> tuple[str, bool]:
+        """Return the effective raw CDP URL and whether it came from config."""
+        try:
+            from tools.browser_tool import _get_raw_cdp_override, _read_config_browser_cdp_url
+            raw = _get_raw_cdp_override().strip()
+            config_raw = _read_config_browser_cdp_url().strip()
+            return raw, bool(config_raw and raw == config_raw and not os.environ.get("BROWSER_CDP_URL", "").strip())
+        except Exception:
+            raw = os.environ.get("BROWSER_CDP_URL", "").strip()
+            return raw, False
+
+    @staticmethod
+    def _cdp_endpoint_reachable(cdp_url: str) -> bool:
+        try:
+            from tools.browser_tool import _cdp_endpoint_reachable as _probe
+            return _probe(cdp_url)
+        except Exception:
+            return False
+
     def _handle_browser_command(self, cmd: str):
         """Handle /browser connect|disconnect|status — manage live Chrome CDP connection."""
         import platform as _plat
@@ -6238,7 +6258,7 @@ class HermesCLI:
         sub = parts[1].lower().strip() if len(parts) > 1 else "status"
 
         _DEFAULT_CDP = "http://127.0.0.1:9222"
-        current = os.environ.get("BROWSER_CDP_URL", "").strip()
+        current, current_from_config = self._get_browser_cdp_status_target()
 
         if sub.startswith("connect"):
             # Optionally accept a custom CDP URL: /browser connect ws://host:port
@@ -6254,48 +6274,24 @@ class HermesCLI:
 
             print()
 
-            # Extract port for connectivity checks
-            _port = 9222
-            try:
-                _port = int(cdp_url.rsplit(":", 1)[-1].split("/")[0])
-            except (ValueError, IndexError):
-                pass
-
-            # Check if Chrome is already listening on the debug port
-            import socket
-            _already_open = False
-            try:
-                s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                s.settimeout(1)
-                s.connect(("127.0.0.1", _port))
-                s.close()
-                _already_open = True
-            except (OSError, socket.timeout):
-                pass
-
-            if _already_open:
-                print(f"   ✓ Chrome is already listening on port {_port}")
+            reachable = self._cdp_endpoint_reachable(cdp_url)
+            if reachable:
+                print(f"   ✓ Chrome is reachable at {cdp_url}")
             elif cdp_url == _DEFAULT_CDP:
                 # Try to auto-launch Chrome with remote debugging
                 print("   Chrome isn't running with remote debugging — attempting to launch...")
-                _launched = self._try_launch_chrome_debug(_port, _plat.system())
+                _launched = self._try_launch_chrome_debug(9222, _plat.system())
                 if _launched:
-                    # Wait for the port to come up
                     import time as _time
                     for _wait in range(10):
-                        try:
-                            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                            s.settimeout(1)
-                            s.connect(("127.0.0.1", _port))
-                            s.close()
-                            _already_open = True
+                        if self._cdp_endpoint_reachable(cdp_url):
+                            reachable = True
                             break
-                        except (OSError, socket.timeout):
-                            _time.sleep(0.5)
-                    if _already_open:
-                        print(f"   ✓ Chrome launched and listening on port {_port}")
+                        _time.sleep(0.5)
+                    if reachable:
+                        print("   ✓ Chrome launched and CDP is reachable")
                     else:
-                        print(f"   ⚠ Chrome launched but port {_port} isn't responding yet")
+                        print("   ⚠ Chrome launched but CDP isn't responding yet")
                         print("     Try again in a few seconds — the debug instance may still be starting")
                 else:
                     print("   ⚠ Could not auto-launch Chrome")
@@ -6324,7 +6320,13 @@ class HermesCLI:
                     print(f"     Launch Chrome manually:")
                     print(f"     {chrome_cmd}")
             else:
-                print(f"   ⚠ Port {_port} is not reachable at {cdp_url}")
+                print(f"   ⚠ CDP endpoint is not reachable at {cdp_url}")
+
+            if not reachable:
+                print()
+                print("Browser connection was not changed.")
+                print()
+                return
 
             os.environ["BROWSER_CDP_URL"] = cdp_url
             print()
@@ -6346,18 +6348,37 @@ class HermesCLI:
 
         elif sub == "disconnect":
             if current:
+                config_url = ""
+                try:
+                    from tools.browser_tool import _read_config_browser_cdp_url
+                    config_url = _read_config_browser_cdp_url().strip()
+                except Exception:
+                    pass
+
+                had_env_override = bool(os.environ.get("BROWSER_CDP_URL", "").strip())
                 os.environ.pop("BROWSER_CDP_URL", None)
                 try:
                     from tools.browser_tool import cleanup_all_browsers
                     cleanup_all_browsers()
                 except Exception:
                     pass
+
                 print()
-                print("🌐 Browser disconnected from live Chrome")
-                print("   Browser tools reverted to default mode (local headless or cloud provider)")
+                if config_url:
+                    if had_env_override:
+                        print("🌐 Browser session override disconnected")
+                        print(f"   Persistent config browser.cdp_url remains active: {config_url}")
+                        print("   Clear browser.cdp_url in config.yaml to fully revert to default mode")
+                    else:
+                        print("🌐 Browser is configured via config.yaml")
+                        print(f"   browser.cdp_url remains active: {config_url}")
+                        print("   Clear browser.cdp_url in config.yaml to fully revert to default mode")
+                else:
+                    print("🌐 Browser disconnected from live Chrome")
+                    print("   Browser tools reverted to default mode (local headless or cloud provider)")
                 print()
 
-                if hasattr(self, '_pending_input'):
+                if hasattr(self, '_pending_input') and not config_url:
                     self._pending_input.put(
                         "[System note: The user has disconnected the browser tools from their live Chrome. "
                         "Browser tools are back to default mode (headless local browser or cloud provider).]"
@@ -6372,20 +6393,14 @@ class HermesCLI:
             if current:
                 print("🌐 Browser: connected to live Chrome via CDP")
                 print(f"   Endpoint: {current}")
+                if current_from_config:
+                    print("   Source: config.yaml (browser.cdp_url)")
+                else:
+                    print("   Source: session env (BROWSER_CDP_URL)")
 
-                _port = 9222
-                try:
-                    _port = int(current.rsplit(":", 1)[-1].split("/")[0])
-                except (ValueError, IndexError):
-                    pass
-                try:
-                    import socket
-                    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                    s.settimeout(1)
-                    s.connect(("127.0.0.1", _port))
-                    s.close()
+                if self._cdp_endpoint_reachable(current):
                     print("   Status: ✓ reachable")
-                except (OSError, Exception):
+                else:
                     print("   Status: ⚠ not reachable (Chrome may not be running)")
             else:
                 try:
