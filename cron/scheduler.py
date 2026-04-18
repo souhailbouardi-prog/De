@@ -843,18 +843,30 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             message = format_runtime_provider_error(exc)
             raise RuntimeError(message) from exc
 
-        from agent.smart_model_routing import resolve_turn_route
+        # Apply ``model.routes`` (or legacy ``model.by_source.cron`` /
+        # ``model.platforms.cron``) for this cron fire before routing.
+        from agent.smart_model_routing import resolve_turn_route, apply_route
+        _cron_runtime = {
+            "api_key": runtime.get("api_key"),
+            "base_url": runtime.get("base_url"),
+            "provider": runtime.get("provider"),
+            "api_mode": runtime.get("api_mode"),
+            "command": runtime.get("command"),
+            "args": list(runtime.get("args") or []),
+        }
+        _cron_model_config = _cfg.get("model") if isinstance(_cfg, dict) else None
+        if not isinstance(_cron_model_config, dict):
+            _cron_model_config = None
+        model, _cron_runtime = apply_route(
+            model, _cron_runtime, _cron_model_config,
+            {"platform": "cron", "source_kind": "cron"},
+        )
         turn_route = resolve_turn_route(
             prompt,
             smart_routing,
             {
                 "model": model,
-                "api_key": runtime.get("api_key"),
-                "base_url": runtime.get("base_url"),
-                "provider": runtime.get("provider"),
-                "api_mode": runtime.get("api_mode"),
-                "command": runtime.get("command"),
-                "args": list(runtime.get("args") or []),
+                **_cron_runtime,
             },
         )
 
