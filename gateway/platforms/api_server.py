@@ -49,6 +49,12 @@ from gateway.platforms.base import (
 
 logger = logging.getLogger(__name__)
 
+# Typed AppKey for aiohttp application state (avoids NotAppKeyWarning)
+if AIOHTTP_AVAILABLE:
+    _APP_KEY_ADAPTER = web.AppKey("api_server_adapter", Any)
+else:
+    _APP_KEY_ADAPTER = "api_server_adapter"  # type: ignore[misc]
+
 # Default settings
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8642
@@ -243,7 +249,7 @@ if AIOHTTP_AVAILABLE:
     @web.middleware
     async def cors_middleware(request, handler):
         """Add CORS headers for explicitly allowed origins; handle OPTIONS preflight."""
-        adapter = request.app.get("api_server_adapter")
+        adapter = request.app.get(_APP_KEY_ADAPTER)
         origin = request.headers.get("Origin", "")
         cors_headers = None
         if adapter is not None:
@@ -2312,7 +2318,7 @@ class APIServerAdapter(BasePlatformAdapter):
         try:
             mws = [mw for mw in (cors_middleware, body_limit_middleware, security_headers_middleware) if mw is not None]
             self._app = web.Application(middlewares=mws)
-            self._app["api_server_adapter"] = self
+            self._app[_APP_KEY_ADAPTER] = self
             self._app.router.add_get("/health", self._handle_health)
             self._app.router.add_get("/health/detailed", self._handle_health_detailed)
             self._app.router.add_get("/v1/health", self._handle_health)
