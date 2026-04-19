@@ -540,3 +540,245 @@ class TestValidateCodexAutoCorrection:
         assert result["recognized"] is False
         assert result.get("corrected_model") is None
         assert "not found" in result["message"]
+
+
+# ---------------------------------------------------------------------------
+# Regression coverage for #12532.
+#
+# Two separate validation failures in the Gateway ``/model`` picker:
+#
+#   * **Gemini**: the OpenAI-compat ``/models`` endpoint at
+#     ``generativelanguage.googleapis.com/v1beta/openai/models`` returns
+#     IDs prefixed with ``models/`` (e.g. ``models/gemini-2.5-flash``) —
+#     native Gemini-API convention.  The curated list and user input both
+#     use the bare ID, so a direct set-membership check drops every known
+#     Gemini model.
+#   * **Anthropic**: the generic ``probe_api_models`` helper sends
+#     ``Authorization: Bearer`` without the ``anthropic-version`` header,
+#     so Anthropic's native ``/v1/models`` returns 4xx and
+#     ``fetch_api_models`` yields ``None`` — landing in the generic
+#     "could not reach API" hard-reject even though the model is in our
+#     curated catalog.
+# ---------------------------------------------------------------------------
+
+
+class TestValidateGeminiModelsPrefix:
+    """The Gemini OpenAI-compat endpoint prefixes returned IDs with
+    ``models/``.  Strip the prefix before comparison."""
+
+    _GEMINI_API_RESPONSE = [
+        "models/gemini-2.5-pro",
+        "models/gemini-2.5-flash",
+        "models/gemini-2.5-flash-lite",
+        "models/gemini-3-flash-preview",
+    ]
+
+    def _validate(self, model):
+        """Call with a probe that returns the ``models/``-prefixed list."""
+        probe_payload = {
+            "models": self._GEMINI_API_RESPONSE,
+            "probed_url": "https://generativelanguage.googleapis.com/v1beta/openai/models",
+            "resolved_base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
+            "suggested_base_url": None,
+            "used_fallback": False,
+        }
+        with patch(
+            "hermes_cli.models.fetch_api_models",
+            return_value=self._GEMINI_API_RESPONSE,
+        ), patch(
+            "hermes_cli.models.probe_api_models", return_value=probe_payload
+        ):
+            return validate_requested_model(
+                model,
+                "gemini",
+                api_key="fake-gemini-key",
+                base_url="https://generativelanguage.googleapis.com/v1beta/openai",
+            )
+
+    def test_bare_id_accepted_despite_models_prefix_from_api(self):
+        """Reporter's exact scenario: ``gemini-2.5-flash`` must match the
+        ``models/gemini-2.5-flash`` entry returned by the Gemini API."""
+        result = self._validate("gemini-2.5-flash")
+        assert result["accepted"] is True
+        assert result["recognized"] is True
+        assert result["message"] is None
+
+    def test_all_curated_gemini_ids_resolve(self):
+        for model in (
+            "gemini-2.5-pro",
+            "gemini-2.5-flash",
+            "gemini-2.5-flash-lite",
+            "gemini-3-flash-preview",
+        ):
+            result = self._validate(model)
+            assert result["accepted"] is True, f"{model} should resolve after prefix strip"
+            assert result["recognized"] is True
+
+    def test_unknown_gemini_id_surfaces_bare_id_suggestions(self):
+        """The prefix-strip fix must not accidentally route unknown Gemini
+        models into the generic "couldn't reach API" branch, and the
+        suggestions list must surface the **bare** post-strip IDs —
+        never the raw ``models/…`` strings, which a user couldn't type
+        into the picker.
+
+        Uses a deliberately close-but-not-exact input
+        (``gemini-2.5-flash-nano``) that reliably generates
+        suggestions at cutoff=0.5 but stays below the auto-correct
+        threshold at cutoff=0.9.
+        """
+        result = self._validate("gemini-2.5-flash-nano")
+        assert result["accepted"] is False
+        assert "Similar models" in (result["message"] or ""), (
+            f"Expected suggestions in message: {result['message']!r}"
+        )
+        # The critical invariant: no ``models/`` leak in the suggestions
+        # text, even though the upstream API returned prefixed IDs.
+        assert "models/" not in (result["message"] or "")
+        # And a known bare ID must show up in the suggestions list.
+        assert "gemini-2.5-flash" in (result["message"] or "")
+
+    def test_prefix_strip_limited_to_gemini_provider(self):
+        """Canary: the strip only applies when ``normalized == "gemini"``.
+        Other providers that happen to return ``models/``-prefixed IDs
+        (shouldn't happen in practice, but defend-in-depth) keep the
+        prefix and therefore still mismatch — user sees the normal
+        "not found in listing" rejection, not an accidental accept."""
+        api_list = ["models/foo", "models/bar"]
+        probe_payload = {
+            "models": api_list,
+            "probed_url": "https://example.com/v1/models",
+            "resolved_base_url": "https://example.com/v1",
+            "suggested_base_url": None,
+            "used_fallback": False,
+        }
+        with patch("hermes_cli.models.fetch_api_models", return_value=api_list), \
+             patch("hermes_cli.models.probe_api_models", return_value=probe_payload):
+            result = validate_requested_model(
+                "foo",
+                "custom",
+                api_key="fake",
+                base_url="https://example.com/v1",
+            )
+        # "foo" must NOT match "models/foo" under a non-gemini provider;
+        # the strip is gated on normalized == "gemini".
+        assert result["accepted"] is False
+
+
+class TestValidateAnthropicNoModelsEndpoint:
+    """The generic probe fails for Anthropic's native API.  Fall back to
+    the curated catalog so ``/model`` switches still work."""
+
+    _ANTHROPIC_CATALOG = [
+        "claude-opus-4-7",
+        "claude-opus-4-6-20250930",
+        "claude-sonnet-4-6",
+        "claude-sonnet-4-5-20250929",
+        "claude-haiku-4-5",
+    ]
+
+    def _validate_no_api(self, model, catalog=None):
+        """Call validate_requested_model with /models returning None
+        (the simulated Anthropic auth-header mismatch) and the static
+        ``_PROVIDER_MODELS["anthropic"]`` overridden to our fixture.
+
+        Patches ``_PROVIDER_MODELS`` rather than ``provider_model_ids``
+        because the fallback deliberately reads the static catalog
+        directly — no extra network call on the failure path."""
+        import hermes_cli.models as _hm
+        probe_payload = {
+            "models": None,
+            "probed_url": "https://api.anthropic.com/v1/models",
+            "resolved_base_url": "https://api.anthropic.com",
+            "suggested_base_url": None,
+            "used_fallback": False,
+        }
+        patched_catalog = self._ANTHROPIC_CATALOG if catalog is None else catalog
+        patched_providers = {
+            **_hm._PROVIDER_MODELS,
+            "anthropic": patched_catalog,
+        }
+        with patch("hermes_cli.models.fetch_api_models", return_value=None), \
+             patch("hermes_cli.models.probe_api_models", return_value=probe_payload), \
+             patch.dict(_hm._PROVIDER_MODELS, patched_providers, clear=False):
+            return validate_requested_model(
+                model,
+                "anthropic",
+                api_key="fake-anthropic-key",
+                base_url="https://api.anthropic.com",
+            )
+
+    def test_curated_claude_model_accepted(self):
+        """Reporter's scenario: ``claude-opus-4-7`` in the catalog is
+        accepted even when the API probe fails silently."""
+        result = self._validate_no_api("claude-opus-4-7")
+        assert result["accepted"] is True
+        assert result["persist"] is True
+        assert result["recognized"] is True
+        assert result["message"] is None
+
+    def test_all_tiers_resolve(self):
+        for model in (
+            "claude-opus-4-7",
+            "claude-sonnet-4-6",
+            "claude-haiku-4-5",
+        ):
+            result = self._validate_no_api(model)
+            assert result["accepted"] is True, (
+                f"{model} should be accepted via Anthropic catalog fall-through"
+            )
+            assert result["recognized"] is True
+
+    def test_unknown_model_accepted_with_warning(self):
+        """Future Anthropic models the catalog doesn't list yet still
+        proceed (users shouldn't have to wait for a catalog bump to try
+        a newly-released model), but with a warning."""
+        result = self._validate_no_api("claude-opus-4-8-future")
+        assert result["accepted"] is True
+        assert result["persist"] is True
+        assert result["recognized"] is False
+        assert "Anthropic catalog" in result["message"]
+
+    def test_empty_catalog_falls_through_to_generic_reject(self):
+        """Defensive: if ``provider_model_ids`` returns an empty list
+        (catalog module import failure), we don't silently accept unknown
+        models — the user sees the original "couldn't reach API" error."""
+        result = self._validate_no_api("claude-opus-4-7", catalog=[])
+        assert result["accepted"] is False
+
+    def test_unknown_model_includes_close_match_suggestion(self):
+        """Typo should surface a close-match suggestion in the warning
+        message — not just an accept without context.  Uses an input
+        that's close to a catalog entry (cutoff=0.4) but not an exact
+        match, so ``get_close_matches`` reliably fires."""
+        result = self._validate_no_api("claude-opus-4-7-preview")
+        assert result["accepted"] is True
+        assert result["recognized"] is False
+        assert "Similar models" in (result["message"] or ""), (
+            f"Expected close-match suggestions in message: {result['message']!r}"
+        )
+        # The exact closest match in the catalog should surface.
+        assert "claude-opus-4-7" in (result["message"] or "")
+
+    # --- preserved-behaviour canaries -------------------------------------
+
+    def test_other_providers_still_hard_reject_when_api_unreachable(self):
+        """Narrow-scope canary: the anthropic catalog fall-through must
+        fire only for ``anthropic``.  Other providers (e.g. zai) still
+        hit the generic reject when their /models endpoint is
+        unreachable."""
+        probe_payload = {
+            "models": None,
+            "probed_url": "https://example.com/v1/models",
+            "resolved_base_url": "https://example.com/v1",
+            "suggested_base_url": None,
+            "used_fallback": False,
+        }
+        with patch("hermes_cli.models.fetch_api_models", return_value=None), \
+             patch("hermes_cli.models.probe_api_models", return_value=probe_payload):
+            result = validate_requested_model(
+                "glm-5",
+                "zai",
+                api_key="fake",
+                base_url="https://example.com/v1",
+            )
+        assert result["accepted"] is False
