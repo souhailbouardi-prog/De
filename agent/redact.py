@@ -54,6 +54,15 @@ _PREFIX_PATTERNS = [
     r"hsk-[A-Za-z0-9]{10,}",            # Hindsight API key
     r"mem0_[A-Za-z0-9]{10,}",           # Mem0 Platform API key
     r"brv_[A-Za-z0-9]{10,}",            # ByteRover API key
+    r"AZURE_[A-Za-z0-9]{10,}",          # Azure API key
+    r"ASIA[A-Z0-9]{16}",                # AWS Access Key ID (Asia region)
+    r"AROA[A-Z0-9]{16}",                # AWS IAM Role ARN
+    r"AC[A-Z0-9]{24}",                  # Twilio Account SID
+    r"SK[A-Z0-9]{32}",                  # Twilio Auth Token
+    r"LI[A-Z0-9]{16}",                  # LinkedIn API key
+    r"EAAC[A-Za-z0-9]{10,}",            # Facebook/Instagram API token
+    r"Bearer [A-Za-z0-9_-]{10,}",       # Bearer token
+    r"oauth_token=[A-Za-z0-9_-]{10,}",  # OAuth token in URL
 ]
 
 # ENV assignment patterns: KEY=value where KEY contains a secret-like name

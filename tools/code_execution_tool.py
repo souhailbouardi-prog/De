@@ -1280,8 +1280,15 @@ def _kill_process_group(proc, escalate: bool = False):
         if _IS_WINDOWS:
             proc.terminate()
         else:
-            os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
-    except (ProcessLookupError, PermissionError) as e:
+            try:
+                os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+            except (ProcessLookupError, PermissionError, OSError) as e:
+                logger.debug("Could not kill process group: %s", e, exc_info=True)
+                try:
+                    proc.kill()
+                except Exception as e2:
+                    logger.debug("Could not kill process: %s", e2, exc_info=True)
+    except (ProcessLookupError, PermissionError, OSError) as e:
         logger.debug("Could not kill process group: %s", e, exc_info=True)
         try:
             proc.kill()
@@ -1297,8 +1304,15 @@ def _kill_process_group(proc, escalate: bool = False):
                 if _IS_WINDOWS:
                     proc.kill()
                 else:
-                    os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-            except (ProcessLookupError, PermissionError) as e:
+                    try:
+                        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                    except (ProcessLookupError, PermissionError, OSError) as e:
+                        logger.debug("Could not kill process group with SIGKILL: %s", e, exc_info=True)
+                        try:
+                            proc.kill()
+                        except Exception as e2:
+                            logger.debug("Could not kill process: %s", e2, exc_info=True)
+            except (ProcessLookupError, PermissionError, OSError) as e:
                 logger.debug("Could not kill process group with SIGKILL: %s", e, exc_info=True)
                 try:
                     proc.kill()

@@ -102,3 +102,15 @@ def now() -> datetime:
     return datetime.now().astimezone()
 
 
+def reset_cache() -> None:
+    """
+    Reset the timezone cache, forcing re-resolution on the next call to get_timezone().
+
+    Call this after changing the timezone configuration to ensure the changes are picked up.
+    """
+    global _cached_tz, _cached_tz_name, _cache_resolved
+    _cached_tz = None
+    _cached_tz_name = None
+    _cache_resolved = False
+
+

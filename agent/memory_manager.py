@@ -90,6 +90,7 @@ class MemoryManager:
     def __init__(self) -> None:
         self._providers: List[MemoryProvider] = []
         self._tool_to_provider: Dict[str, MemoryProvider] = {}
+        self._provider_map: Dict[str, MemoryProvider] = {}  # Name to provider mapping for fast lookup
         self._has_external: bool = False  # True once a non-builtin provider is added
 
     # -- Registration --------------------------------------------------------
@@ -119,6 +120,7 @@ class MemoryManager:
             self._has_external = True
 
         self._providers.append(provider)
+        self._provider_map[provider.name] = provider
 
         # Index tool names → provider for routing
         for schema in provider.get_tool_schemas():
@@ -147,10 +149,7 @@ class MemoryManager:
 
     def get_provider(self, name: str) -> Optional[MemoryProvider]:
         """Get a provider by name, or None if not registered."""
-        for p in self._providers:
-            if p.name == name:
-                return p
-        return None
+        return self._provider_map.get(name)
 
     # -- System prompt -------------------------------------------------------
 

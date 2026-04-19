@@ -435,11 +435,14 @@ def handle_function_call(
         function_name: Name of the function to call.
         function_args: Arguments for the function.
         task_id: Unique identifier for terminal/browser session isolation.
+        tool_call_id: Unique identifier for the tool call (for tracking purposes).
+        session_id: Unique identifier for the session (for tracking purposes).
         user_task: The user's original task (for browser_snapshot context).
         enabled_tools: Tool names enabled for this session.  When provided,
                        execute_code uses this list to determine which sandbox
                        tools to generate.  Falls back to the process-global
                        ``_last_resolved_tool_names`` for backward compat.
+        skip_pre_tool_call_hook: Whether to skip the pre-tool call hook (to avoid double-firing).
 
     Returns:
         Function result as a JSON string.

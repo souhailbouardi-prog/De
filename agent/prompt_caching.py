@@ -33,9 +33,9 @@ def _apply_cache_marker(msg: dict, cache_marker: dict, native_anthropic: bool = 
         return
 
     if isinstance(content, list) and content:
-        last = content[-1]
-        if isinstance(last, dict):
-            last["cache_control"] = cache_marker
+        for item in content:
+            if isinstance(item, dict):
+                item["cache_control"] = cache_marker
 
 
 def apply_anthropic_cache_control(

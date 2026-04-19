@@ -907,7 +907,10 @@ def _convert_content_part_to_anthropic(part: Any) -> Optional[Dict[str, Any]]:
         block: Dict[str, Any] = {"type": "text", "text": part.get("text", "")}
     elif ptype in {"image_url", "input_image"}:
         image_value = part.get("image_url", {})
-        url = image_value.get("url", "") if isinstance(image_value, dict) else str(image_value or "")
+        if isinstance(image_value, dict):
+            url = image_value.get("url", "")
+        else:
+            url = str(image_value or "")
         block = {"type": "image", "source": _image_source_from_openai_url(url)}
     else:
         block = dict(part)

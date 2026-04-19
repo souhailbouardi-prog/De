@@ -513,21 +513,27 @@ def _map_normalized_positions(original: str, normalized: str,
             norm_idx += 1
         elif original[orig_idx] in ' \t' and normalized[norm_idx] == ' ':
             # Original has space/tab, normalized collapsed to space
+            # Process all consecutive whitespace in original
             orig_to_norm.append(norm_idx)
             orig_idx += 1
-            # Don't advance norm_idx yet - wait until all whitespace consumed
-            if orig_idx < len(original) and original[orig_idx] not in ' \t':
-                norm_idx += 1
+            # Continue processing all consecutive whitespace
+            while orig_idx < len(original) and original[orig_idx] in ' \t':
+                orig_to_norm.append(norm_idx)
+                orig_idx += 1
+            # Now advance the normalized index
+            norm_idx += 1
         elif original[orig_idx] in ' \t':
-            # Extra whitespace in original
+            # Extra whitespace in original that isn't matched in normalized
             orig_to_norm.append(norm_idx)
             orig_idx += 1
         else:
             # Mismatch - shouldn't happen with our normalization
             orig_to_norm.append(norm_idx)
             orig_idx += 1
+            norm_idx += 1
     
-    # Fill remaining
+    # After processing all characters in normalized, any remaining characters
+    # in original (must be whitespace) should map to len(normalized)
     while orig_idx < len(original):
         orig_to_norm.append(len(normalized))
         orig_idx += 1

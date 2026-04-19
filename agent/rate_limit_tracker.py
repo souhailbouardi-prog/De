@@ -138,8 +138,6 @@ def _fmt_count(n: int) -> str:
         return f"{n / 1_000_000:.1f}M"
     if n >= 10_000:
         return f"{n / 1_000:.1f}K"
-    if n >= 1_000:
-        return f"{n / 1_000:.1f}K"
     return str(n)
 
 

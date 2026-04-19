@@ -2003,13 +2003,19 @@ class AIAgent:
             # get_model_context_length() falls through to the 128K default,
             # ignoring the explicit config value.  Pass it as the highest-
             # priority hint so the configured value is always respected.
-            _aux_cfg = (self.config or {}).get("auxiliary", {}).get("compression", {})
-            _aux_context_config = _aux_cfg.get("context_length") if isinstance(_aux_cfg, dict) else None
-            if _aux_context_config is not None:
-                try:
-                    _aux_context_config = int(_aux_context_config)
-                except (TypeError, ValueError):
-                    _aux_context_config = None
+            _aux_context_config = None
+            try:
+                from hermes_cli.config import load_config as _load_config
+                _agent_cfg = _load_config()
+                _aux_cfg = _agent_cfg.get("auxiliary", {}).get("compression", {})
+                _aux_context_config = _aux_cfg.get("context_length") if isinstance(_aux_cfg, dict) else None
+                if _aux_context_config is not None:
+                    try:
+                        _aux_context_config = int(_aux_context_config)
+                    except (TypeError, ValueError):
+                        _aux_context_config = None
+            except Exception:
+                pass
 
             aux_context = get_model_context_length(
                 aux_model,
@@ -2612,12 +2618,7 @@ class AIAgent:
                 role = msg.get("role", "unknown")
                 content = msg.get("content")
                 tool_calls_data = None
-                if hasattr(msg, "tool_calls") and msg.tool_calls:
-                    tool_calls_data = [
-                        {"name": tc.function.name, "arguments": tc.function.arguments}
-                        for tc in msg.tool_calls
-                    ]
-                elif isinstance(msg.get("tool_calls"), list):
+                if isinstance(msg.get("tool_calls"), list):
                     tool_calls_data = msg["tool_calls"]
                 self._session_db.append_message(
                     session_id=self.session_id,

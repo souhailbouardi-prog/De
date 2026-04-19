@@ -476,14 +476,17 @@ def _iter_visible_entries(path: Path, cwd: Path, limit: int) -> list[Path]:
 
 def _rg_files(path: Path, cwd: Path, limit: int) -> list[Path] | None:
     try:
+        relative_path = path.relative_to(cwd)
+        # If path is the same as cwd, use "." instead of empty string
+        rg_path = str(relative_path) if relative_path else "."
         result = subprocess.run(
-            ["rg", "--files", str(path.relative_to(cwd))],
+            ["rg", "--files", rg_path],
             cwd=cwd,
             capture_output=True,
             text=True,
             timeout=10,
         )
-    except FileNotFoundError:
+    except (FileNotFoundError, ValueError):
         return None
     except subprocess.TimeoutExpired:
         return None

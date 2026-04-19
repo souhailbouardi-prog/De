@@ -19,7 +19,7 @@ _TITLE_PROMPT = (
 )
 
 
-def generate_title(user_message: str, assistant_response: str, timeout: float = 30.0) -> Optional[str]:
+def generate_title(user_message: str, assistant_response: str, timeout: float = 30.0, main_runtime: dict = None) -> Optional[str]:
     """Generate a session title from the first exchange.
 
     Uses the auxiliary LLM client (cheapest/fastest available model).
@@ -35,13 +35,16 @@ def generate_title(user_message: str, assistant_response: str, timeout: float = 
     ]
 
     try:
-        response = call_llm(
-            task="title_generation",
-            messages=messages,
-            max_tokens=30,
-            temperature=0.3,
-            timeout=timeout,
-        )
+        call_kwargs = {
+            "task": "title_generation",
+            "messages": messages,
+            "max_tokens": 30,
+            "temperature": 0.3,
+            "timeout": timeout,
+        }
+        if main_runtime:
+            call_kwargs["main_runtime"] = main_runtime
+        response = call_llm(**call_kwargs)
         title = (response.choices[0].message.content or "").strip()
         # Clean up: remove quotes, trailing punctuation, prefixes like "Title: "
         title = title.strip('"\'')
