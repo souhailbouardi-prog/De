@@ -34,6 +34,11 @@ from hermes_cli.auth import (
 
 logger = logging.getLogger(__name__)
 
+# Keep a local alias so credential_pool tests can monkeypatch the Codex CLI import
+# boundary directly on this module, even though the implementation now lives in
+# hermes_cli.auth.
+_import_codex_cli_tokens = auth_mod._import_codex_cli_tokens
+
 
 def _extract_codex_identity_from_claims(claims: Dict[str, Any]) -> Dict[str, str]:
     identity: Dict[str, str] = {}
