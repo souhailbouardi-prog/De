@@ -21,6 +21,7 @@ logger = logging.getLogger(__name__)
 _TELEGRAM_TOPIC_TARGET_RE = re.compile(r"^\s*(-?\d+)(?::(\d+))?\s*$")
 _FEISHU_TARGET_RE = re.compile(r"^\s*((?:oc|ou|on|chat|open)_[-A-Za-z0-9]+)(?::([-A-Za-z0-9_]+))?\s*$")
 _WEIXIN_TARGET_RE = re.compile(r"^\s*((?:wxid|gh|v\d+|wm|wb)_[A-Za-z0-9_-]+|[A-Za-z0-9._-]+@chatroom|filehelper)\s*$")
+_YUANBAO_TARGET_RE = re.compile(r"^\s*((?:direct|group):[A-Za-z0-9_=-]+)\s*$")
 # Discord snowflake IDs are numeric, same regex pattern as Telegram topic targets.
 _NUMERIC_TOPIC_RE = _TELEGRAM_TOPIC_TARGET_RE
 _IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
@@ -113,11 +114,11 @@ SEND_MESSAGE_SCHEMA = {
             },
             "target": {
                 "type": "string",
-                "description": "Delivery target. Format: 'platform' (uses home channel), 'platform:#channel-name', 'platform:chat_id', or 'platform:chat_id:thread_id' for Telegram topics and Discord threads. Examples: 'telegram', 'telegram:-1001234567890:17585', 'discord:999888777:555444333', 'discord:#bot-home', 'slack:#engineering', 'signal:+155****4567', 'matrix:!roomid:server.org', 'matrix:@user:server.org'"
+                "description": "Delivery target. Format: 'platform' (uses home channel), 'platform:#channel-name', 'platform:chat_id', or 'platform:chat_id:thread_id' for Telegram topics and Discord threads. Examples: 'telegram', 'telegram:-1001234567890:17585', 'discord:999888777:555444333', 'discord:#bot-home', 'slack:#engineering', 'signal:+155****4567', 'matrix:!roomid:server.org', 'matrix:@user:server.org', 'yuanbao:direct:<account_id>' (DM), 'yuanbao:group:<group_code>' (group chat)"
             },
             "message": {
                 "type": "string",
-                "description": "The message text to send"
+                "description": "The message text to send. To send an image or file, include MEDIA:<local_path> (e.g. 'MEDIA:/tmp/hermes/cache/img_xxx.jpg') in the message — the platform will deliver it as a native media attachment."
             }
         },
         "required": []
@@ -208,6 +209,7 @@ def _handle_send(args):
         "weixin": Platform.WEIXIN,
         "email": Platform.EMAIL,
         "sms": Platform.SMS,
+        "yuanbao": Platform.YUANBAO,
     }
     platform = platform_map.get(platform_name)
     if not platform:
@@ -241,6 +243,16 @@ def _handle_send(args):
     from gateway.platforms.base import BasePlatformAdapter
 
     media_files, cleaned_message = BasePlatformAdapter.extract_media(message)
+
+    # Fallback: if no MEDIA: tags found, detect bare local file paths
+    # (e.g. /path/to/img.jpg) so the agent doesn't need to remember the
+    # MEDIA: prefix — any referenced local image/video is auto-attached.
+    if not media_files:
+        local_paths, cleaned_message = BasePlatformAdapter.extract_local_files(
+            cleaned_message
+        )
+        media_files = [(p, False) for p in local_paths]
+
     mirror_text = cleaned_message.strip() or _describe_media_for_mirror(media_files)
 
     used_home_channel = False
@@ -315,6 +327,10 @@ def _parse_target_ref(platform_name: str, target_ref: str):
             return match.group(1), match.group(2), True
     if platform_name == "weixin":
         match = _WEIXIN_TARGET_RE.fullmatch(target_ref)
+        if match:
+            return match.group(1), None, True
+    if platform_name == "yuanbao":
+        match = _YUANBAO_TARGET_RE.fullmatch(target_ref)
         if match:
             return match.group(1), None, True
     if target_ref.lstrip("-").isdigit():
@@ -500,11 +516,15 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             last_result = result
         return last_result
 
+    # --- Yuanbao: route through running adapter (supports text + image + file) ---
+    if platform == Platform.YUANBAO:
+        return await _send_yuanbao(chat_id, message, media_files=media_files)
+
     # --- Non-Telegram/Discord platforms ---
     if media_files and not message.strip():
         return {
             "error": (
-                f"send_message MEDIA delivery is currently only supported for telegram, discord, matrix, and weixin; "
+                f"send_message MEDIA delivery is currently only supported for telegram, discord, matrix, weixin, and yuanbao; "
                 f"target {platform.value} had only media attachments"
             )
         }
@@ -512,7 +532,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     if media_files:
         warning = (
             f"MEDIA attachments were omitted for {platform.value}; "
-            "native send_message media delivery is currently only supported for telegram, discord, matrix, and weixin"
+            "native send_message media delivery is currently only supported for telegram, discord, matrix, weixin, and yuanbao"
         )
 
     last_result = None
@@ -1398,6 +1418,9 @@ async def _send_feishu(pconfig, chat_id, message, media_files=None, thread_id=No
 
 def _check_send_message():
     """Gate send_message on gateway running (always available on messaging platforms)."""
+    # Fast path: if we're inside the gateway process, always available.
+    if os.getenv("HERMES_GATEWAY_SESSION"):
+        return True
     from gateway.session_context import get_session_env
     platform = get_session_env("HERMES_SESSION_PLATFORM", "")
     if platform and platform != "local":
@@ -1459,6 +1482,35 @@ async def _send_qqbot(pconfig, chat_id, message):
                 return _error(f"QQBot send failed: {resp.status_code} {resp.text}")
     except Exception as e:
         return _error(f"QQBot send failed: {e}")
+
+
+async def _send_yuanbao(chat_id, message, media_files=None):
+    """Send via Yuanbao using the running gateway adapter's WebSocket connection.
+
+    Yuanbao uses a persistent WebSocket — unlike HTTP-based platforms, we
+    cannot create a throwaway client.  We obtain the running singleton from
+    the adapter module itself (``get_active_adapter``).
+
+    chat_id format:
+      - Group: "group:<group_code>"
+      - DM:    "direct:<account_id>" or just "<account_id>"
+    """
+    try:
+        from gateway.platforms.yuanbao import get_active_adapter, send_yuanbao_direct
+    except ImportError:
+        return _error("Yuanbao adapter module not available.")
+
+    adapter = get_active_adapter()
+    if adapter is None:
+        return _error(
+            "Yuanbao adapter is not running. "
+            "Start the gateway with yuanbao platform enabled first."
+        )
+
+    try:
+        return await send_yuanbao_direct(adapter, chat_id, message, media_files=media_files)
+    except Exception as e:
+        return _error(f"Yuanbao send failed: {e}")
 
 
 # --- Registry ---

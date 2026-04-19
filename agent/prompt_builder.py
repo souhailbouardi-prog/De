@@ -384,6 +384,18 @@ PLATFORM_HINTS = {
         "your response. Images are sent as native photos, and other files arrive as downloadable "
         "documents."
     ),
+    "yuanbao": (
+        "You are on Yuanbao (腾讯元宝), a Chinese AI assistant platform. "
+        "Markdown formatting is supported (code blocks, tables, bold/italic). "
+        "You CAN send media files natively — to deliver a file to the user, include "
+        "MEDIA:/absolute/path/to/file in your response. The file will be sent as a native "
+        "Yuanbao attachment: images (.jpg, .png, .webp, .gif) are sent as photos, "
+        "and other files (.pdf, .docx, .txt, .zip, etc.) arrive as downloadable documents "
+        "(max 50 MB). You can also include image URLs in markdown format ![alt](url) and "
+        "they will be downloaded and sent as native photos. "
+        "Do NOT tell the user you lack file-sending capability — use MEDIA: syntax "
+        "whenever a file delivery is appropriate."
+    ),
 }
 
 # ---------------------------------------------------------------------------
@@ -402,6 +414,46 @@ WSL_ENVIRONMENT_HINT = (
     "to the /mnt/c/ equivalent. You can list /mnt/c/Users/ to discover "
     "the Windows username if needed."
 )
+
+
+def detect_user_language_hint(messages: list, platform: str) -> str:
+    """Detect the dominant language from recent user messages and return a hint.
+
+    Only active for the ``yuanbao`` platform.  Scans the last few user
+    messages for CJK character density and returns a short instruction
+    asking the model to reply in the detected language.  Returns an empty
+    string when detection is inconclusive or the platform is not yuanbao.
+    """
+    if (platform or "").lower().strip() != "yuanbao":
+        return ""
+
+    # Collect the last N user messages (text only)
+    user_texts: list[str] = []
+    for msg in reversed(messages):
+        if msg.get("role") != "user":
+            continue
+        content = msg.get("content")
+        if isinstance(content, str) and content.strip():
+            user_texts.append(content.strip())
+        if len(user_texts) >= 5:
+            break
+
+    if not user_texts:
+        return ""
+
+    combined = " ".join(user_texts)
+    cjk_count = sum(1 for c in combined if '\u4e00' <= c <= '\u9fff')
+    total_alpha = sum(1 for c in combined if c.isalpha())
+
+    if total_alpha == 0:
+        return ""
+
+    if cjk_count / total_alpha > 0.3:
+        return "[Reminder: The user is writing in Chinese. You must reply in Chinese (简体中文).]"
+
+    # If the user is clearly writing in a non-Chinese language, don't
+    # force Chinese — let the platform hint's "same language" rule apply.
+    return ""
 
 
 def build_environment_hints() -> str:

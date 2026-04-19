@@ -1994,6 +1994,12 @@ def _setup_feishu():
     _gateway_setup_feishu()
 
 
+def _setup_yuanbao():
+    """Configure Yuanbao via gateway setup."""
+    from hermes_cli.gateway import _setup_yuanbao as _gateway_setup_yuanbao
+    _gateway_setup_yuanbao()
+
+
 def _setup_wecom():
     """Configure WeCom (Enterprise WeChat) via gateway setup."""
     from hermes_cli.gateway import _setup_wecom as _gateway_setup_wecom
@@ -2138,6 +2144,7 @@ _GATEWAY_PLATFORMS = [
     ("WhatsApp", "WHATSAPP_ENABLED", _setup_whatsapp),
     ("DingTalk", "DINGTALK_CLIENT_ID", _setup_dingtalk),
     ("Feishu / Lark", "FEISHU_APP_ID", _setup_feishu),
+    ("Yuanbao", "YUANBAO_APP_ID", _setup_yuanbao),
     ("WeCom (Enterprise WeChat)", "WECOM_BOT_ID", _setup_wecom),
     ("WeCom Callback (Self-Built App)", "WECOM_CALLBACK_CORP_ID", _setup_wecom_callback),
     ("Weixin (WeChat)", "WEIXIN_ACCOUNT_ID", _setup_weixin),
@@ -2426,6 +2433,8 @@ def _get_section_config_summary(config: dict, section_key: str) -> Optional[str]
             platforms.append("Weixin")
         if get_env_value("BLUEBUBBLES_SERVER_URL"):
             platforms.append("BlueBubbles")
+        if get_env_value("YUANBAO_APP_ID"):
+            platforms.append("Yuanbao")
         if get_env_value("WEBHOOK_ENABLED"):
             platforms.append("Webhooks")
         if platforms:

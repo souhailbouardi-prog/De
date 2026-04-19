@@ -67,6 +67,7 @@ class Platform(Enum):
     WEIXIN = "weixin"
     BLUEBUBBLES = "bluebubbles"
     QQBOT = "qqbot"
+    YUANBAO = "yuanbao"
 
 
 @dataclass
@@ -154,6 +155,18 @@ class PlatformConfig:
     # - "all": All chunks in multi-part replies thread to user's message
     reply_to_mode: str = "first"
     
+    # Yuanbao (元宝 IM Bot) platform-specific settings
+    yuanbao_app_id: Optional[str] = None          # App ID, used for sign-token API auth
+    yuanbao_app_secret: Optional[str] = None      # App Secret，用于 HMAC 签名
+    yuanbao_bot_id: Optional[str] = None          # Bot 账号 ID（可选，sign-token 接口会返回）
+    yuanbao_ws_url: Optional[str] = None           # WebSocket URL (e.g. wss://...)
+    yuanbao_api_domain: Optional[str] = None       # API domain (e.g. https://bot.yuanbao.tencent.com)
+    yuanbao_route_env: Optional[str] = None       # 内部路由环境标识（如测试/预发/生产）
+    yuanbao_dm_policy: Optional[str] = None       # DM 策略: open | allowlist | disabled
+    yuanbao_dm_allow_from: Optional[str] = None    # DM 白名单（逗号分隔 user_id）
+    yuanbao_group_policy: Optional[str] = None     # 群聊策略: open | allowlist | disabled
+    yuanbao_group_allow_from: Optional[str] = None # 群聊白名单（逗号分隔 group_code）
+
     # Platform-specific settings
     extra: Dict[str, Any] = field(default_factory=dict)
     
@@ -169,6 +182,26 @@ class PlatformConfig:
             result["api_key"] = self.api_key
         if self.home_channel:
             result["home_channel"] = self.home_channel.to_dict()
+        if self.yuanbao_app_id:
+            result["yuanbao_app_id"] = self.yuanbao_app_id
+        if self.yuanbao_app_secret:
+            result["yuanbao_app_secret"] = self.yuanbao_app_secret
+        if self.yuanbao_bot_id:
+            result["yuanbao_bot_id"] = self.yuanbao_bot_id
+        if self.yuanbao_ws_url:
+            result["yuanbao_ws_url"] = self.yuanbao_ws_url
+        if self.yuanbao_api_domain:
+            result["yuanbao_api_domain"] = self.yuanbao_api_domain
+        if self.yuanbao_route_env:
+            result["yuanbao_route_env"] = self.yuanbao_route_env
+        if self.yuanbao_dm_policy:
+            result["yuanbao_dm_policy"] = self.yuanbao_dm_policy
+        if self.yuanbao_dm_allow_from:
+            result["yuanbao_dm_allow_from"] = self.yuanbao_dm_allow_from
+        if self.yuanbao_group_policy:
+            result["yuanbao_group_policy"] = self.yuanbao_group_policy
+        if self.yuanbao_group_allow_from:
+            result["yuanbao_group_allow_from"] = self.yuanbao_group_allow_from
         return result
     
     @classmethod
@@ -184,6 +217,16 @@ class PlatformConfig:
             home_channel=home_channel,
             reply_to_mode=data.get("reply_to_mode", "first"),
             extra=data.get("extra", {}),
+            yuanbao_app_id=data.get("yuanbao_app_id"),
+            yuanbao_app_secret=data.get("yuanbao_app_secret"),
+            yuanbao_bot_id=data.get("yuanbao_bot_id"),
+            yuanbao_ws_url=data.get("yuanbao_ws_url"),
+            yuanbao_api_domain=data.get("yuanbao_api_domain"),
+            yuanbao_route_env=data.get("yuanbao_route_env"),
+            yuanbao_dm_policy=data.get("yuanbao_dm_policy"),
+            yuanbao_dm_allow_from=data.get("yuanbao_dm_allow_from"),
+            yuanbao_group_policy=data.get("yuanbao_group_policy"),
+            yuanbao_group_allow_from=data.get("yuanbao_group_allow_from"),
         )
 
 
@@ -313,6 +356,9 @@ class GatewayConfig:
                 connected.append(platform)
             # QQBot uses extra dict for app credentials
             elif platform == Platform.QQBOT and config.extra.get("app_id") and config.extra.get("client_secret"):
+                connected.append(platform)
+            # Yuanbao uses dedicated fields for app credentials
+            elif platform == Platform.YUANBAO and config.yuanbao_app_id and config.yuanbao_app_secret:
                 connected.append(platform)
             # DingTalk uses client_id/client_secret from config.extra or env vars
             elif platform == Platform.DINGTALK and (
@@ -669,11 +715,6 @@ def load_gateway_config() -> GatewayConfig:
                     if isinstance(frc, list):
                         frc = ",".join(str(v) for v in frc)
                     os.environ["TELEGRAM_FREE_RESPONSE_CHATS"] = str(frc)
-                ignored_threads = telegram_cfg.get("ignored_threads")
-                if ignored_threads is not None and not os.getenv("TELEGRAM_IGNORED_THREADS"):
-                    if isinstance(ignored_threads, list):
-                        ignored_threads = ",".join(str(v) for v in ignored_threads)
-                    os.environ["TELEGRAM_IGNORED_THREADS"] = str(ignored_threads)
                 if "reactions" in telegram_cfg and not os.getenv("TELEGRAM_REACTIONS"):
                     os.environ["TELEGRAM_REACTIONS"] = str(telegram_cfg["reactions"]).lower()
                 if "proxy_url" in telegram_cfg and not os.getenv("TELEGRAM_PROXY"):
@@ -688,6 +729,11 @@ def load_gateway_config() -> GatewayConfig:
                         extra = {}
                         plat_data["extra"] = extra
                     extra["disable_link_previews"] = telegram_cfg["disable_link_previews"]
+                ignored_threads = telegram_cfg.get("ignored_threads")
+                if ignored_threads is not None and not os.getenv("TELEGRAM_IGNORED_THREADS"):
+                    if isinstance(ignored_threads, list):
+                        ignored_threads = ",".join(str(v) for v in ignored_threads)
+                    os.environ["TELEGRAM_IGNORED_THREADS"] = str(ignored_threads)
 
             whatsapp_cfg = yaml_cfg.get("whatsapp", {})
             if isinstance(whatsapp_cfg, dict):
@@ -747,7 +793,6 @@ def load_gateway_config() -> GatewayConfig:
     # Override with environment variables
     _apply_env_overrides(config)
     
-    # --- Validate loaded values ---
     _validate_gateway_config(config)
 
     return config
@@ -759,6 +804,7 @@ def _validate_gateway_config(config: "GatewayConfig") -> None:
     Called by ``load_gateway_config()`` after all config sources are merged.
     Extracted as a separate function for testability.
     """
+    # --- Validate loaded values ---
     policy = config.default_reset_policy
 
     if not (0 <= policy.at_hour <= 23):
@@ -796,13 +842,10 @@ def _validate_gateway_config(config: "GatewayConfig") -> None:
             )
 
     # Reject known-weak placeholder tokens.
-    # Ported from openclaw/openclaw#64586: users who copy .env.example
-    # without changing placeholder values get a clear startup error instead
-    # of a confusing "auth failed" from the platform API.
     try:
         from hermes_cli.auth import has_usable_secret
     except ImportError:
-        has_usable_secret = None  # type: ignore[assignment]
+        has_usable_secret = None
 
     if has_usable_secret is not None:
         for platform, pconfig in config.platforms.items():
@@ -1130,23 +1173,6 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
                 name=os.getenv("WECOM_HOME_CHANNEL_NAME", "Home"),
             )
 
-    # WeCom callback mode (self-built apps)
-    wecom_callback_corp_id = os.getenv("WECOM_CALLBACK_CORP_ID")
-    wecom_callback_corp_secret = os.getenv("WECOM_CALLBACK_CORP_SECRET")
-    if wecom_callback_corp_id and wecom_callback_corp_secret:
-        if Platform.WECOM_CALLBACK not in config.platforms:
-            config.platforms[Platform.WECOM_CALLBACK] = PlatformConfig()
-        config.platforms[Platform.WECOM_CALLBACK].enabled = True
-        config.platforms[Platform.WECOM_CALLBACK].extra.update({
-            "corp_id": wecom_callback_corp_id,
-            "corp_secret": wecom_callback_corp_secret,
-            "agent_id": os.getenv("WECOM_CALLBACK_AGENT_ID", ""),
-            "token": os.getenv("WECOM_CALLBACK_TOKEN", ""),
-            "encoding_aes_key": os.getenv("WECOM_CALLBACK_ENCODING_AES_KEY", ""),
-            "host": os.getenv("WECOM_CALLBACK_HOST", "0.0.0.0"),
-            "port": int(os.getenv("WECOM_CALLBACK_PORT", "8645")),
-        })
-
     # Weixin (personal WeChat via iLink Bot API)
     weixin_token = os.getenv("WEIXIN_TOKEN")
     weixin_account_id = os.getenv("WEIXIN_ACCOUNT_ID")
@@ -1211,6 +1237,23 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             name=os.getenv("BLUEBUBBLES_HOME_CHANNEL_NAME", "Home"),
         )
 
+    # WeCom callback mode (self-built apps)
+    wecom_callback_corp_id = os.getenv("WECOM_CALLBACK_CORP_ID")
+    wecom_callback_corp_secret = os.getenv("WECOM_CALLBACK_CORP_SECRET")
+    if wecom_callback_corp_id and wecom_callback_corp_secret:
+        if Platform.WECOM_CALLBACK not in config.platforms:
+            config.platforms[Platform.WECOM_CALLBACK] = PlatformConfig()
+        config.platforms[Platform.WECOM_CALLBACK].enabled = True
+        config.platforms[Platform.WECOM_CALLBACK].extra.update({
+            "corp_id": wecom_callback_corp_id,
+            "corp_secret": wecom_callback_corp_secret,
+            "agent_id": os.getenv("WECOM_CALLBACK_AGENT_ID", ""),
+            "token": os.getenv("WECOM_CALLBACK_TOKEN", ""),
+            "encoding_aes_key": os.getenv("WECOM_CALLBACK_ENCODING_AES_KEY", ""),
+            "host": os.getenv("WECOM_CALLBACK_HOST", "0.0.0.0"),
+            "port": int(os.getenv("WECOM_CALLBACK_PORT", "8645")),
+        })
+
     # QQ (Official Bot API v2)
     qq_app_id = os.getenv("QQ_APP_ID")
     qq_client_secret = os.getenv("QQ_CLIENT_SECRET")
@@ -1249,6 +1292,47 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
                 name=os.getenv("QQBOT_HOME_CHANNEL_NAME") or os.getenv(qq_home_name_env, "Home"),
             )
 
+    # Yuanbao — YUANBAO_APP_ID preferred
+    yuanbao_app_id = os.getenv("YUANBAO_APP_ID") or os.getenv("YUANBAO_APP_KEY")
+    yuanbao_app_secret = os.getenv("YUANBAO_APP_SECRET")
+    if yuanbao_app_id and yuanbao_app_secret:
+        if Platform.YUANBAO not in config.platforms:
+            config.platforms[Platform.YUANBAO] = PlatformConfig()
+        config.platforms[Platform.YUANBAO].enabled = True
+        config.platforms[Platform.YUANBAO].yuanbao_app_id = yuanbao_app_id
+        config.platforms[Platform.YUANBAO].yuanbao_app_secret = yuanbao_app_secret
+        yuanbao_bot_id = os.getenv("YUANBAO_BOT_ID")
+        if yuanbao_bot_id:
+            config.platforms[Platform.YUANBAO].yuanbao_bot_id = yuanbao_bot_id
+        yuanbao_ws_url = os.getenv("YUANBAO_WS_URL")
+        if yuanbao_ws_url:
+            config.platforms[Platform.YUANBAO].yuanbao_ws_url = yuanbao_ws_url
+        yuanbao_api_domain = os.getenv("YUANBAO_API_DOMAIN")
+        if yuanbao_api_domain:
+            config.platforms[Platform.YUANBAO].yuanbao_api_domain = yuanbao_api_domain
+        yuanbao_route_env = os.getenv("YUANBAO_ROUTE_ENV")
+        if yuanbao_route_env:
+            config.platforms[Platform.YUANBAO].yuanbao_route_env = yuanbao_route_env
+        yuanbao_home = os.getenv("YUANBAO_HOME_CHANNEL")
+        if yuanbao_home:
+            config.platforms[Platform.YUANBAO].home_channel = HomeChannel(
+                platform=Platform.YUANBAO,
+                chat_id=yuanbao_home,
+                name=os.getenv("YUANBAO_HOME_CHANNEL_NAME", "Home"),
+            )
+        yuanbao_dm_policy = os.getenv("YUANBAO_DM_POLICY")
+        if yuanbao_dm_policy:
+            config.platforms[Platform.YUANBAO].yuanbao_dm_policy = yuanbao_dm_policy.strip().lower()
+        yuanbao_dm_allow_from = os.getenv("YUANBAO_DM_ALLOW_FROM")
+        if yuanbao_dm_allow_from:
+            config.platforms[Platform.YUANBAO].yuanbao_dm_allow_from = yuanbao_dm_allow_from
+        yuanbao_group_policy = os.getenv("YUANBAO_GROUP_POLICY")
+        if yuanbao_group_policy:
+            config.platforms[Platform.YUANBAO].yuanbao_group_policy = yuanbao_group_policy.strip().lower()
+        yuanbao_group_allow_from = os.getenv("YUANBAO_GROUP_ALLOW_FROM")
+        if yuanbao_group_allow_from:
+            config.platforms[Platform.YUANBAO].yuanbao_group_allow_from = yuanbao_group_allow_from
+
     # Session settings
     idle_minutes = os.getenv("SESSION_IDLE_MINUTES")
     if idle_minutes:
@@ -1263,3 +1347,30 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             config.default_reset_policy.at_hour = int(reset_hour)
         except ValueError:
             pass
+
+
+# 已知的占位符 token，不应用于实际连接
+_PLACEHOLDER_TOKENS = frozenset({
+    "***",
+    "changeme",
+    "your_api_key",
+    "placeholder",
+    "your_token_here",
+    "insert_token_here",
+})
+
+
+def _validate_gateway_config(config: GatewayConfig) -> None:
+    """验证网关配置，禁用使用占位符 token 的平台。"""
+    for platform, pconfig in config.platforms.items():
+        if not pconfig.enabled:
+            continue
+        token = (pconfig.token or "").strip()
+        if token and token.lower() in _PLACEHOLDER_TOKENS:
+            logger.error(
+                "Platform %s has a placeholder token ('%s') — disabling. "
+                "Replace it with a real token in your .env or config.yaml.",
+                platform.value,
+                token,
+            )
+            pconfig.enabled = False

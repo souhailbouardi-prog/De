@@ -201,6 +201,12 @@ TOOLSETS = {
         "includes": []
     },
 
+    "yuanbao": {
+        "description": "Yuanbao platform tools - group info, member queries, DM",
+        "tools": ["yb_query_group_info", "yb_query_group_members", "yb_send_dm"],
+        "includes": []
+    },
+
     "feishu_doc": {
         "description": "Read Feishu/Lark document content",
         "tools": ["feishu_doc_read"],
@@ -374,21 +380,20 @@ TOOLSETS = {
         "includes": []
     },
 
-    "hermes-qqbot": {
-        "description": "QQBot toolset - QQ messaging via Official Bot API v2 (full access)",
-        "tools": _HERMES_CORE_TOOLS,
-        "includes": []
-    },
-
     "hermes-wecom": {
         "description": "WeCom bot toolset - enterprise WeChat messaging (full access)",
         "tools": _HERMES_CORE_TOOLS,
         "includes": []
     },
 
-    "hermes-wecom-callback": {
-        "description": "WeCom callback toolset - enterprise self-built app messaging (full access)",
-        "tools": _HERMES_CORE_TOOLS,
+    "hermes-yuanbao": {
+        "description": "Yuanbao Bot 元宝消息平台工具集 - 群信息、成员查询、私聊",
+        "tools": _HERMES_CORE_TOOLS + [
+            "yb_query_group_info",
+            "yb_query_group_members",
+            "yb_send_dm",
+        ],
+        "module": "tools.yuanbao_tools",
         "includes": []
     },
 
@@ -407,7 +412,7 @@ TOOLSETS = {
     "hermes-gateway": {
         "description": "Gateway toolset - union of all messaging platform tools",
         "tools": [],
-        "includes": ["hermes-telegram", "hermes-discord", "hermes-whatsapp", "hermes-slack", "hermes-signal", "hermes-bluebubbles", "hermes-homeassistant", "hermes-email", "hermes-sms", "hermes-mattermost", "hermes-matrix", "hermes-dingtalk", "hermes-feishu", "hermes-wecom", "hermes-wecom-callback", "hermes-weixin", "hermes-qqbot", "hermes-webhook"]
+        "includes": ["hermes-telegram", "hermes-discord", "hermes-whatsapp", "hermes-slack", "hermes-signal", "hermes-bluebubbles", "hermes-homeassistant", "hermes-email", "hermes-sms", "hermes-mattermost", "hermes-matrix", "hermes-dingtalk", "hermes-feishu", "hermes-wecom", "hermes-weixin", "hermes-webhook", "hermes-yuanbao"]
     }
 }
 
@@ -540,9 +545,9 @@ def _get_plugin_toolset_names() -> Set[str]:
     try:
         from tools.registry import registry
         return {
-            toolset_name
-            for toolset_name in registry.get_registered_toolset_names()
-            if toolset_name not in TOOLSETS
+            entry.toolset
+            for entry in registry._tools.values()
+            if entry.toolset not in TOOLSETS
         }
     except Exception:
         return set()
