@@ -317,10 +317,12 @@ TOOL_CATEGORIES = {
             },
             {
                 "name": "Firecrawl",
-                "badge": "paid",
-                "tag": "Cloud browser with remote execution",
+                "badge": "paid / self-hosted",
+                "tag": "Cloud browser or self-hosted Firecrawl browser sessions",
                 "env_vars": [
-                    {"key": "FIRECRAWL_API_KEY", "prompt": "Firecrawl API key", "url": "https://firecrawl.dev"},
+                    {"key": "FIRECRAWL_API_KEY", "prompt": "Firecrawl API key (optional for unauthenticated self-hosted)", "url": "https://firecrawl.dev"},
+                    {"key": "FIRECRAWL_API_URL", "prompt": "Firecrawl API URL (optional override, e.g. http://localhost:3002)"},
+                    {"key": "FIRECRAWL_BROWSER_TTL", "prompt": "Firecrawl browser session TTL in seconds (optional, default 300)"},
                 ],
                 "browser_provider": "firecrawl",
                 "post_setup": "agent_browser",

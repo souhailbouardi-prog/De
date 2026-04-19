@@ -11,7 +11,7 @@ Usage:
     python test_web_tools.py --verbose    # Show detailed output
 
 Requirements:
-    - PARALLEL_API_KEY or FIRECRAWL_API_KEY environment variable must be set
+    - PARALLEL_API_KEY or FIRECRAWL_API_KEY / FIRECRAWL_API_URL environment variable must be set
     - An auxiliary LLM provider (OPENROUTER_API_KEY or Nous Portal auth) (optional, for LLM tests)
 """
 
@@ -122,13 +122,17 @@ class WebToolsTester:
         """Test environment setup and API keys"""
         print_section("Environment Check")
         
-        # Check web backend API key (Parallel or Firecrawl)
+        # Check web backend config (Parallel, Firecrawl cloud, or self-hosted Firecrawl)
         if not check_web_api_key():
-            self.log_result("Web Backend API Key", "failed", "PARALLEL_API_KEY or FIRECRAWL_API_KEY not set")
+            self.log_result(
+                "Web Backend Availability",
+                "failed",
+                "PARALLEL_API_KEY, FIRECRAWL_API_KEY, or FIRECRAWL_API_URL not set",
+            )
             return False
         else:
             backend = _get_backend()
-            self.log_result("Web Backend API Key", "passed", f"Using {backend} backend")
+            self.log_result("Web Backend Availability", "passed", f"Using {backend} backend")
         
         # Check auxiliary LLM provider (optional)
         if not check_auxiliary_model():
@@ -575,7 +579,7 @@ class WebToolsTester:
             "results": self.test_results,
             "environment": {
                 "web_backend": _get_backend() if check_web_api_key() else None,
-                "firecrawl_api_key": check_firecrawl_api_key(),
+                "firecrawl_available": check_firecrawl_api_key(),
                 "parallel_api_key": bool(os.getenv("PARALLEL_API_KEY")),
                 "auxiliary_model": check_auxiliary_model(),
             }
