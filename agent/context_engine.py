@@ -26,7 +26,7 @@ Lifecycle:
 """
 
 from abc import ABC, abstractmethod
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 
 class ContextEngine(ABC):
@@ -78,6 +78,7 @@ class ContextEngine(ABC):
         self,
         messages: List[Dict[str, Any]],
         current_tokens: int = None,
+        focus_topic: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """Compact the message list and return the new message list.
 
@@ -86,6 +87,13 @@ class ContextEngine(ABC):
         context budget. The implementation is free to summarize, build a
         DAG, or do anything else — as long as the returned list is a valid
         OpenAI-format message sequence.
+
+        Args:
+            messages: The full message list.
+            current_tokens: Approximate current token count.
+            focus_topic: Optional focus string for guided compression.
+                When provided, the engine should prioritise preserving
+                information related to this topic.
         """
 
     # -- Optional: pre-flight check ----------------------------------------

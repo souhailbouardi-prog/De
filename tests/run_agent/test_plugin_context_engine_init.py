@@ -22,7 +22,7 @@ class _StubEngine(ContextEngine):
     def should_compress(self, prompt_tokens=None):
         return False
 
-    def compress(self, messages, current_tokens=None):
+    def compress(self, messages, current_tokens=None, focus_topic=None):
         return messages
 
 

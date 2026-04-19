@@ -34,8 +34,9 @@ class StubEngine(ContextEngine):
         tokens = prompt_tokens if prompt_tokens is not None else self.last_prompt_tokens
         return tokens >= self.threshold_tokens
 
-    def compress(self, messages: List[Dict[str, Any]], current_tokens: int = None) -> List[Dict[str, Any]]:
+    def compress(self, messages: List[Dict[str, Any]], current_tokens: int = None, focus_topic: str = None) -> List[Dict[str, Any]]:
         self._compress_called = True
+        self._last_focus_topic = focus_topic
         self.compression_count += 1
         # Trivial: just return as-is
         return messages
@@ -144,6 +145,19 @@ class TestStubEngine:
         assert result == msgs
         assert engine._compress_called
         assert engine.compression_count == 1
+
+    def test_compress_accepts_focus_topic(self):
+        engine = StubEngine()
+        msgs = [{"role": "user", "content": "hello"}]
+        result = engine.compress(msgs, focus_topic="database schema")
+        assert result == msgs
+        assert engine._last_focus_topic == "database schema"
+
+    def test_compress_focus_topic_defaults_to_none(self):
+        engine = StubEngine()
+        msgs = [{"role": "user", "content": "hello"}]
+        engine.compress(msgs)
+        assert engine._last_focus_topic is None
 
     def test_tool_schemas(self):
         engine = StubEngine()

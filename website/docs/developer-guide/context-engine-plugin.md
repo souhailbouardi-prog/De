@@ -58,10 +58,11 @@ class LCMEngine(ContextEngine):
     def should_compress(self, prompt_tokens: int = None) -> bool:
         """Return True if compaction should fire this turn."""
 
-    def compress(self, messages: list, current_tokens: int = None) -> list:
+    def compress(self, messages: list, current_tokens: int = None, focus_topic: str = None) -> list:
         """Compact the message list and return a new (possibly shorter) list.
 
         The returned list must be a valid OpenAI-format message sequence.
+        focus_topic: Optional string to prioritise preserving related info.
         """
 ```
 
