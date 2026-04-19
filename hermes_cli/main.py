@@ -7835,12 +7835,12 @@ Examples:
                 return
             has_titles = any(s.get("title") for s in sessions)
             if has_titles:
-                print(f"{'Title':<32} {'Preview':<40} {'Last Active':<13} {'ID'}")
-                print("─" * 110)
+                print(f"{'#':<4} {'Title':<32} {'Preview':<40} {'Last Active':<13} {'ID'}")
+                print("─" * 115)
             else:
-                print(f"{'Preview':<50} {'Last Active':<13} {'Src':<6} {'ID'}")
-                print("─" * 95)
-            for s in sessions:
+                print(f"{'#':<4} {'Preview':<50} {'Last Active':<13} {'Src':<6} {'ID'}")
+                print("─" * 100)
+            for i, s in enumerate(sessions, 1):
                 last_active = _relative_time(s.get("last_active"))
                 preview = (
                     s.get("preview", "")[:38]
@@ -7850,10 +7850,36 @@ Examples:
                 if has_titles:
                     title = (s.get("title") or "—")[:30]
                     sid = s["id"]
-                    print(f"{title:<32} {preview:<40} {last_active:<13} {sid}")
+                    print(f"{i:<4} {title:<32} {preview:<40} {last_active:<13} {sid}")
                 else:
                     sid = s["id"]
-                    print(f"{preview:<50} {last_active:<13} {s['source']:<6} {sid}")
+                    print(f"{i:<4} {preview:<50} {last_active:<13} {s['source']:<6} {sid}")
+            
+            # Prompt user to resume a session by number
+            print()
+            try:
+                user_input = input(f"Enter session number to resume (1-{len(sessions)}), or press Enter to cancel: ").strip()
+                if user_input:
+                    try:
+                        idx = int(user_input)
+                        if 1 <= idx <= len(sessions):
+                            selected_id = sessions[idx - 1]["id"]
+                            print(f"Resuming session: {selected_id}")
+                            import shutil
+                            hermes_bin = shutil.which("hermes")
+                            if hermes_bin:
+                                os.execvp(hermes_bin, ["hermes", "--resume", selected_id])
+                            else:
+                                os.execvp(
+                                    sys.executable,
+                                    [sys.executable, "-m", "hermes_cli.main", "--resume", selected_id],
+                                )
+                        else:
+                            print(f"Invalid selection. Please enter a number between 1 and {len(sessions)}.")
+                    except ValueError:
+                        print("Invalid input. Please enter a valid number.")
+            except (EOFError, KeyboardInterrupt):
+                print("\nCancelled.")
 
         elif action == "export":
             if args.session_id:

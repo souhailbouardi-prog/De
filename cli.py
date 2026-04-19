@@ -4328,11 +4328,44 @@ class HermesCLI:
         target = parts[1].strip() if len(parts) > 1 else ""
 
         if not target:
-            _cprint("  Usage: /resume <session_id_or_title>")
-            if self._show_recent_sessions(reason="resume"):
+            # Show numbered list of recent sessions and prompt for selection
+            _cprint("  Recent sessions:")
+            _cprint("")
+            sessions = self._list_recent_sessions(limit=10)
+            if not sessions:
+                _cprint("  No recent sessions found.")
+                _cprint("  Usage: /resume <session_id_or_title>")
                 return
-            _cprint("  Tip:   Use /history or `hermes sessions list` to find sessions.")
-            return
+            
+            from hermes_cli.main import _relative_time
+            _cprint(f"  {'#':<4} {'Title':<32} {'Preview':<40} {'Last Active':<13} {'ID'}")
+            _cprint(f"  {'─' * 4} {'─' * 32} {'─' * 40} {'─' * 13} {'─' * 24}")
+            for i, session in enumerate(sessions, 1):
+                title = (session.get("title") or "—")[:30]
+                preview = (session.get("preview") or "")[:38]
+                last_active = _relative_time(session.get("last_active"))
+                sid = session["id"]
+                _cprint(f"  {i:<4} {title:<32} {preview:<40} {last_active:<13} {sid}")
+            
+            _cprint("")
+            try:
+                user_input = input(f"  Enter session number to resume (1-{len(sessions)}), or press Enter to cancel: ").strip()
+                if user_input:
+                    try:
+                        idx = int(user_input)
+                        if 1 <= idx <= len(sessions):
+                            target = sessions[idx - 1]["id"]
+                        else:
+                            _cprint(f"  Invalid selection. Please enter a number between 1 and {len(sessions)}.")
+                            return
+                    except ValueError:
+                        _cprint("  Invalid input. Please enter a valid number.")
+                        return
+                else:
+                    return
+            except (EOFError, KeyboardInterrupt):
+                _cprint("\n  Cancelled.")
+                return
 
         if not self._session_db:
             _cprint("  Session database not available.")
@@ -9078,6 +9111,7 @@ class HermesCLI:
         # Voice push-to-talk key: configurable via config.yaml (voice.record_key)
         # Default: Ctrl+B (avoids conflict with Ctrl+R readline reverse-search)
         # Config uses "ctrl+b" format; prompt_toolkit expects "c-b" format.
+        # Always register the key binding to prevent Ctrl+B from causing exit.
         try:
             from hermes_cli.config import load_config
             _raw_key = load_config().get("voice", {}).get("record_key", "ctrl+b")
@@ -9085,16 +9119,20 @@ class HermesCLI:
         except Exception:
             _voice_key = "c-b"
 
-        @kb.add(_voice_key)
-        def handle_voice_record(event):
-            """Toggle voice recording when voice mode is active.
-
-            IMPORTANT: This handler runs in prompt_toolkit's event-loop thread.
-            Any blocking call here (locks, sd.wait, disk I/O) freezes the
-            entire UI.  All heavy work is dispatched to daemon threads.
+        # Register handler that always consumes Ctrl+B to prevent default behavior
+        @kb.add(_voice_key, eager=True)
+        def handle_voice_key(event):
             """
+            Handle Ctrl+B key press.
+            When voice mode is enabled: toggles voice recording.
+            When voice mode is disabled: consumes the event to prevent exit.
+            """
+            # If voice mode is disabled, just consume the event and do nothing
+            # This prevents Ctrl+B from causing exit or other default behavior
             if not cli_ref._voice_mode:
-                return
+                return  # Event is consumed by virtue of being handled
+            
+            # Voice mode is enabled - proceed with voice recording logic
             # Always allow STOPPING a recording (even when agent is running)
             if cli_ref._voice_recording:
                 # Manual stop via push-to-talk key: stop continuous mode
