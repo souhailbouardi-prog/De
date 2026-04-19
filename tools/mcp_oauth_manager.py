@@ -125,9 +125,35 @@ def _make_hermes_provider_class() -> Optional[type]:
                     self._hermes_server_name, exc,
                 )
 
-            # Delegate to the SDK's auth flow
-            async for item in super().async_auth_flow(request):
-                yield item
+            # Delegate to the SDK's auth flow with full bidirectional
+            # forwarding (asend/athrow/aclose).  Plain `async for ... yield`
+            # does NOT forward asend() values back to the inner generator —
+            # this is a PEP 525 limitation.  The MCP SDK's auth flow expects
+            # the caller to asend() the HTTP response back in, so without
+            # manual forwarding the flow silently receives None and OAuth
+            # token exchange / refresh breaks.
+            inner = super().async_auth_flow(request)
+            try:
+                sent = None
+                thrown = None
+                while True:
+                    try:
+                        if thrown is not None:
+                            exc, thrown = thrown, None
+                            item = await inner.athrow(exc)
+                        elif sent is None:
+                            item = await inner.__anext__()
+                        else:
+                            val, sent = sent, None
+                            item = await inner.asend(val)
+                    except StopAsyncIteration:
+                        return
+                    try:
+                        sent = yield item
+                    except BaseException as exc:
+                        thrown = exc
+            finally:
+                await inner.aclose()
 
     return HermesMCPOAuthProvider
 
