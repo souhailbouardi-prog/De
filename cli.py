@@ -1981,9 +1981,11 @@ class HermesCLI:
             model_short = f"{model_short[:23]}..."
 
         elapsed_seconds = max(0.0, (datetime.now() - self.session_start).total_seconds())
+        provider_name = (getattr(agent, "provider", None) or getattr(self, "provider", None) or "")
         snapshot = {
             "model_name": model_name,
             "model_short": model_short,
+            "provider": provider_name,
             "duration": format_duration_compact(elapsed_seconds),
             "context_tokens": 0,
             "context_length": None,
@@ -2160,10 +2162,13 @@ class HermesCLI:
             duration_label = snapshot["duration"]
 
             if width < 52:
-                text = f"⚕ {snapshot['model_short']} · {duration_label}"
+                text = f"⚕ {snapshot['model_short']} · {snapshot['duration']}"
                 return self._trim_status_bar_text(text, width)
             if width < 76:
-                parts = [f"⚕ {snapshot['model_short']}", percent_label]
+                parts = [f"⚕ {snapshot['model_short']}"]
+                if snapshot.get("provider"):
+                    parts.append(snapshot["provider"])
+                parts.append(percent_label)
                 parts.append(duration_label)
                 return self._trim_status_bar_text(" · ".join(parts), width)
 
@@ -2174,8 +2179,10 @@ class HermesCLI:
             else:
                 context_label = "ctx --"
 
-            parts = [f"⚕ {snapshot['model_short']}", context_label, percent_label]
-            parts.append(duration_label)
+            parts = [f"⚕ {snapshot['model_short']}"]
+            if snapshot.get("provider"):
+                parts.append(snapshot["provider"])
+            parts.extend([context_label, percent_label, duration_label])
             return self._trim_status_bar_text(" │ ".join(parts), width)
         except Exception:
             return f"⚕ {self.model if getattr(self, 'model', None) else 'Hermes'}"
@@ -2192,6 +2199,7 @@ class HermesCLI:
             # line and produce duplicated status bar rows over long sessions.
             width = self._get_tui_terminal_width()
             duration_label = snapshot["duration"]
+            provider_label = snapshot.get("provider")
 
             if width < 52:
                 frags = [
@@ -2208,12 +2216,23 @@ class HermesCLI:
                     frags = [
                         ("class:status-bar", " ⚕ "),
                         ("class:status-bar-strong", snapshot["model_short"]),
-                        ("class:status-bar-dim", " · "),
-                        (self._status_bar_context_style(percent), percent_label),
-                        ("class:status-bar-dim", " · "),
-                        ("class:status-bar-dim", duration_label),
-                        ("class:status-bar", " "),
                     ]
+                    if provider_label:
+                        frags.extend(
+                            [
+                                ("class:status-bar-dim", " · "),
+                                ("class:status-bar-dim", provider_label),
+                            ]
+                        )
+                    frags.extend(
+                        [
+                            ("class:status-bar-dim", " · "),
+                            (self._status_bar_context_style(percent), percent_label),
+                            ("class:status-bar-dim", " · "),
+                            ("class:status-bar-dim", duration_label),
+                            ("class:status-bar", " "),
+                        ]
+                    )
                 else:
                     if snapshot["context_length"]:
                         ctx_total = _format_context_length(snapshot["context_length"])
@@ -2226,16 +2245,27 @@ class HermesCLI:
                     frags = [
                         ("class:status-bar", " ⚕ "),
                         ("class:status-bar-strong", snapshot["model_short"]),
-                        ("class:status-bar-dim", " │ "),
-                        ("class:status-bar-dim", context_label),
-                        ("class:status-bar-dim", " │ "),
-                        (bar_style, self._build_context_bar(percent)),
-                        ("class:status-bar-dim", " "),
-                        (bar_style, percent_label),
-                        ("class:status-bar-dim", " │ "),
-                        ("class:status-bar-dim", duration_label),
-                        ("class:status-bar", " "),
                     ]
+                    if provider_label:
+                        frags.extend(
+                            [
+                                ("class:status-bar-dim", " │ "),
+                                ("class:status-bar-dim", provider_label),
+                            ]
+                        )
+                    frags.extend(
+                        [
+                            ("class:status-bar-dim", " │ "),
+                            ("class:status-bar-dim", context_label),
+                            ("class:status-bar-dim", " │ "),
+                            (bar_style, self._build_context_bar(percent)),
+                            ("class:status-bar-dim", " "),
+                            (bar_style, percent_label),
+                            ("class:status-bar-dim", " │ "),
+                            ("class:status-bar-dim", duration_label),
+                            ("class:status-bar", " "),
+                        ]
+                    )
 
             total_width = sum(self._status_bar_display_width(text) for _, text in frags)
             if total_width > width:

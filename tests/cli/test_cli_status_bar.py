@@ -75,6 +75,7 @@ class TestCLIStatusBar:
         text = cli_obj._build_status_bar_text(width=120)
 
         assert "claude-sonnet-4-20250514" in text
+        assert "anthropic" in text
         assert "12.4K/200K" in text
         assert "6%" in text
         assert "$0.06" not in text  # cost hidden by default
