@@ -1038,11 +1038,28 @@ def _load_config() -> dict:
     to the persistent config (hermes_cli/config.py load_config()) so that
     ``delegation.model`` / ``delegation.provider`` are picked up regardless
     of the entry point (CLI, gateway, cron).
+
+    The CLI_CONFIG delegation section always exists (with empty-string
+    defaults), so we check whether it contains any *meaningful* override
+    (model, provider, or base_url).  If all are empty we fall through to
+    hermes_cli.config.load_config() which reads ~/.hermes/config.yaml
+    directly and may contain user-configured values that CLI_CONFIG missed
+    (e.g. when cli.py was imported as a side-effect rather than as the
+    actual entry point).
     """
     try:
         from cli import CLI_CONFIG
         cfg = CLI_CONFIG.get("delegation", {})
-        if cfg:
+        # Only use CLI_CONFIG when it carries a real delegation override.
+        # The default dict is always truthy (has keys like max_iterations)
+        # but model/provider/base_url are all empty strings — that means
+        # the user never configured delegation in this runtime, so we
+        # should fall through to the persistent config.
+        _has_override = any(
+            str(cfg.get(k) or "").strip()
+            for k in ("model", "provider", "base_url")
+        )
+        if _has_override:
             return cfg
     except Exception:
         pass

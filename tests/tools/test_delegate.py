@@ -1286,5 +1286,190 @@ class TestDelegationReasoningEffort(unittest.TestCase):
         self.assertEqual(call_kwargs["reasoning_config"], {"enabled": True, "effort": "medium"})
 
 
+class TestLoadConfigFallthrough(unittest.TestCase):
+    """Regression tests for _load_config falling through to hermes_cli config.
+
+    When CLI_CONFIG has only default empty-string delegation values (model='',
+    provider='', base_url=''), _load_config must fall through to
+    hermes_cli.config.load_config() so that user-configured delegation
+    settings in ~/.hermes/config.yaml are picked up.  (#11999)
+    """
+
+    def test_empty_cli_config_falls_through_to_hermes_config(self):
+        """CLI_CONFIG with default empty delegation should NOT shadow hermes_cli config."""
+        from tools.delegate_tool import _load_config
+
+        cli_defaults = {
+            "delegation": {
+                "max_iterations": 45,
+                "default_toolsets": ["terminal", "file", "web"],
+                "model": "",
+                "provider": "",
+                "base_url": "",
+                "api_key": "",
+            }
+        }
+        hermes_delegation = {
+            "model": "google/gemini-3-flash-preview",
+            "provider": "openrouter",
+            "base_url": "",
+            "api_key": "",
+            "max_iterations": 50,
+        }
+
+        with patch("tools.delegate_tool.CLI_CONFIG", cli_defaults, create=True), \
+             patch("hermes_cli.config.load_config", return_value={"delegation": hermes_delegation}):
+            # Need to patch the import inside _load_config
+            import tools.delegate_tool as dt
+            original = dt._load_config
+
+            # Patch cli.CLI_CONFIG via the import path
+            with patch.dict("sys.modules", {"cli": MagicMock(CLI_CONFIG=cli_defaults)}):
+                cfg = _load_config()
+
+            self.assertEqual(cfg.get("model"), "google/gemini-3-flash-preview")
+            self.assertEqual(cfg.get("provider"), "openrouter")
+
+    def test_cli_config_with_real_values_is_used(self):
+        """When CLI_CONFIG has real delegation values, they should be used."""
+        from tools.delegate_tool import _load_config
+
+        cli_config = {
+            "delegation": {
+                "max_iterations": 45,
+                "model": "meta-llama/llama-4-scout",
+                "provider": "openrouter",
+                "base_url": "",
+                "api_key": "",
+            }
+        }
+
+        with patch.dict("sys.modules", {"cli": MagicMock(CLI_CONFIG=cli_config)}):
+            cfg = _load_config()
+
+        self.assertEqual(cfg.get("model"), "meta-llama/llama-4-scout")
+        self.assertEqual(cfg.get("provider"), "openrouter")
+
+    def test_base_url_only_counts_as_override(self):
+        """base_url alone (no model/provider) should still use CLI_CONFIG."""
+        from tools.delegate_tool import _load_config
+
+        cli_config = {
+            "delegation": {
+                "model": "",
+                "provider": "",
+                "base_url": "http://localhost:11434/v1",
+                "api_key": "local-key",
+            }
+        }
+
+        with patch.dict("sys.modules", {"cli": MagicMock(CLI_CONFIG=cli_config)}):
+            cfg = _load_config()
+
+        self.assertEqual(cfg.get("base_url"), "http://localhost:11434/v1")
+
+
+class TestDelegateTaskModelConfigEndToEnd(unittest.TestCase):
+    """End-to-end tests: config.yaml delegation.model reaches the child AIAgent.
+
+    These tests do NOT mock _resolve_delegation_credentials, ensuring the
+    full path from _load_config → _resolve_delegation_credentials →
+    _build_child_agent → AIAgent is exercised.  (#11999)
+    """
+
+    def test_delegation_model_overrides_parent_model(self):
+        """delegation.model in config should override the parent's model."""
+        parent = _make_mock_parent(depth=0)
+        parent.model = "anthropic/claude-sonnet-4"
+
+        cfg = {
+            "model": "google/gemini-3-flash-preview",
+            "provider": "",
+            "base_url": "",
+            "api_key": "",
+            "max_iterations": 45,
+        }
+
+        with patch("tools.delegate_tool._load_config", return_value=cfg), \
+             patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            mock_child.run_conversation.return_value = {
+                "final_response": "done", "completed": True, "api_calls": 1,
+            }
+            MockAgent.return_value = mock_child
+
+            delegate_task(goal="Use delegation model", parent_agent=parent)
+
+            _, kwargs = MockAgent.call_args
+            self.assertEqual(kwargs["model"], "google/gemini-3-flash-preview")
+            # Provider/base_url should still come from parent
+            self.assertEqual(kwargs["provider"], parent.provider)
+            self.assertEqual(kwargs["base_url"], parent.base_url)
+
+    @patch("hermes_cli.runtime_provider.resolve_runtime_provider")
+    def test_delegation_model_and_provider_override_parent(self, mock_resolve):
+        """delegation.model + delegation.provider should both override parent."""
+        mock_resolve.return_value = {
+            "provider": "openrouter",
+            "base_url": "https://openrouter.ai/api/v1",
+            "api_key": "sk-or-delegation",
+            "api_mode": "chat_completions",
+        }
+        parent = _make_mock_parent(depth=0)
+        parent.model = "anthropic/claude-sonnet-4"
+        parent.provider = "anthropic"
+        parent.base_url = "https://api.anthropic.com"
+
+        cfg = {
+            "model": "google/gemini-3-flash-preview",
+            "provider": "openrouter",
+            "base_url": "",
+            "api_key": "",
+            "max_iterations": 45,
+        }
+
+        with patch("tools.delegate_tool._load_config", return_value=cfg), \
+             patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            mock_child.run_conversation.return_value = {
+                "final_response": "done", "completed": True, "api_calls": 1,
+            }
+            MockAgent.return_value = mock_child
+
+            delegate_task(goal="Use delegation model+provider", parent_agent=parent)
+
+            _, kwargs = MockAgent.call_args
+            self.assertEqual(kwargs["model"], "google/gemini-3-flash-preview")
+            self.assertEqual(kwargs["provider"], "openrouter")
+            self.assertEqual(kwargs["base_url"], "https://openrouter.ai/api/v1")
+            self.assertEqual(kwargs["api_key"], "sk-or-delegation")
+
+    def test_empty_delegation_config_inherits_parent(self):
+        """When no delegation model/provider is set, child inherits parent's model."""
+        parent = _make_mock_parent(depth=0)
+        parent.model = "anthropic/claude-sonnet-4"
+
+        cfg = {
+            "model": "",
+            "provider": "",
+            "base_url": "",
+            "api_key": "",
+            "max_iterations": 45,
+        }
+
+        with patch("tools.delegate_tool._load_config", return_value=cfg), \
+             patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            mock_child.run_conversation.return_value = {
+                "final_response": "done", "completed": True, "api_calls": 1,
+            }
+            MockAgent.return_value = mock_child
+
+            delegate_task(goal="Inherit parent model", parent_agent=parent)
+
+            _, kwargs = MockAgent.call_args
+            self.assertEqual(kwargs["model"], "anthropic/claude-sonnet-4")
+
+
 if __name__ == "__main__":
     unittest.main()
