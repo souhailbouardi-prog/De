@@ -8878,6 +8878,19 @@ class AIAgent:
         # Track user turns for memory flush and periodic nudge logic
         self._user_turn_count += 1
 
+        # Notify memory providers of the new turn
+        if self._memory_manager:
+            try:
+                self._memory_manager.on_turn_start(
+                    self._user_turn_count,
+                    user_message if isinstance(user_message, str) else str(user_message),
+                    platform=getattr(self, '_platform', None),
+                    model=self._current_model if hasattr(self, '_current_model') else self.model,
+                    tool_count=len(self.valid_tool_names) if hasattr(self, 'valid_tool_names') else 0,
+                )
+            except Exception:
+                pass
+
         # Preserve the original user message (no nudge injection).
         original_user_message = persist_user_message if persist_user_message is not None else user_message
 
