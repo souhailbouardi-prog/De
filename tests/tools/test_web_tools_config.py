@@ -259,6 +259,8 @@ class TestBackendSelection:
         "TOOL_GATEWAY_SCHEME",
         "TOOL_GATEWAY_USER_TOKEN",
         "TAVILY_API_KEY",
+        "SEARXNG_API_URL",
+        "CRAWL4AI_API_URL",
     )
 
     def setup_method(self):
@@ -324,6 +326,20 @@ class TestBackendSelection:
         with patch("tools.web_tools._load_web_config", return_value={"backend": "Tavily"}):
             assert _get_backend() == "tavily"
 
+    def test_config_local_oss(self):
+        """web.backend=local_oss in config → composite local backend."""
+        from tools.web_tools import _get_backend
+        with patch("tools.web_tools._load_web_config", return_value={"backend": "local_oss"}):
+            assert _get_backend() == "local_oss"
+
+    def test_local_oss_maps_capabilities(self):
+        """Composite backend should resolve to SearXNG for search and Crawl4AI for extract/crawl."""
+        from tools.web_tools import _get_backend_for_capability
+        with patch("tools.web_tools._load_web_config", return_value={"backend": "local_oss"}):
+            assert _get_backend_for_capability("search") == "searxng"
+            assert _get_backend_for_capability("extract") == "crawl4ai"
+            assert _get_backend_for_capability("crawl") == "crawl4ai"
+
     # ── Fallback (no web.backend in config) ───────────────────────────
 
     def test_fallback_parallel_only_key(self):
@@ -360,6 +376,16 @@ class TestBackendSelection:
         with patch("tools.web_tools._load_web_config", return_value={}), \
              patch.dict(os.environ, {"TAVILY_API_KEY": "tvly-test", "FIRECRAWL_API_KEY": "fc-test"}):
             assert _get_backend() == "firecrawl"
+
+    def test_fallback_local_oss_when_both_local_urls_set(self):
+        """SearXNG + Crawl4AI URLs, no config → local_oss."""
+        from tools.web_tools import _get_backend
+        with patch("tools.web_tools._load_web_config", return_value={}), \
+             patch.dict(os.environ, {
+                 "SEARXNG_API_URL": "https://search.example.test",
+                 "CRAWL4AI_API_URL": "https://crawl.example.test",
+             }):
+            assert _get_backend() == "local_oss"
 
     def test_fallback_tavily_with_parallel_prefers_parallel(self):
         """Tavily + Parallel keys, no config → 'parallel' (Parallel takes priority over Tavily)."""
@@ -489,6 +515,8 @@ class TestCheckWebApiKey:
         "TOOL_GATEWAY_SCHEME",
         "TOOL_GATEWAY_USER_TOKEN",
         "TAVILY_API_KEY",
+        "SEARXNG_API_URL",
+        "CRAWL4AI_API_URL",
     )
 
     def setup_method(self):
@@ -530,6 +558,22 @@ class TestCheckWebApiKey:
     def test_tavily_key_only(self):
         with patch.dict(os.environ, {"TAVILY_API_KEY": "tvly-test"}):
             from tools.web_tools import check_web_api_key
+            assert check_web_api_key() is True
+
+    def test_local_oss_urls_return_true(self):
+        with patch.dict(os.environ, {
+            "SEARXNG_API_URL": "https://search.example.test",
+            "CRAWL4AI_API_URL": "https://crawl.example.test",
+        }):
+            from tools.web_tools import (
+                check_web_api_key,
+                check_web_search_available,
+                check_web_extract_available,
+                check_web_crawl_available,
+            )
+            assert check_web_search_available() is True
+            assert check_web_extract_available() is True
+            assert check_web_crawl_available() is True
             assert check_web_api_key() is True
 
     def test_no_keys_returns_false(self):
@@ -577,3 +621,5 @@ def test_web_requires_env_includes_exa_key():
     from tools.web_tools import _web_requires_env
 
     assert "EXA_API_KEY" in _web_requires_env()
+    assert "SEARXNG_API_URL" in _web_requires_env()
+    assert "CRAWL4AI_API_URL" in _web_requires_env()
