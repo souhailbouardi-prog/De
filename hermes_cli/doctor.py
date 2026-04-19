@@ -857,9 +857,12 @@ def run_doctor(args):
                     _base = "https://api.kimi.com/coding/v1"
                 # Anthropic-compat endpoints (/anthropic) don't support /models.
                 # Rewrite to the OpenAI-compat /v1 surface for health checks.
+                # BUT: some providers (MiniMax-CN) expose /anthropic as the PRIMARY
+                # surface — /v1/models does NOT exist and always 404s.
+                # Skip the health check for /anthropic endpoints to avoid false negatives.
                 if _base and _base.rstrip("/").endswith("/anthropic"):
-                    from agent.auxiliary_client import _to_openai_base_url
-                    _base = _to_openai_base_url(_base)
+                    print(f"\r  {color('✓', Colors.GREEN)} {_label} {color('(key configured, /anthropic endpoint — no /models check)', Colors.DIM)}           ")
+                    continue
                 _url = (_base.rstrip("/") + "/models") if _base else _default_url
                 _headers = {"Authorization": f"Bearer {_key}"}
                 if "api.kimi.com" in _url.lower():
