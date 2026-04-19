@@ -33,7 +33,6 @@ def _make_runner():
     runner._ephemeral_system_prompt = ""
     runner._prefill_messages = []
     runner._reasoning_config = None
-    runner._show_reasoning = False
     runner._provider_routing = {}
     runner._fallback_model = None
     runner._running_agents = {}
@@ -90,14 +89,73 @@ class TestReasoningCommand:
 
         runner = _make_runner()
         runner._reasoning_config = {"enabled": True, "effort": "xhigh"}
-        runner._show_reasoning = False
 
         result = await runner._handle_reasoning_command(_make_event("/reasoning"))
 
         assert "**Effort:** `none (disabled)`" in result
         assert "**Display:** on ✓" in result
         assert runner._reasoning_config == {"enabled": False}
-        assert runner._show_reasoning is True
+
+    @pytest.mark.asyncio
+    async def test_load_show_reasoning_resolves_per_platform(self, tmp_path, monkeypatch):
+        """Per-platform show_reasoning overrides global setting."""
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            "display:\n"
+            "  show_reasoning: false\n"
+            "  platforms:\n"
+            "    wecom:\n"
+            "      show_reasoning: true\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(gateway_run, "_hermes_home", hermes_home)
+
+        # Per-platform: wecom should pick up the override
+        assert gateway_run.GatewayRunner._load_show_reasoning("wecom") is True
+        # Per-platform: telegram has no override → falls back to global (false)
+        assert gateway_run.GatewayRunner._load_show_reasoning("telegram") is False
+        # No platform key → global (false)
+        assert gateway_run.GatewayRunner._load_show_reasoning("") is False
+
+    @pytest.mark.asyncio
+    async def test_load_show_reasoning_global_fallback(self, tmp_path, monkeypatch):
+        """Global show_reasoning is used when no per-platform override exists."""
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            "display:\n"
+            "  show_reasoning: true\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(gateway_run, "_hermes_home", hermes_home)
+
+        assert gateway_run.GatewayRunner._load_show_reasoning("wecom") is True
+        assert gateway_run.GatewayRunner._load_show_reasoning("telegram") is True
+        assert gateway_run.GatewayRunner._load_show_reasoning("") is True
+
+    @pytest.mark.asyncio
+    async def test_reasoning_command_per_platform_status(self, tmp_path, monkeypatch):
+        """The /reasoning status display reflects per-platform config."""
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            "display:\n"
+            "  show_reasoning: false\n"
+            "  platforms:\n"
+            "    wecom:\n"
+            "      show_reasoning: true\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(gateway_run, "_hermes_home", hermes_home)
+
+        runner = _make_runner()
+        runner._reasoning_config = None
+        # Simulate a WeCom message
+        event = _make_event(text="/reasoning", platform=Platform.WECOM)
+        result = await runner._handle_reasoning_command(event)
+
+        assert "**Display:** on ✓" in result
 
     @pytest.mark.asyncio
     async def test_handle_reasoning_command_updates_config_and_cache(self, tmp_path, monkeypatch):

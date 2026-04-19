@@ -624,7 +624,6 @@ class GatewayRunner:
         self._ephemeral_system_prompt = self._load_ephemeral_system_prompt()
         self._reasoning_config = self._load_reasoning_config()
         self._service_tier = self._load_service_tier()
-        self._show_reasoning = self._load_show_reasoning()
         self._busy_input_mode = self._load_busy_input_mode()
         self._restart_drain_timeout = self._load_restart_drain_timeout()
         self._provider_routing = self._load_provider_routing()
@@ -1336,15 +1335,23 @@ class GatewayRunner:
         return None
 
     @staticmethod
-    def _load_show_reasoning() -> bool:
-        """Load show_reasoning toggle from config.yaml display section."""
+    def _load_show_reasoning(platform_key: str = "") -> bool:
+        """Load show_reasoning toggle — resolves per-platform then global.
+
+        Delegates to resolve_display_setting() so the resolution order
+        (platform override → global → default) stays in one place.
+        """
         try:
+            from gateway.display_config import resolve_display_setting
             import yaml as _y
             cfg_path = _hermes_home / "config.yaml"
+            user_cfg = {}
             if cfg_path.exists():
                 with open(cfg_path, encoding="utf-8") as _f:
-                    cfg = _y.safe_load(_f) or {}
-                return bool(cfg.get("display", {}).get("show_reasoning", False))
+                    user_cfg = _y.safe_load(_f) or {}
+            return bool(resolve_display_setting(
+                user_cfg, platform_key, "show_reasoning", False
+            ))
         except Exception:
             pass
         return False
@@ -4393,10 +4400,10 @@ class GatewayRunner:
                     _load_gateway_config(),
                     _platform_config_key(source.platform),
                     "show_reasoning",
-                    getattr(self, "_show_reasoning", False),
+                    False,
                 )
             except Exception:
-                _show_reasoning_effective = getattr(self, "_show_reasoning", False)
+                _show_reasoning_effective = False
             if _show_reasoning_effective and response:
                 last_reasoning = agent_result.get("last_reasoning")
                 if last_reasoning:
@@ -6588,7 +6595,7 @@ class GatewayRunner:
         args = event.get_command_args().strip().lower()
         config_path = _hermes_home / "config.yaml"
         self._reasoning_config = self._load_reasoning_config()
-        self._show_reasoning = self._load_show_reasoning()
+        _pk = _platform_config_key(event.source.platform)
 
         def _save_config_key(key_path: str, value):
             """Save a dot-separated key to config.yaml."""
@@ -6619,7 +6626,17 @@ class GatewayRunner:
                 level = "none (disabled)"
             else:
                 level = rc.get("effort", "medium")
-            display_state = "on ✓" if self._show_reasoning else "off"
+            try:
+                from gateway.display_config import resolve_display_setting as _rds
+                _show_reasoning = bool(_rds(
+                    _load_gateway_config(),
+                    _pk,
+                    "show_reasoning",
+                    False,
+                ))
+            except Exception:
+                _show_reasoning = False
+            display_state = "on ✓" if _show_reasoning else "off"
             return (
                 "🧠 **Reasoning Settings**\n\n"
                 f"**Effort:** `{level}`\n"
@@ -6630,7 +6647,6 @@ class GatewayRunner:
         # Display toggle (per-platform)
         platform_key = _platform_config_key(event.source.platform)
         if args in ("show", "on"):
-            self._show_reasoning = True
             _save_config_key(f"display.platforms.{platform_key}.show_reasoning", True)
             return (
                 "🧠 ✓ Reasoning display: **ON**\n"
@@ -6638,7 +6654,6 @@ class GatewayRunner:
             )
 
         if args in ("hide", "off"):
-            self._show_reasoning = False
             _save_config_key(f"display.platforms.{platform_key}.show_reasoning", False)
             return f"🧠 ✓ Reasoning display: **OFF** for **{platform_key}**"
 
