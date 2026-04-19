@@ -8378,10 +8378,19 @@ class HermesCLI:
                 except Exception:
                     pass
 
+            profile_prefix = "hermes"
+            try:
+                from hermes_cli.profiles import get_active_profile_name
+                profile = get_active_profile_name()
+                if profile not in ("default", "custom"):
+                    profile_prefix = f"hermes -p {profile}"
+            except Exception:
+                pass
+
             print("Resume this session with:")
-            print(f"  hermes --resume {self.session_id}")
+            print(f"  {profile_prefix} --resume {self.session_id}")
             if session_title:
-                print(f"  hermes -c \"{session_title}\"")
+                print(f"  {profile_prefix} -c \"{session_title}\"")
             print()
             print(f"Session:        {self.session_id}")
             if session_title:
