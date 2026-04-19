@@ -18,6 +18,7 @@ from hermes_cli.profiles import (
     validate_profile_name,
     get_profile_dir,
     create_profile,
+    create_wrapper_script,
     delete_profile,
     list_profiles,
     set_active_profile,
@@ -26,6 +27,7 @@ from hermes_cli.profiles import (
     resolve_profile_env,
     check_alias_collision,
     rename_profile,
+    remove_wrapper_script,
     export_profile,
     import_profile,
     generate_bash_completion,
@@ -361,6 +363,40 @@ class TestAliasCollision:
         result = check_alias_collision("default")
         assert result is not None
         assert "reserved" in result.lower()
+
+    def test_invalid_alias_name_rejected_before_path_lookup(self, profile_env):
+        with patch("subprocess.run") as mock_run:
+            result = check_alias_collision("../../.bashrc")
+        assert result is not None
+        assert "invalid alias name" in result.lower()
+        mock_run.assert_not_called()
+
+
+class TestWrapperScriptSecurity:
+    """Security-focused tests for alias wrapper creation/removal."""
+
+    def test_create_wrapper_rejects_path_traversal(self, profile_env):
+        tmp_path = profile_env
+        sentinel = tmp_path / ".bashrc"
+        sentinel.write_text("keep", encoding="utf-8")
+
+        with pytest.raises(ValueError, match="Invalid alias name"):
+            create_wrapper_script("../../.bashrc", profile_name="coder")
+
+        assert sentinel.read_text(encoding="utf-8") == "keep"
+
+    def test_remove_wrapper_rejects_path_traversal(self, profile_env):
+        tmp_path = profile_env
+        sentinel = tmp_path / ".bashrc"
+        sentinel.write_text("keep", encoding="utf-8")
+
+        assert remove_wrapper_script("../../.bashrc") is False
+        assert sentinel.read_text(encoding="utf-8") == "keep"
+
+    def test_custom_alias_wrapper_uses_target_profile(self, profile_env):
+        wrapper = create_wrapper_script("mybot", profile_name="coder")
+        assert wrapper is not None
+        assert wrapper.read_text(encoding="utf-8") == '#!/bin/sh\nexec hermes -p coder "$@"\n'
 
 
 # ===================================================================

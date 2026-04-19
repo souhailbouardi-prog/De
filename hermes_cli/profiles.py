@@ -22,6 +22,7 @@ Usage::
 import json
 import os
 import re
+import shlex
 import shutil
 import stat
 import subprocess
@@ -167,6 +168,15 @@ def validate_profile_name(name: str) -> None:
         )
 
 
+def validate_alias_name(name: str) -> None:
+    """Raise ``ValueError`` if *name* is not a safe wrapper alias."""
+    if not _PROFILE_ID_RE.match(name):
+        raise ValueError(
+            f"Invalid alias name {name!r}. Must match "
+            f"[a-z0-9][a-z0-9_-]{{0,63}}"
+        )
+
+
 def get_profile_dir(name: str) -> Path:
     """Resolve a profile name to its HERMES_HOME directory."""
     if name == "default":
@@ -190,6 +200,11 @@ def check_alias_collision(name: str) -> Optional[str]:
 
     Checks: reserved names, hermes subcommands, existing binaries in PATH.
     """
+    try:
+        validate_alias_name(name)
+    except ValueError as exc:
+        return str(exc)
+
     if name in _RESERVED_NAMES:
         return f"'{name}' is a reserved name"
     if name in _HERMES_SUBCOMMANDS:
@@ -224,7 +239,23 @@ def _is_wrapper_dir_in_path() -> bool:
     return wrapper_dir in os.environ.get("PATH", "").split(os.pathsep)
 
 
-def create_wrapper_script(name: str) -> Optional[Path]:
+def _resolve_wrapper_path(name: str) -> Path:
+    """Resolve a wrapper alias to a path inside the wrapper directory."""
+    validate_alias_name(name)
+    wrapper_dir = _get_wrapper_dir().resolve()
+    wrapper_path = (wrapper_dir / name).resolve(strict=False)
+    if not wrapper_path.is_relative_to(wrapper_dir):
+        raise ValueError(f"Alias path escapes wrapper directory: {name!r}")
+    return wrapper_path
+
+
+def _build_wrapper_script(profile_name: str) -> str:
+    """Return the shell wrapper content for *profile_name*."""
+    validate_profile_name(profile_name)
+    return f'#!/bin/sh\nexec hermes -p {shlex.quote(profile_name)} "$@"\n'
+
+
+def create_wrapper_script(name: str, profile_name: Optional[str] = None) -> Optional[Path]:
     """Create a shell wrapper script at ~/.local/bin/<name>.
 
     Returns the path to the created wrapper, or None if creation failed.
@@ -236,9 +267,10 @@ def create_wrapper_script(name: str) -> Optional[Path]:
         print(f"⚠ Could not create {wrapper_dir}: {e}")
         return None
 
-    wrapper_path = wrapper_dir / name
+    wrapper_path = _resolve_wrapper_path(name)
+    target_profile = profile_name or name
     try:
-        wrapper_path.write_text(f'#!/bin/sh\nexec hermes -p {name} "$@"\n')
+        wrapper_path.write_text(_build_wrapper_script(target_profile), encoding="utf-8")
         wrapper_path.chmod(wrapper_path.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
         return wrapper_path
     except OSError as e:
@@ -248,11 +280,14 @@ def create_wrapper_script(name: str) -> Optional[Path]:
 
 def remove_wrapper_script(name: str) -> bool:
     """Remove the wrapper script for a profile. Returns True if removed."""
-    wrapper_path = _get_wrapper_dir() / name
+    try:
+        wrapper_path = _resolve_wrapper_path(name)
+    except ValueError:
+        return False
     if wrapper_path.exists():
         try:
             # Verify it's our wrapper before removing
-            content = wrapper_path.read_text()
+            content = wrapper_path.read_text(encoding="utf-8")
             if "hermes -p" in content:
                 wrapper_path.unlink()
                 return True
