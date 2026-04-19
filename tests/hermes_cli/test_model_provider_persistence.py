@@ -259,74 +259,224 @@ class TestProviderPersistsAfterModelSave:
         assert model.get("api_mode") == "anthropic_messages"
 
 
-class TestBaseUrlValidation:
-    """Reject non-URL values in the base URL prompt (e.g. shell commands)."""
+class TestBaseUrlOverrideManagement:
+    def test_configure_base_url_override_accepts_manual_override(self, config_home, monkeypatch):
+        from hermes_cli.main import _configure_base_url_override
+        from hermes_cli.config import get_env_value
 
-    def test_invalid_base_url_rejected(self, config_home, monkeypatch, capsys):
-        """Typing a non-URL string should not be saved as the base URL."""
-        from hermes_cli.auth import PROVIDER_REGISTRY
+        monkeypatch.setattr("builtins.input", lambda prompt='': "https://custom.example/v4")
 
-        pconfig = PROVIDER_REGISTRY.get("zai")
-        if not pconfig:
-            pytest.skip("zai not in PROVIDER_REGISTRY")
+        effective = _configure_base_url_override(
+            provider_name="Example Provider",
+            base_url_env="EXAMPLE_BASE_URL",
+            auto_base="https://auto.example/v4",
+        )
 
+        assert effective == "https://custom.example/v4"
+        assert get_env_value("EXAMPLE_BASE_URL") == "https://custom.example/v4"
+
+    def test_configure_base_url_override_can_clear_existing_override(self, config_home, monkeypatch):
+        from hermes_cli.main import _configure_base_url_override
+        from hermes_cli.config import get_env_value, save_env_value
+
+        save_env_value("EXAMPLE_BASE_URL", "https://stale.example/v4")
+        monkeypatch.setattr("builtins.input", lambda prompt='': "c")
+
+        effective = _configure_base_url_override(
+            provider_name="Example Provider",
+            base_url_env="EXAMPLE_BASE_URL",
+            auto_base="https://auto.example/v4",
+        )
+
+        assert effective == "https://auto.example/v4"
+        assert get_env_value("EXAMPLE_BASE_URL") in ("", None)
+
+
+class TestZaiSetupAutodetect:
+    def test_zai_setup_uses_resolved_endpoint_without_manual_override(self, config_home, monkeypatch):
         monkeypatch.setenv("GLM_API_KEY", "test-key")
 
-        from hermes_cli.main import _model_flow_api_key_provider
+        from hermes_cli.main import _model_flow_zai
         from hermes_cli.config import load_config, get_env_value
 
-        # User types a shell command instead of a URL at the base URL prompt
-        with patch("hermes_cli.auth._prompt_model_selection", return_value="glm-5"), \
-             patch("hermes_cli.auth.deactivate_provider"), \
-             patch("builtins.input", return_value="nano ~/.hermes/.env"):
-            _model_flow_api_key_provider(load_config(), "zai", "old-model")
+        with patch(
+            "hermes_cli.auth.resolve_api_key_provider_credentials",
+            return_value={
+                "provider": "zai",
+                "api_key": "***",
+                "base_url": "https://api.z.ai/api/coding/paas/v4",
+                "source": "GLM_API_KEY",
+            },
+        ), patch(
+            "hermes_cli.models.fetch_api_models",
+            return_value=["glm-5.1", "glm-5"],
+        ), patch(
+            "hermes_cli.auth._prompt_model_selection",
+            return_value="glm-5.1",
+        ), patch(
+            "hermes_cli.auth.deactivate_provider",
+        ), patch(
+            "builtins.input",
+            return_value="",
+        ):
+            _model_flow_zai(load_config(), "old-model")
 
-        # The garbage value should NOT have been saved
-        saved = get_env_value("GLM_BASE_URL") or ""
-        assert not saved or saved.startswith(("http://", "https://")), \
-            f"Non-URL value was saved as GLM_BASE_URL: {saved}"
-        captured = capsys.readouterr()
-        assert "Invalid URL" in captured.out
+        import yaml
 
-    def test_valid_base_url_accepted(self, config_home, monkeypatch):
-        """A proper URL should be saved normally."""
-        from hermes_cli.auth import PROVIDER_REGISTRY
+        config = yaml.safe_load((config_home / "config.yaml").read_text()) or {}
+        model = config.get("model")
+        assert isinstance(model, dict)
+        assert model.get("provider") == "zai"
+        assert model.get("default") == "glm-5.1"
+        assert model.get("base_url") == "https://api.z.ai/api/coding/paas/v4"
+        assert get_env_value("GLM_BASE_URL") in ("", None)
 
-        pconfig = PROVIDER_REGISTRY.get("zai")
-        if not pconfig:
-            pytest.skip("zai not in PROVIDER_REGISTRY")
-
+    def test_zai_setup_can_set_manual_base_url_override(self, config_home, monkeypatch):
         monkeypatch.setenv("GLM_API_KEY", "test-key")
 
-        from hermes_cli.main import _model_flow_api_key_provider
+        from hermes_cli.main import _model_flow_zai
         from hermes_cli.config import load_config, get_env_value
 
-        with patch("hermes_cli.auth._prompt_model_selection", return_value="glm-5"), \
-             patch("hermes_cli.auth.deactivate_provider"), \
-             patch("builtins.input", return_value="https://custom.z.ai/api/paas/v4"):
-            _model_flow_api_key_provider(load_config(), "zai", "old-model")
+        with patch(
+            "hermes_cli.auth.resolve_api_key_provider_credentials",
+            return_value={
+                "provider": "zai",
+                "api_key": "***",
+                "base_url": "https://api.z.ai/api/coding/paas/v4",
+                "source": "GLM_API_KEY",
+            },
+        ), patch(
+            "hermes_cli.models.fetch_api_models",
+            return_value=["glm-5", "glm-4.7"],
+        ), patch(
+            "hermes_cli.auth._prompt_model_selection",
+            return_value="glm-5",
+        ), patch(
+            "hermes_cli.auth.deactivate_provider",
+        ), patch(
+            "builtins.input",
+            return_value="https://manual.example/v4",
+        ):
+            _model_flow_zai(load_config(), "old-model")
 
-        saved = get_env_value("GLM_BASE_URL") or ""
-        assert saved == "https://custom.z.ai/api/paas/v4"
+        import yaml
 
-    def test_empty_base_url_keeps_default(self, config_home, monkeypatch):
-        """Pressing Enter (empty) should not change the base URL."""
-        from hermes_cli.auth import PROVIDER_REGISTRY
+        config = yaml.safe_load((config_home / "config.yaml").read_text()) or {}
+        model = config.get("model")
+        assert isinstance(model, dict)
+        assert model.get("provider") == "zai"
+        assert model.get("default") == "glm-5"
+        assert model.get("base_url") == "https://manual.example/v4"
+        assert get_env_value("GLM_BASE_URL") == "https://manual.example/v4"
 
-        pconfig = PROVIDER_REGISTRY.get("zai")
-        if not pconfig:
-            pytest.skip("zai not in PROVIDER_REGISTRY")
-
+    def test_zai_setup_can_clear_explicit_base_url_override(self, config_home, monkeypatch):
         monkeypatch.setenv("GLM_API_KEY", "test-key")
-        monkeypatch.delenv("GLM_BASE_URL", raising=False)
+        monkeypatch.setenv("GLM_BASE_URL", "https://stale.example/v4")
 
-        from hermes_cli.main import _model_flow_api_key_provider
+        from hermes_cli.main import _model_flow_zai
         from hermes_cli.config import load_config, get_env_value
 
-        with patch("hermes_cli.auth._prompt_model_selection", return_value="glm-5"), \
-             patch("hermes_cli.auth.deactivate_provider"), \
-             patch("builtins.input", return_value=""):
-            _model_flow_api_key_provider(load_config(), "zai", "old-model")
+        def _resolve(provider_id, ignore_env_base_url=False):
+            assert provider_id == "zai"
+            if ignore_env_base_url:
+                return {
+                    "provider": "zai",
+                    "api_key": "***",
+                    "base_url": "https://api.z.ai/api/coding/paas/v4",
+                    "source": "GLM_API_KEY",
+                }
+            return {
+                "provider": "zai",
+                "api_key": "***",
+                "base_url": "https://stale.example/v4",
+                "source": "GLM_API_KEY",
+            }
 
-        saved = get_env_value("GLM_BASE_URL") or ""
-        assert saved == "", "Empty input should not save a base URL"
+        with patch(
+            "hermes_cli.auth.resolve_api_key_provider_credentials",
+            side_effect=_resolve,
+        ), patch(
+            "hermes_cli.models.fetch_api_models",
+            return_value=["glm-5", "glm-4.7"],
+        ), patch(
+            "hermes_cli.auth._prompt_model_selection",
+            return_value="glm-5",
+        ), patch(
+            "hermes_cli.auth.deactivate_provider",
+        ), patch(
+            "builtins.input",
+            return_value="c",
+        ):
+            _model_flow_zai(load_config(), "old-model")
+
+        import yaml
+
+        config = yaml.safe_load((config_home / "config.yaml").read_text()) or {}
+        model = config.get("model")
+        assert isinstance(model, dict)
+        assert model.get("provider") == "zai"
+        assert model.get("default") == "glm-5"
+        assert model.get("base_url") == "https://api.z.ai/api/coding/paas/v4"
+        assert get_env_value("GLM_BASE_URL") in ("", None)
+
+
+class TestProviderDispatch:
+    def test_select_provider_and_model_routes_zai_to_dedicated_flow(self, config_home, monkeypatch):
+        from types import SimpleNamespace
+        from hermes_cli.main import select_provider_and_model
+
+        monkeypatch.setattr("hermes_cli.auth.resolve_provider", lambda value: None)
+        monkeypatch.setattr(
+            "hermes_cli.models.CANONICAL_PROVIDERS",
+            [SimpleNamespace(slug="zai", tui_desc="Z.AI")],
+        )
+        monkeypatch.setattr(
+            "hermes_cli.models._PROVIDER_LABELS",
+            {"zai": "Z.AI"},
+        )
+        monkeypatch.setattr("hermes_cli.main._prompt_provider_choice", lambda labels, default=0: 0)
+
+        seen = {}
+        monkeypatch.setattr(
+            "hermes_cli.main._model_flow_zai",
+            lambda config, current_model="": seen.setdefault("called", ("zai", current_model)),
+        )
+        monkeypatch.setattr(
+            "hermes_cli.main._model_flow_api_key_provider",
+            lambda config, provider_id, current_model="": seen.setdefault("called", ("generic", provider_id, current_model)),
+        )
+        monkeypatch.setattr("hermes_cli.main._clear_stale_openai_base_url", lambda: None)
+
+        select_provider_and_model()
+
+        assert seen.get("called") == ("zai", "some-old-model")
+
+    def test_select_provider_and_model_keeps_neighboring_api_key_providers_generic(self, config_home, monkeypatch):
+        from types import SimpleNamespace
+        from hermes_cli.main import select_provider_and_model
+
+        monkeypatch.setattr("hermes_cli.auth.resolve_provider", lambda value: None)
+        monkeypatch.setattr(
+            "hermes_cli.models.CANONICAL_PROVIDERS",
+            [SimpleNamespace(slug="nvidia", tui_desc="NVIDIA")],
+        )
+        monkeypatch.setattr(
+            "hermes_cli.models._PROVIDER_LABELS",
+            {"nvidia": "NVIDIA"},
+        )
+        monkeypatch.setattr("hermes_cli.main._prompt_provider_choice", lambda labels, default=0: 0)
+
+        seen = {}
+        monkeypatch.setattr(
+            "hermes_cli.main._model_flow_zai",
+            lambda config, current_model="": seen.setdefault("called", ("zai", current_model)),
+        )
+        monkeypatch.setattr(
+            "hermes_cli.main._model_flow_api_key_provider",
+            lambda config, provider_id, current_model="": seen.setdefault("called", ("generic", provider_id, current_model)),
+        )
+        monkeypatch.setattr("hermes_cli.main._clear_stale_openai_base_url", lambda: None)
+
+        select_provider_and_model()
+
+        assert seen.get("called") == ("generic", "nvidia", "some-old-model")

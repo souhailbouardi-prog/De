@@ -1,6 +1,7 @@
 """Tests for API-key provider support (z.ai/GLM, Kimi, MiniMax, AI Gateway)."""
 
 import os
+from unittest.mock import patch
 
 import pytest
 
@@ -295,6 +296,22 @@ class TestApiKeyProviderStatus:
         assert status["key_source"] == "GLM_API_KEY"
         assert "z.ai" in status["base_url"].lower() or "api.z.ai" in status["base_url"]
 
+    def test_zai_status_uses_resolved_endpoint(self, monkeypatch):
+        monkeypatch.setenv("GLM_API_KEY", "test-key")
+        monkeypatch.delenv("ZAI_API_KEY", raising=False)
+        monkeypatch.delenv("GLM_BASE_URL", raising=False)
+        with patch(
+            "hermes_cli.auth.resolve_api_key_provider_credentials",
+            return_value={
+                "provider": "zai",
+                "api_key": "test-key",
+                "base_url": "https://api.z.ai/api/coding/paas/v4",
+                "source": "GLM_API_KEY",
+            },
+        ):
+            status = get_api_key_provider_status("zai")
+        assert status["base_url"] == "https://api.z.ai/api/coding/paas/v4"
+
     def test_fallback_env_var(self, monkeypatch):
         """ZAI_API_KEY should work when GLM_API_KEY is not set."""
         monkeypatch.setenv("ZAI_API_KEY", "zai-fallback-key")
@@ -506,6 +523,29 @@ class TestRuntimeProviderResolution:
         assert result["api_mode"] == "chat_completions"
         assert result["api_key"] == "glm-key"
         assert "z.ai" in result["base_url"] or "api.z.ai" in result["base_url"]
+
+    def test_runtime_zai_uses_config_base_url(self, monkeypatch):
+        monkeypatch.setenv("GLM_API_KEY", "glm-key")
+        monkeypatch.delenv("GLM_BASE_URL", raising=False)
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+        with patch(
+            "hermes_cli.runtime_provider._get_model_config",
+            return_value={
+                "provider": "zai",
+                "default": "glm-5.1",
+                "base_url": "https://api.z.ai/api/coding/paas/v4",
+            },
+        ), patch(
+            "hermes_cli.runtime_provider.resolve_api_key_provider_credentials",
+            return_value={
+                "provider": "zai",
+                "api_key": "glm-key",
+                "base_url": "https://api.z.ai/api/paas/v4",
+                "source": "GLM_API_KEY",
+            },
+        ):
+            result = resolve_runtime_provider(requested="zai")
+        assert result["base_url"] == "https://api.z.ai/api/coding/paas/v4"
 
     def test_runtime_kimi(self, monkeypatch):
         monkeypatch.setenv("KIMI_API_KEY", "kimi-key")

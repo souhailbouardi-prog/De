@@ -1525,11 +1525,12 @@ def select_provider_and_model(args=None):
         _model_flow_kimi(config, current_model)
     elif selected_provider == "bedrock":
         _model_flow_bedrock(config, current_model)
+    elif selected_provider == "zai":
+        _model_flow_zai(config, current_model)
     elif selected_provider in (
         "gemini",
         "deepseek",
         "xai",
-        "zai",
         "kimi-coding-cn",
         "minimax",
         "minimax-cn",
@@ -3314,15 +3315,16 @@ def _model_flow_kimi(config, current_model=""):
 
     # Step 2: Auto-detect endpoint from key prefix
     is_coding_plan = existing_key.startswith("sk-kimi-")
+    auto_base = KIMI_CODE_BASE_URL if is_coding_plan else pconfig.inference_base_url
     if is_coding_plan:
-        effective_base = KIMI_CODE_BASE_URL
-        print(f"  Detected Kimi Coding Plan key → {effective_base}")
+        print(f"  Detected Kimi Coding Plan key → {auto_base}")
     else:
-        effective_base = pconfig.inference_base_url
-        print(f"  Using Moonshot endpoint → {effective_base}")
-    # Clear any manual base URL override so auto-detection works at runtime
-    if base_url_env and get_env_value(base_url_env):
-        save_env_value(base_url_env, "")
+        print(f"  Using Moonshot endpoint → {auto_base}")
+    effective_base = _configure_base_url_override(
+        provider_name=pconfig.name,
+        base_url_env=base_url_env,
+        auto_base=auto_base,
+    )
     print()
 
     # Step 3: Model selection — show appropriate models for the endpoint
@@ -3638,6 +3640,66 @@ def _model_flow_bedrock(config, current_model=""):
         print("  No change.")
 
 
+def _configure_base_url_override(provider_name: str, base_url_env: str, auto_base: str) -> str:
+    """Allow users to keep, clear, or replace a manual base URL override.
+
+    Shared setup UX for providers with OpenAI-compatible base URLs. ``auto_base``
+    is the endpoint Hermes would use with no explicit override.
+    """
+    from hermes_cli.config import get_env_value, save_env_value
+
+    if not base_url_env:
+        return auto_base.rstrip("/")
+
+    current_override = (get_env_value(base_url_env) or os.getenv(base_url_env, "")).strip().rstrip("/")
+    auto_base = (auto_base or "").strip().rstrip("/")
+
+    if current_override:
+        print(f"  Using explicit {base_url_env} override → {current_override}")
+        if auto_base:
+            print(f"    Auto/default endpoint: {auto_base}")
+        try:
+            choice = input(f"  {provider_name} base URL override: [K]eep/[C]lear/[E]dit (default: keep): ").strip().lower()
+        except (KeyboardInterrupt, EOFError):
+            print()
+            choice = ""
+
+        if choice in ("c", "clear"):
+            save_env_value(base_url_env, "")
+            return auto_base
+
+        if choice in ("e", "edit"):
+            try:
+                override = input(f"  New base URL [{current_override}]: ").strip().rstrip("/")
+            except (KeyboardInterrupt, EOFError):
+                print()
+                return current_override
+            if not override:
+                return current_override
+            if not override.startswith(("http://", "https://")):
+                print("  Invalid URL — must start with http:// or https://. Keeping current override.")
+                return current_override
+            save_env_value(base_url_env, override)
+            return override
+
+        return current_override
+
+    try:
+        override = input(f"{provider_name} base URL override [{auto_base}] (press Enter to keep auto/default): ").strip().rstrip("/")
+    except (KeyboardInterrupt, EOFError):
+        print()
+        override = ""
+
+    if override:
+        if not override.startswith(("http://", "https://")):
+            print("  Invalid URL — must start with http:// or https://. Keeping auto/default endpoint.")
+            return auto_base
+        save_env_value(base_url_env, override)
+        return override
+
+    return auto_base
+
+
 def _model_flow_api_key_provider(config, provider_id, current_model=""):
     """Generic flow for API-key providers (z.ai, MiniMax, OpenCode, etc.)."""
     from hermes_cli.auth import (
@@ -3689,25 +3751,12 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
         print(f"  {pconfig.name} API key: {existing_key[:8]}... ✓")
         print()
 
-    # Optional base URL override
-    current_base = ""
-    if base_url_env:
-        current_base = get_env_value(base_url_env) or os.getenv(base_url_env, "")
-    effective_base = current_base or pconfig.inference_base_url
-
-    try:
-        override = input(f"Base URL [{effective_base}]: ").strip()
-    except (KeyboardInterrupt, EOFError):
-        print()
-        override = ""
-    if override and base_url_env:
-        if not override.startswith(("http://", "https://")):
-            print(
-                "  Invalid URL — must start with http:// or https://. Keeping current value."
-            )
-        else:
-            save_env_value(base_url_env, override)
-            effective_base = override
+    # Optional base URL override / recovery for stale manual overrides
+    effective_base = _configure_base_url_override(
+        provider_name=pconfig.name,
+        base_url_env=base_url_env,
+        auto_base=pconfig.inference_base_url,
+    )
 
     # Model selection — resolution order:
     #   1. models.dev registry (cached, filtered for agentic/tool-capable models)
@@ -3794,6 +3843,117 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
             model["api_mode"] = opencode_model_api_mode(provider_id, selected)
         else:
             model.pop("api_mode", None)
+        save_config(cfg)
+        deactivate_provider()
+
+        print(f"Default model set to: {selected} (via {pconfig.name})")
+    else:
+        print("No change.")
+
+
+def _model_flow_zai(config, current_model=""):
+    """Z.AI / GLM model selection with auth-path endpoint autodetection.
+
+    Unlike generic API-key providers, Z.AI has multiple billing endpoints.
+    Reuse resolve_api_key_provider_credentials("zai") here so the interactive
+    setup flow stays aligned with the auth/runtime resolution path instead of
+    asking users to guess which base URL they need.
+    """
+    from hermes_cli.auth import (
+        PROVIDER_REGISTRY, _prompt_model_selection, _save_model_choice,
+        deactivate_provider, resolve_api_key_provider_credentials,
+    )
+    from hermes_cli.config import get_env_value, save_env_value, load_config, save_config
+    from hermes_cli.models import fetch_api_models
+
+    del config
+
+    provider_id = "zai"
+    pconfig = PROVIDER_REGISTRY[provider_id]
+    key_env = pconfig.api_key_env_vars[0] if pconfig.api_key_env_vars else ""
+    base_url_env = pconfig.base_url_env_var or ""
+
+    existing_key = ""
+    for ev in pconfig.api_key_env_vars:
+        existing_key = get_env_value(ev) or os.getenv(ev, "")
+        if existing_key:
+            break
+
+    if not existing_key:
+        print(f"No {pconfig.name} API key configured.")
+        if key_env:
+            try:
+                import getpass
+                new_key = getpass.getpass(f"{key_env} (or Enter to cancel): ").strip()
+            except (KeyboardInterrupt, EOFError):
+                print()
+                return
+            if not new_key:
+                print("Cancelled.")
+                return
+            save_env_value(key_env, new_key)
+            existing_key = new_key
+            print("API key saved.")
+            print()
+    else:
+        print(f"  {pconfig.name} API key: {existing_key[:8]}... ✓")
+        print()
+
+    creds = resolve_api_key_provider_credentials(provider_id, ignore_env_base_url=False)
+    auto_creds = resolve_api_key_provider_credentials(provider_id, ignore_env_base_url=True)
+    auto_base = auto_creds.get("base_url") or pconfig.inference_base_url
+    effective_base = _configure_base_url_override(
+        provider_name=pconfig.name,
+        base_url_env=base_url_env,
+        auto_base=auto_base,
+    )
+    if effective_base == auto_base:
+        print(f"  Auto-detected Z.AI endpoint → {effective_base}")
+    print()
+
+    curated = _PROVIDER_MODELS.get(provider_id, [])
+    model_list = []
+
+    try:
+        from agent.models_dev import list_agentic_models
+        model_list = list_agentic_models(provider_id)
+    except Exception:
+        model_list = []
+
+    if model_list:
+        print(f"  Found {len(model_list)} model(s) from models.dev registry")
+    elif curated and len(curated) >= 8:
+        model_list = curated
+        print(f"  Showing {len(model_list)} curated models — use \"Enter custom model name\" for others.")
+    else:
+        live_models = fetch_api_models(existing_key, effective_base)
+        if live_models and len(live_models) >= len(curated):
+            model_list = live_models
+            print(f"  Found {len(model_list)} model(s) from {pconfig.name} API")
+        else:
+            model_list = curated
+            if model_list:
+                print(f"  Showing {len(model_list)} curated models — use \"Enter custom model name\" for others.")
+
+    if model_list:
+        selected = _prompt_model_selection(model_list, current_model=current_model)
+    else:
+        try:
+            selected = input("Model name: ").strip()
+        except (KeyboardInterrupt, EOFError):
+            selected = None
+
+    if selected:
+        _save_model_choice(selected)
+
+        cfg = load_config()
+        model = cfg.get("model")
+        if not isinstance(model, dict):
+            model = {"default": model} if model else {}
+            cfg["model"] = model
+        model["provider"] = provider_id
+        model["base_url"] = effective_base
+        model.pop("api_mode", None)
         save_config(cfg)
         deactivate_provider()
 
