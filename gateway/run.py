@@ -4216,11 +4216,7 @@ class GatewayRunner:
                 if adapter:
                     await adapter.send(
                         source.chat_id,
-                        f"📬 No home channel is set for {platform_name.title()}. "
-                        f"A home channel is where Hermes delivers cron job results "
-                        f"and cross-platform messages.\n\n"
-                        f"Type /sethome to make this chat your home channel, "
-                        f"or ignore to skip."
+                        self._build_home_channel_notice(platform_name),
                     )
         
         # -----------------------------------------------------------------
@@ -5732,7 +5728,17 @@ class GatewayRunner:
         
         preview = removed_msg[:40] + "..." if len(removed_msg) > 40 else removed_msg
         return f"↩️ Undid {removed_count} message(s).\nRemoved: \"{preview}\""
-    
+
+    @staticmethod
+    def _build_home_channel_notice(platform_name: str) -> str:
+        """Return the setup notice for missing home-channel configuration."""
+        platform_title = platform_name.title()
+        return (
+            f"⚙️ Setup notice: {platform_title} home channel is not set yet. "
+            f"Hermes uses a home channel to deliver cron job results and cross-platform messages.\n\n"
+            f"Run /sethome in the chat you want to use, or ignore this notice to skip."
+        )
+
     async def _handle_set_home_command(self, event: MessageEvent) -> str:
         """Handle /sethome command -- set the current chat as the platform's home channel."""
         source = event.source
