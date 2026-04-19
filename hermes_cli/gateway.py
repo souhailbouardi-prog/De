@@ -3534,14 +3534,22 @@ def gateway_command(args):
             print("  nohup hermes gateway run > ~/.hermes/logs/gateway.log 2>&1 &  # background")
             sys.exit(1)
         elif is_container():
-            print("Service installation is not needed inside a Docker container.")
-            print("The container runtime is your service manager — use Docker restart policies instead:")
-            print()
-            print("  docker run --restart unless-stopped ...   # auto-restart on crash/reboot")
-            print("  docker restart <container>                # manual restart")
-            print()
-            print("To run the gateway: hermes gateway run")
-            sys.exit(0)
+            if force and shutil.which("systemctl") is not None:
+                print_warning("Container environment detected — installing service anyway (--force).")
+                print_info("  Ensure systemd is running inside the container for this to work.")
+                print()
+                systemd_install(force=force, system=system, run_as_user=run_as_user)
+            else:
+                print("Service installation is not needed inside a Docker container.")
+                print("The container runtime is your service manager — use Docker restart policies instead:")
+                print()
+                print("  docker run --restart unless-stopped ...   # auto-restart on crash/reboot")
+                print("  docker restart <container>                # manual restart")
+                print()
+                if force:
+                    print("Hint: --force requires systemctl to be available inside the container.")
+                print("To run the gateway: hermes gateway run")
+                sys.exit(0)
         else:
             print("Service installation not supported on this platform.")
             print("Run manually: hermes gateway run")
