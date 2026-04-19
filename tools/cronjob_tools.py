@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from hermes_constants import display_hermes_home
+from utils import find_unsafe_invisibles
 
 logger = logging.getLogger(__name__)
 
@@ -59,9 +60,10 @@ _CRON_INVISIBLE_CHARS = {
 
 def _scan_cron_prompt(prompt: str) -> str:
     """Scan a cron prompt for critical threats. Returns error string if blocked, else empty."""
-    for char in _CRON_INVISIBLE_CHARS:
-        if char in prompt:
-            return f"Blocked: prompt contains invisible unicode U+{ord(char):04X} (possible injection)."
+    # ZWJ inside emoji grapheme cluster is allowed; all other invisibles
+    # (and ZWJ between non-pictographic chars) are flagged.
+    for char in find_unsafe_invisibles(prompt, _CRON_INVISIBLE_CHARS):
+        return f"Blocked: prompt contains invisible unicode U+{ord(char):04X} (possible injection)."
     for pattern, pid in _CRON_THREAT_PATTERNS:
         if re.search(pattern, prompt, re.IGNORECASE):
             return f"Blocked: prompt matches threat pattern '{pid}'. Cron prompts must not contain injection or exfiltration payloads."

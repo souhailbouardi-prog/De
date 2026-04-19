@@ -33,6 +33,8 @@ from pathlib import Path
 from hermes_constants import get_hermes_home
 from typing import Dict, Any, List, Optional
 
+from utils import find_unsafe_invisibles
+
 # fcntl is Unix-only; on Windows use msvcrt for file locking
 msvcrt = None
 try:
@@ -89,10 +91,11 @@ _INVISIBLE_CHARS = {
 
 def _scan_memory_content(content: str) -> Optional[str]:
     """Scan memory content for injection/exfil patterns. Returns error string if blocked."""
-    # Check invisible unicode
-    for char in _INVISIBLE_CHARS:
-        if char in content:
-            return f"Blocked: content contains invisible unicode character U+{ord(char):04X} (possible injection)."
+    # Check invisible unicode. ZWJ inside an emoji grapheme cluster (🧙‍♂️) is
+    # allowed; ZWJ between non-pictographic chars and other invisibles are
+    # flagged. See utils.find_unsafe_invisibles.
+    for char in find_unsafe_invisibles(content, _INVISIBLE_CHARS):
+        return f"Blocked: content contains invisible unicode character U+{ord(char):04X} (possible injection)."
 
     # Check threat patterns
     for pattern, pid in _MEMORY_THREAT_PATTERNS:
