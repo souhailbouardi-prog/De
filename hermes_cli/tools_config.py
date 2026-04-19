@@ -40,6 +40,8 @@ from hermes_cli.cli_output import (  # noqa: E402 — late import block
     print_warning as _print_warning,
     prompt as _prompt,
 )
+from prompt_toolkit import print_formatted_text as _pt_print
+from prompt_toolkit.formatted_text import ANSI as _PT_ANSI
 
 # ─── Toolset Registry ─────────────────────────────────────────────────────────
 
@@ -1780,42 +1782,47 @@ def _apply_mcp_change(config: dict, targets: List[str], action: str) -> Set[str]
     return failed_servers
 
 
+def _pt_cprint(text: str):
+    """Print ANSI-colored text through prompt_toolkit's renderer."""
+    _pt_print(_PT_ANSI(text))
+
+
 def _print_tools_list(enabled_toolsets: set, mcp_servers: dict, platform: str = "cli"):
     """Print a summary of enabled/disabled toolsets and MCP tool filters."""
     effective = _get_effective_configurable_toolsets()
     builtin_keys = {ts_key for ts_key, _, _ in CONFIGURABLE_TOOLSETS}
 
-    print(f"Built-in toolsets ({platform}):")
+    _pt_cprint(f"Built-in toolsets ({platform}):")
     for ts_key, label, _ in effective:
         if ts_key not in builtin_keys:
             continue
         status = (color("✓ enabled", Colors.GREEN) if ts_key in enabled_toolsets
                   else color("✗ disabled", Colors.RED))
-        print(f"  {status}  {ts_key}  {color(label, Colors.DIM)}")
+        _pt_cprint(f"  {status}  {ts_key}  {color(label, Colors.DIM)}")
 
     # Plugin toolsets
     plugin_entries = [(k, l) for k, l, _ in effective if k not in builtin_keys]
     if plugin_entries:
-        print()
-        print(f"Plugin toolsets ({platform}):")
+        _pt_cprint("")
+        _pt_cprint(f"Plugin toolsets ({platform}):")
         for ts_key, label in plugin_entries:
             status = (color("✓ enabled", Colors.GREEN) if ts_key in enabled_toolsets
                       else color("✗ disabled", Colors.RED))
-            print(f"  {status}  {ts_key}  {color(label, Colors.DIM)}")
+            _pt_cprint(f"  {status}  {ts_key}  {color(label, Colors.DIM)}")
 
     if mcp_servers:
-        print()
-        print("MCP servers:")
+        _pt_cprint("")
+        _pt_cprint("MCP servers:")
         for srv_name, srv_cfg in mcp_servers.items():
             tools_cfg = srv_cfg.get("tools") or {}
             exclude = tools_cfg.get("exclude") or []
             include = tools_cfg.get("include") or []
             if include:
-                _print_info(f"{srv_name}  [include only: {', '.join(include)}]")
+                _pt_cprint(f"  {srv_name}  [include only: {', '.join(include)}]")
             elif exclude:
-                _print_info(f"{srv_name}  [excluded: {color(', '.join(exclude), Colors.YELLOW)}]")
+                _pt_cprint(f"  {srv_name}  [excluded: {color(', '.join(exclude), Colors.YELLOW)}]")
             else:
-                _print_info(f"{srv_name}  {color('all tools enabled', Colors.DIM)}")
+                _pt_cprint(f"  {srv_name}  {color('all tools enabled', Colors.DIM)}")
 
 
 def tools_disable_enable_command(args):

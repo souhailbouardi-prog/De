@@ -2,6 +2,7 @@
 from argparse import Namespace
 from unittest.mock import patch
 
+from hermes_cli.colors import Colors
 from hermes_cli.tools_config import tools_disable_enable_command
 
 
@@ -174,6 +175,32 @@ class TestToolsList:
         out = capsys.readouterr().out
         assert "github" in out
         assert "create_issue" in out
+
+    def test_list_routes_ansi_through_prompt_toolkit_renderer(self):
+        """/tools list should not leak raw ANSI escapes through plain print()."""
+        config = {
+            "platform_toolsets": {"cli": ["web"]},
+            "mcp_servers": {"github": {"tools": {"exclude": ["create_issue"]}}},
+        }
+        rendered = []
+
+        def fake_color(text, *codes):
+            if not codes:
+                return text
+            return f"{''.join(codes)}{text}{Colors.RESET}"
+
+        def fake_pt_print(text):
+            rendered.append(repr(text))
+
+        with patch("hermes_cli.tools_config.load_config", return_value=config), \
+             patch("hermes_cli.tools_config.color", side_effect=fake_color), \
+             patch("hermes_cli.tools_config._pt_print", side_effect=fake_pt_print):
+            tools_disable_enable_command(Namespace(tools_action="list", platform="cli"))
+
+        output = "\n".join(rendered)
+        assert "Built-in toolsets (cli):" in output
+        assert "github" in output
+        assert any("\\x1b[32m" in chunk or "\\x1b[31m" in chunk for chunk in rendered)
 
 
 # ── Validation ───────────────────────────────────────────────────────────────
