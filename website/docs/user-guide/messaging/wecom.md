@@ -63,6 +63,9 @@ hermes gateway
 - **Quote context** — preserves reply threading
 - **Markdown rendering** — rich text responses
 - **Reply-mode streaming** — correlates responses to inbound message context
+- **Thinking indicator** — shows a "waiting for model" countdown while the model is processing
+- **Native stream consumer** — real-time token streaming via WeCom's stream message API (not edit-based)
+- **Reasoning display** — optional real-time streaming of model reasoning tokens inside think tags
 - **Auto-reconnect** — exponential backoff on connection drops
 
 ## Configuration Options
@@ -204,6 +207,71 @@ If the inbound request context has expired or is unavailable, the adapter falls 
 
 Reply-mode also works for media: uploaded media can be sent as a reply to the originating message.
 
+## Thinking Indicator
+
+While the model is processing a response, WeCom displays a thinking indicator that updates every second with a countdown (`Waiting for model Ns`). This gives users immediate feedback that the bot is working, even before any tokens arrive.
+
+- The indicator starts as soon as a message is received and begins processing.
+- It stops automatically when the first visible or reasoning token arrives from the model.
+- A safety timeout prevents infinite waiting — controlled by `HERMES_THINKING_MAX_SECONDS` (default: 1800 seconds / 30 minutes).
+
+The thinking indicator uses WeCom's native stream message API, so it renders smoothly without message editing or duplication.
+
+## Streaming and Reasoning
+
+WeCom uses a dedicated native stream consumer (`WeComStreamConsumer`) instead of the generic edit-based `GatewayStreamConsumer`. This is because WeCom does not support editing sent messages — the native stream API allows incremental updates within a single message bubble.
+
+### Streaming Configuration
+
+WeCom streaming follows the top-level `streaming` configuration. No per-platform override is required:
+
+```yaml
+streaming:
+  enabled: true
+  transport: stream   # recommended for WeCom
+```
+
+If `streaming.transport` is `off`, streaming is disabled for WeCom.
+
+### Reasoning Display
+
+When the model produces reasoning tokens (content inside `<think>...</think>` blocks), you can optionally stream them to the user in real time.
+
+**Off by default** — the user sees only the thinking indicator and the final reply, with no intermediate reasoning visible.
+
+**On** — reasoning tokens stream in real time inside the think block, letting the user watch the model think.
+
+Global configuration:
+
+```yaml
+display:
+  show_reasoning: true
+```
+
+Per-platform override (WeCom only):
+
+```yaml
+display:
+  platforms:
+    wecom:
+      show_reasoning: true
+```
+
+Toggle at runtime via CLI commands:
+
+```
+/reasoning on
+/reasoning off
+```
+
+### Stream Rotation
+
+The native stream consumer rotates the active stream every 5 minutes to stay below WeCom's stream lifetime limit (~6 minutes). This is handled transparently — no configuration needed.
+
+### Content Length Guard
+
+To prevent the WeCom SDK from silently splitting long messages across frames, the stream consumer rotates when accumulated content exceeds 3500 characters.
+
 ## Connection and Reconnection
 
 The adapter maintains a persistent WebSocket connection to WeCom's gateway at `wss://openws.work.weixin.qq.com`.
@@ -243,6 +311,7 @@ Inbound messages are deduplicated using message IDs with a 5-minute window and a
 | `WECOM_WEBSOCKET_URL` | — | `wss://openws.work.weixin.qq.com` | WebSocket gateway URL |
 | `WECOM_DM_POLICY` | — | `open` | DM access policy |
 | `WECOM_GROUP_POLICY` | — | `open` | Group access policy |
+| `HERMES_THINKING_MAX_SECONDS` | — | `1800` | Max seconds for the pre-stream thinking indicator loop |
 
 ## Troubleshooting
 

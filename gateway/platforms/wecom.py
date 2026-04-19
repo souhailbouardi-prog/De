@@ -37,6 +37,7 @@ import logging
 import mimetypes
 import os
 import re
+import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -67,6 +68,7 @@ from gateway.platforms.base import (
     cache_document_from_bytes,
     cache_image_from_bytes,
 )
+from gateway.wecom_stream_consumer import WAITING_MODEL_TEXT
 
 logger = logging.getLogger(__name__)
 
@@ -142,6 +144,9 @@ class WeComAdapter(BasePlatformAdapter):
     """WeCom AI Bot adapter backed by a persistent WebSocket connection."""
 
     MAX_MESSAGE_LENGTH = MAX_MESSAGE_LENGTH
+    # WeCom doesn't support editing sent messages — stream consumer must
+    # use native stream API instead of the edit-based GatewayStreamConsumer.
+    SUPPORTS_MESSAGE_EDITING = False
     # Threshold for detecting WeCom client-side message splits.
     # When a chunk is near the 4000-char limit, a continuation is almost certain.
     _SPLIT_THRESHOLD = 3900
@@ -173,6 +178,9 @@ class WeComAdapter(BasePlatformAdapter):
         self._pending_responses: Dict[str, asyncio.Future] = {}
         self._dedup = MessageDeduplicator(max_size=DEDUP_MAX_SIZE)
         self._reply_req_ids: Dict[str, str] = {}
+        self._thinking_task: Optional[asyncio.Task] = None
+        self._thinking_cancelled: bool = False
+        self._thinking_start_time: float = 0.0
 
         # Text batching: merge rapid successive messages (Telegram-style).
         # WeCom clients split long messages around 4000 chars.
@@ -447,6 +455,9 @@ class WeComAdapter(BasePlatformAdapter):
             )
             response = await asyncio.wait_for(future, timeout=timeout)
             return response
+        except asyncio.TimeoutError:
+            logger.warning(f"[{self.name}] _send_reply_request timeout for req_id={normalized_req_id[:20]}... cmd={cmd}")
+            raise
         finally:
             self._pending_responses.pop(normalized_req_id, None)
 
@@ -484,7 +495,22 @@ class WeComAdapter(BasePlatformAdapter):
         if self._dedup.is_duplicate(msg_id):
             logger.debug("[%s] Duplicate message %s ignored", self.name, msg_id)
             return
-        self._remember_reply_req_id(msg_id, self._payload_req_id(payload))
+        req_id = self._payload_req_id(payload)
+        self._remember_reply_req_id(msg_id, req_id)
+        # Store for send() to reuse the stream ID for final response
+        self._current_reply_req_id = req_id
+        # Cancel any previous thinking loop from a prior message
+        if getattr(self, "_thinking_task", None) and not self._thinking_task.done():
+            self._thinking_cancelled = True
+            self._thinking_task.cancel()
+        self._thinking_stream_id = self._new_req_id("stream")
+        # Start a looping f"{WAITING_MODEL_TEXT} N秒" indicator
+        self._thinking_start_time = time.time()
+        self._thinking_cancelled = False
+        self._thinking_task = asyncio.create_task(
+            self._thinking_loop(req_id, self._thinking_stream_id)
+        )
+        logger.info("[%s] Thinking indicator loop started (pre-processing)", self.name)
 
         sender = body.get("from") if isinstance(body.get("from"), dict) else {}
         sender_id = str(sender.get("userid") or "").strip()
@@ -1202,6 +1228,117 @@ class WeComAdapter(BasePlatformAdapter):
         self._raise_for_wecom_error(response, "send reply markdown")
         return response
 
+    async def _send_final_reply(self, reply_req_id: str, content: str) -> Dict[str, Any]:
+        logger.debug(f"[{self.name}] _send_final_reply called with reply_req_id={reply_req_id}")
+        if getattr(self, "_thinking_task", None):
+            logger.debug(f"[{self.name}] Cancelling existing thinking task")
+            self._thinking_cancelled = True
+            self._thinking_task.cancel()
+            try:
+                await self._thinking_task
+            except (asyncio.CancelledError, Exception) as e:
+                logger.debug(f"[{self.name}] Thinking task cancelled with exception: {e}")
+            self._thinking_task = None
+            await asyncio.sleep(0.3)
+
+        stream_id = getattr(self, "_thinking_stream_id", None) or self._new_req_id("stream")
+
+        # Only include thinking block if we actually received reasoning content
+        # (not just the waiting indicator lines from the thinking loop)
+        accumulated = getattr(self, "_thinking_accumulated_lines", None)
+        # Check if accumulated contains actual reasoning (not just waiting indicators)
+        has_actual_reasoning = accumulated and any(
+            WAITING_MODEL_TEXT not in line for line in accumulated
+        )
+
+        if has_actual_reasoning:
+            # Filter out waiting indicator lines, keep only actual reasoning
+            reasoning_lines = [line for line in accumulated if WAITING_MODEL_TEXT not in line]
+            think_content = "\n".join(reasoning_lines)
+            full_content = f"<think>{think_content}</think>\n{content}"
+        else:
+            full_content = content
+
+        response = await self._send_reply_stream(reply_req_id, full_content, stream_id=stream_id, finish=True)
+        logger.info(f"[{self.name}] Sent final reply with stream_id={stream_id}")
+        self._thinking_stream_id = None
+        return response
+
+    async def _thinking_loop(self, reply_req_id: str, stream_id: str) -> None:
+        """Loop sending thinking indicator every second.
+
+        Each tick appends a new line inside think tags so WeCom re-renders.
+        """
+        loop = asyncio.get_running_loop()
+        next_tick = loop.time() + 1.0
+        tick_count = 0
+        accumulated_lines: list[str] = []
+        self._thinking_accumulated_lines = accumulated_lines
+        _THINKING_MAX_SECONDS = int(os.getenv("HERMES_THINKING_MAX_SECONDS", "1800"))
+        try:
+            while not self._thinking_cancelled:
+                tick_count += 1
+                elapsed = tick_count - 1  # 0, 1, 2, 3... regardless of actual timing
+                if elapsed >= _THINKING_MAX_SECONDS:
+                    logger.warning(
+                        f"[{self.name}] Thinking loop hit max {elapsed}s limit, stopping updates"
+                    )
+                    break
+                accumulated_lines.append(f"{WAITING_MODEL_TEXT} {elapsed}s")
+                content = "<think>" + "\n".join(accumulated_lines)
+                send_start = loop.time()
+                try:
+                    await self._send_json({
+                        "cmd": APP_CMD_RESPONSE,
+                        "headers": {"req_id": reply_req_id},
+                        "body": {
+                            "msgtype": "stream",
+                            "stream": {
+                                "id": stream_id,
+                                "finish": False,
+                                "content": content[:self.MAX_MESSAGE_LENGTH],
+                            },
+                        },
+                    })
+                    send_dur = loop.time() - send_start
+                    if tick_count <= 3 or tick_count % 10 == 0:
+                        logger.info(
+                            f"[{self.name}] Thinking tick #{tick_count}: "
+                            f"elapsed={elapsed}s, send_dur={send_dur:.2f}s, "
+                            f"loop_t={loop.time():.3f}"
+                        )
+                except Exception as e:
+                    logger.warning(f"[{self.name}] Thinking loop update failed at tick #{tick_count}: {e}")
+                    return
+                # Sleep exactly 1 second from after this send completes
+                await asyncio.sleep(1.0)
+        except asyncio.CancelledError:
+            logger.info(f"[{self.name}] Thinking loop cancelled properly at {time.time()}")
+        finally:
+            self._thinking_cancelled = True
+
+    async def _send_reply_stream(
+        self,
+        reply_req_id: str,
+        content: str,
+        stream_id: Optional[str] = None,
+        finish: bool = True,
+    ) -> Dict[str, Any]:
+        sid = stream_id or self._new_req_id("stream")
+        response = await self._send_reply_request(
+            reply_req_id,
+            {
+                "msgtype": "stream",
+                "stream": {
+                    "id": sid,
+                    "finish": finish,
+                    "content": content[:self.MAX_MESSAGE_LENGTH],
+                },
+            },
+        )
+        self._raise_for_wecom_error(response, "send reply stream")
+        return response
+
     async def _send_reply_media_message(
         self,
         reply_req_id: str,
@@ -1334,8 +1471,13 @@ class WeComAdapter(BasePlatformAdapter):
                 reply_req_id = self._last_chat_req_ids[chat_id]
 
             if reply_req_id:
-                response = await self._send_reply_markdown(reply_req_id, content)
+                # Stop the thinking timer loop if running, then send final reply via stream
+                response = await self._send_final_reply(reply_req_id, content)
             else:
+                logger.info(
+                    "[%s] No reply_req_id for reply_to=%s, using regular markdown send",
+                    self.name, reply_to,
+                )
                 response = await self._send_request(
                     APP_CMD_SEND,
                     {
@@ -1450,7 +1592,7 @@ class WeComAdapter(BasePlatformAdapter):
         )
 
     async def send_typing(self, chat_id: str, metadata=None) -> None:
-        """WeCom does not expose typing indicators in this adapter."""
+        """WeCom thinking indicator is sent from _on_message before processing."""
         del chat_id, metadata
 
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
