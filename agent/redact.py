@@ -13,9 +13,20 @@ import re
 
 logger = logging.getLogger(__name__)
 
-# Snapshot at import time so runtime env mutations (e.g. LLM-generated
-# `export HERMES_REDACT_SECRETS=false`) cannot disable redaction mid-session.
-_REDACT_ENABLED = os.getenv("HERMES_REDACT_SECRETS", "").lower() not in ("0", "false", "no", "off")
+# Frozen on first call (not import time) so config.yaml has a chance to
+# set HERMES_REDACT_SECRETS before we snapshot.  Once frozen, runtime env
+# mutations (e.g. LLM-generated `export HERMES_REDACT_SECRETS=false`)
+# cannot disable redaction mid-session.
+_REDACT_ENABLED: bool | None = None
+
+
+def _is_redact_enabled() -> bool:
+    global _REDACT_ENABLED
+    if _REDACT_ENABLED is None:
+        _REDACT_ENABLED = os.getenv("HERMES_REDACT_SECRETS", "").lower() not in (
+            "0", "false", "no", "off",
+        )
+    return _REDACT_ENABLED
 
 # Known API key prefixes -- match the prefix + contiguous token chars
 _PREFIX_PATTERNS = [
@@ -133,7 +144,7 @@ def redact_sensitive_text(text: str) -> str:
         text = str(text)
     if not text:
         return text
-    if not _REDACT_ENABLED:
+    if not _is_redact_enabled():
         return text
 
     # Known prefixes (sk-, ghp_, etc.)
