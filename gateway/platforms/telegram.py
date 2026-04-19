@@ -2262,8 +2262,6 @@ class TelegramAdapter(BasePlatformAdapter):
             yield getattr(message, "caption", None) or "", getattr(message, "caption_entities", None) or []
 
         for source_text, entities in _iter_sources():
-            if bot_username and f"@{bot_username}" in source_text.lower():
-                return True
             for entity in entities:
                 entity_type = str(getattr(entity, "type", "")).split(".")[-1].lower()
                 if entity_type == "mention" and bot_username:
