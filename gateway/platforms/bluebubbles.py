@@ -916,3 +916,4 @@ class BlueBubblesAdapter(BasePlatformAdapter):
 
         return web.Response(text="ok")
 
+
