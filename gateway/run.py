@@ -3777,6 +3777,7 @@ class GatewayRunner:
                 _msg_ctx_len = get_model_context_length(
                     self._model,
                     base_url=self._base_url or "",
+                    config_context_length=getattr(self, "_config_context_length", None),
                 )
                 _ctx_result = await preprocess_context_references_async(
                     message_text,
@@ -4684,6 +4685,36 @@ class GatewayRunner:
         except Exception:
             pass
 
+        # Check custom_providers per-model context_length
+        # (same logic as run_agent.py and hygiene path in gateway/run.py)
+        if config_context_length is None and base_url:
+            try:
+                try:
+                    from hermes_cli.config import get_compatible_custom_providers as _info_gcp
+                    _info_custom_providers = _info_gcp(data)
+                except Exception:
+                    _info_custom_providers = data.get("custom_providers")
+                    if not isinstance(_info_custom_providers, list):
+                        _info_custom_providers = []
+                for _cp in _info_custom_providers:
+                    if not isinstance(_cp, dict):
+                        continue
+                    _cp_url = (_cp.get("base_url") or "").rstrip("/")
+                    if _cp_url and _cp_url == (base_url or "").rstrip("/"):
+                        _cp_models = _cp.get("models", {})
+                        if isinstance(_cp_models, dict):
+                            _cp_model_cfg = _cp_models.get(model, {})
+                            if isinstance(_cp_model_cfg, dict):
+                                _cp_ctx = _cp_model_cfg.get("context_length")
+                                if _cp_ctx is not None:
+                                    try:
+                                        config_context_length = int(_cp_ctx)
+                                    except (TypeError, ValueError):
+                                        pass
+                        break
+            except Exception:
+                pass
+
         context_length = get_model_context_length(
             model,
             base_url=base_url or "",
@@ -5512,10 +5543,42 @@ class GatewayRunner:
         else:
             try:
                 from agent.model_metadata import get_model_context_length
+                # Resolve config_context_length from custom_providers
+                _switch_ctx_len = None
+                try:
+                    _switch_base = result.base_url or current_base_url
+                    if _switch_base:
+                        _switch_cfg_path = _hermes_home / "config.yaml"
+                        if _switch_cfg_path.exists():
+                            import yaml as _sw_yaml
+                            with open(_switch_cfg_path, encoding="utf-8") as _sw_f:
+                                _sw_data = _sw_yaml.safe_load(_sw_f) or {}
+                            try:
+                                from hermes_cli.config import get_compatible_custom_providers as _sw_gcp
+                                _sw_cps = _sw_gcp(_sw_data)
+                            except Exception:
+                                _sw_cps = _sw_data.get("custom_providers", [])
+                            for _sw_cp in _sw_cps if isinstance(_sw_cps, list) else []:
+                                if not isinstance(_sw_cp, dict):
+                                    continue
+                                _sw_cp_url = (_sw_cp.get("base_url") or "").rstrip("/")
+                                if _sw_cp_url and _sw_cp_url == _switch_base.rstrip("/"):
+                                    _sw_cp_models = _sw_cp.get("models", {})
+                                    if isinstance(_sw_cp_models, dict):
+                                        _sw_cp_mcfg = _sw_cp_models.get(result.new_model, {})
+                                        if isinstance(_sw_cp_mcfg, dict):
+                                            _sw_raw = _sw_cp_mcfg.get("context_length")
+                                            if _sw_raw is not None:
+                                                try: _switch_ctx_len = int(_sw_raw)
+                                                except (TypeError, ValueError): pass
+                                    break
+                except Exception:
+                    pass
                 ctx = get_model_context_length(
                     result.new_model,
                     base_url=result.base_url or current_base_url,
                     api_key=result.api_key or current_api_key,
+                    config_context_length=_switch_ctx_len,
                     provider=result.target_provider,
                 )
                 lines.append(f"Context: {ctx:,} tokens")
