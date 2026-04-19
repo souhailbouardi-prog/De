@@ -775,7 +775,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
                 )[0]
                 payload = json.loads(payload_str) if payload_str else {}
         except Exception as exc:
-            logger.error("[bluebubbles] webhook parse error: %s", exc)
+            logger.error("[bluebubbles] webhook parse error: %s", exc, exc_info=True)
             return web.json_response({"error": "invalid payload"}, status=400)
 
         event_type = self._value(payload.get("type"), payload.get("event")) or ""
