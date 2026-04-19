@@ -1030,6 +1030,64 @@ class TestHTTPConfig:
         asyncio.run(_test())
 
 
+class TestResolveHttpTransport:
+    """_resolve_http_transport picks between streamable_http and sse."""
+
+    def test_default_is_streamable_http(self):
+        from tools.mcp_tool import MCPServerTask
+        assert MCPServerTask._resolve_http_transport(
+            "https://example.com/mcp", {}
+        ) == "streamable_http"
+
+    def test_sse_suffix_detected(self):
+        from tools.mcp_tool import MCPServerTask
+        assert MCPServerTask._resolve_http_transport(
+            "https://example.com/sse", {}
+        ) == "sse"
+
+    def test_sse_suffix_with_trailing_slash(self):
+        from tools.mcp_tool import MCPServerTask
+        assert MCPServerTask._resolve_http_transport(
+            "https://example.com/sse/", {}
+        ) == "sse"
+
+    def test_sse_suffix_ignored_when_query_or_fragment_present(self):
+        from tools.mcp_tool import MCPServerTask
+        # Query / fragment shouldn't fool the suffix check.
+        assert MCPServerTask._resolve_http_transport(
+            "https://example.com/sse?token=abc", {}
+        ) == "sse"
+        assert MCPServerTask._resolve_http_transport(
+            "https://example.com/api#sse", {}
+        ) == "streamable_http"
+
+    def test_explicit_sse_config_overrides_url(self):
+        from tools.mcp_tool import MCPServerTask
+        assert MCPServerTask._resolve_http_transport(
+            "https://example.com/mcp", {"transport": "sse"}
+        ) == "sse"
+
+    def test_explicit_streamable_http_overrides_url(self):
+        from tools.mcp_tool import MCPServerTask
+        # Even with a /sse URL, explicit streamable_http wins.
+        assert MCPServerTask._resolve_http_transport(
+            "https://example.com/sse", {"transport": "streamable_http"}
+        ) == "streamable_http"
+        assert MCPServerTask._resolve_http_transport(
+            "https://example.com/sse", {"transport": "streamable-http"}
+        ) == "streamable_http"
+
+    def test_unknown_transport_falls_through_to_url_detection(self):
+        from tools.mcp_tool import MCPServerTask
+        # Garbage transport string — fall back to URL-based detection.
+        assert MCPServerTask._resolve_http_transport(
+            "https://example.com/sse", {"transport": "nonsense"}
+        ) == "sse"
+        assert MCPServerTask._resolve_http_transport(
+            "https://example.com/mcp", {"transport": "nonsense"}
+        ) == "streamable_http"
+
+
 # ---------------------------------------------------------------------------
 # Reconnection logic
 # ---------------------------------------------------------------------------
