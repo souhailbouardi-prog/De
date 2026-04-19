@@ -150,7 +150,36 @@ def _get_session(task_id: Optional[str]) -> Dict[str, Any]:
                 "managed": False,
             }
         _sessions[task_id] = session
-        return session
+
+    # Auto-reattach: if tab_id is None, check server for existing tabs.
+    # This handles cases where a previous task's cleanup dropped the local
+    # Python-side session while the server-side shared-context tab is still
+    # alive (e.g. human takeover/noVNC handoff). Without this, snapshot/click
+    # would fail with "No browser session" even though the live tab still
+    # exists on the Camofox server.
+    session = _sessions[task_id]
+    if not session["tab_id"]:
+        try:
+            base = get_camofox_url()
+            resp = requests.get(
+                f"{base}/tabs",
+                params={"userId": session["user_id"]},
+                timeout=5,
+            )
+            if resp.status_code == 200:
+                tabs = resp.json().get("tabs", [])
+                if tabs:
+                    reused_tab = tabs[-1]
+                    session["tab_id"] = reused_tab.get("tabId") or reused_tab.get("targetId")
+                    logger.info(
+                        "Auto-reattached to existing tab %s (url: %s)",
+                        session["tab_id"],
+                        reused_tab.get("url", "?"),
+                    )
+        except Exception as exc:
+            logger.debug("Auto-reattach check failed: %s", exc)
+
+    return session
 
 
 def _ensure_tab(task_id: Optional[str], url: str = "about:blank") -> Dict[str, Any]:

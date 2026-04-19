@@ -95,6 +95,29 @@ class TestEphemeralMode:
         s2 = _get_session("task-1")
         assert s1 is s2
 
+    def test_auto_reattach_uses_existing_server_tab(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("CAMOFOX_URL", "http://localhost:9377")
+
+        tab_list_resp = _mock_response(
+            json_data={
+                "running": True,
+                "tabs": [
+                    {
+                        "tabId": "tab-existing",
+                        "url": "https://cloud.vast.ai/login/",
+                    }
+                ],
+            }
+        )
+
+        with patch("tools.browser_camofox.requests.get", return_value=tab_list_resp) as mock_get:
+            session = _get_session("task-1")
+
+        assert session["tab_id"] == "tab-existing"
+        mock_get.assert_called_once()
+        assert mock_get.call_args.kwargs["params"]["userId"] == session["user_id"]
+
 
 class TestManagedPersistenceMode:
     """With managed_persistence: stable userId derived from Hermes profile."""
