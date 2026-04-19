@@ -681,8 +681,6 @@ class TestAgentCacheSpilloverLive:
             platform="telegram",
         )
 
-    import pytest
-    @pytest.mark.skip(reason="Deadlocks under heavy concurrency testing in CI (httpx async shutdown)")
     def test_fill_to_cap_then_spillover(self, monkeypatch):
         """Fill to cap with real agents, insert one more, oldest evicted."""
         from gateway import run as gw_run
@@ -716,8 +714,6 @@ class TestAgentCacheSpilloverLive:
             except Exception:
                 pass
 
-    import pytest
-    @pytest.mark.skip(reason="Deadlocks under heavy concurrency testing in CI (httpx async shutdown)")
     def test_spillover_all_active_keeps_cache_over_cap(self, monkeypatch, caplog):
         """Every slot active: cache goes over cap, no one gets torn down."""
         from gateway import run as gw_run
@@ -936,8 +932,6 @@ class TestAgentCacheIdleResume:
             f"tabs and cookies gone on resume. Calls: {browser_calls}"
         )
 
-    import pytest
-    @pytest.mark.skip(reason="Deadlocks under heavy concurrency testing in CI (httpx async shutdown)")
     def test_release_clients_closes_llm_client(self):
         """release_clients IS expected to close the OpenAI/httpx client."""
         from run_agent import AIAgent
@@ -956,8 +950,6 @@ class TestAgentCacheIdleResume:
         # Post-release: client reference is dropped (memory freed).
         assert agent.client is None
 
-    import pytest
-    @pytest.mark.skip(reason="Deadlocks under heavy concurrency testing in CI (httpx async shutdown)")
     def test_close_vs_release_full_teardown_difference(self, monkeypatch):
         """close() tears down task state; release_clients() does not.
 
@@ -1002,8 +994,6 @@ class TestAgentCacheIdleResume:
         assert "hard-session" in vm_calls
         assert "soft-session" not in vm_calls
 
-    import pytest
-    @pytest.mark.skip(reason="Deadlocks under heavy concurrency testing in CI (httpx async shutdown)")
     def test_idle_evicted_session_rebuild_inherits_task_id(self, monkeypatch):
         """After idle-TTL eviction, a fresh agent with the same session_id
         gets the same task_id — so tool state (terminal/browser/bg procs)
