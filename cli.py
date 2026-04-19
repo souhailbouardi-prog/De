@@ -8578,6 +8578,39 @@ class HermesCLI:
             ] if item is not None
         ]
 
+    def _handle_ctrl_d_keypress(self, app):
+        """Handle Ctrl+D like a normal Unix line editor.
+
+        Behavior:
+        - Non-empty buffer: delete the character under the cursor (or no-op at EOL)
+        - Empty buffer: exit the CLI (EOF)
+
+        This avoids treating Ctrl+D as unconditional process termination when the
+        user is editing an in-progress line.
+        """
+        buf = getattr(app, "current_buffer", None)
+        text = getattr(buf, "text", "") if buf is not None else ""
+
+        if buf is not None and text:
+            try:
+                buf.delete()
+            except Exception:
+                pass
+            try:
+                app.invalidate()
+            except Exception:
+                pass
+            return
+
+        self._should_exit = True
+        if getattr(app, "is_running", False):
+            app.exit()
+        else:
+            try:
+                app.exit()
+            except Exception:
+                pass
+
     def run(self):
         """Run the interactive CLI loop with persistent input at bottom."""
         # Push the entire TUI to the bottom of the terminal so the banner,
@@ -9035,9 +9068,8 @@ class HermesCLI:
         
         @kb.add('c-d')
         def handle_ctrl_d(event):
-            """Handle Ctrl+D - exit."""
-            self._should_exit = True
-            event.app.exit()
+            """Handle Ctrl+D - delete forward or exit on EOF."""
+            self._handle_ctrl_d_keypress(event.app)
 
         _modal_prompt_active = Condition(
             lambda: bool(self._secret_state or self._sudo_state)
