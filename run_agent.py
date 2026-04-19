@@ -1292,7 +1292,7 @@ class AIAgent:
         # tool+args is called consecutively N times, we abort to force
         # the LLM into a different strategy.
         self._consecutive_tool_calls: list[tuple[str, str]] = []
-        self._circuit_breaker_threshold: int = 3
+        self._circuit_breaker_threshold: int = 5
         if not skip_memory:
             try:
                 mem_config = _agent_cfg.get("memory", {})
@@ -7756,8 +7756,9 @@ class AIAgent:
                 # All same — circuit breaker triggered!
                 streak = len(self._consecutive_tool_calls)
                 msg = (
-                    f"[熔断器触发] 工具 '{function_name}' 连续 {streak} 次调用完全相同的参数，"
-                    f"已强制终止。请换用不同的工具或策略。"
+                    f"[Circuit breaker triggered] Tool '{function_name}' called "
+                    f"{streak} consecutive times with identical arguments. "
+                    f"Please try a different approach."
                 )
                 logger.warning("Circuit breaker triggered: %s (streak=%d)", function_name, streak)
                 # Reset streak so future calls can succeed
@@ -8283,12 +8284,14 @@ class AIAgent:
                 _cb_n = len(self._consecutive_tool_calls)
                 if _cb_n >= self._circuit_breaker_threshold:
                     _cb_recent_sigs = [s for _, s in self._consecutive_tool_calls[-self._circuit_breaker_threshold:]]
+                    # All same — circuit breaker triggered!
                     if len(set(_cb_recent_sigs)) == 1:
                         _cb_streak = len(self._consecutive_tool_calls)
                         function_result = json.dumps({
                             "error": (
-                                f"[熔断器触发] 工具 '{function_name}' 连续 {_cb_streak} 次调用完全相同的参数，"
-                                f"已强制终止。请换用不同的工具或策略。"
+                                f"[Circuit breaker triggered] Tool '{function_name}' called "
+                                f"{_cb_streak} consecutive times with identical arguments. "
+                                f"Please try a different approach."
                             )
                         }, ensure_ascii=False)
                         logger.warning("Circuit breaker triggered (sequential): %s (streak=%d)", function_name, _cb_streak)
