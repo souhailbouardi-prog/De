@@ -277,16 +277,19 @@ class TestClassifyApiError:
         e = MockAPIError("Bad Gateway", status_code=502)
         result = classify_api_error(e)
         assert result.reason == FailoverReason.server_error
+        assert result.should_fallback is False
 
     def test_503_overloaded(self):
         e = MockAPIError("Service Unavailable", status_code=503)
         result = classify_api_error(e)
         assert result.reason == FailoverReason.overloaded
+        assert result.should_fallback is True
 
     def test_529_anthropic_overloaded(self):
         e = MockAPIError("Overloaded", status_code=529)
         result = classify_api_error(e)
         assert result.reason == FailoverReason.overloaded
+        assert result.should_fallback is True
 
     # ── Model not found ──
 

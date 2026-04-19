@@ -10349,14 +10349,20 @@ class AIAgent:
                     is_rate_limited = classified.reason in (
                         FailoverReason.rate_limit,
                         FailoverReason.billing,
+                        FailoverReason.overloaded,
                     )
                     if is_rate_limited and self._fallback_index < len(self._fallback_chain):
                         # Don't eagerly fallback if credential pool rotation may
                         # still recover.  The pool's retry-then-rotate cycle needs
                         # at least one more attempt to fire — jumping to a fallback
                         # provider here short-circuits it.
+                        # However, credential rotation cannot fix provider-side
+                        # overload (503/529), so bypass the pool check for that.
                         pool = self._credential_pool
-                        pool_may_recover = pool is not None and pool.has_available()
+                        rotation_may_help = classified.reason not in (
+                            FailoverReason.overloaded,
+                        )
+                        pool_may_recover = rotation_may_help and pool is not None and pool.has_available()
                         if not pool_may_recover:
                             self._emit_status("⚠️ Rate limited — switching to fallback provider...")
                             if self._try_activate_fallback():

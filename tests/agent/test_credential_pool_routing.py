@@ -209,43 +209,115 @@ class TestEagerFallbackWithPool:
 
         return agent
 
-    def test_eager_fallback_deferred_when_pool_has_credentials(self):
-        """429 with active pool should NOT trigger eager fallback."""
-        agent = self._make_agent(has_pool=True, pool_has_creds=True, has_fallback=True)
+    def _simulate_eager_fallback_check(self, agent, reason):
+        """Simulate the eager fallback logic from run_agent.py (lines 9880-9903).
 
-        # Simulate the check from run_agent.py lines 7180-7191
-        is_rate_limited = True
+        Mirrors the production code path so tests stay in sync with the
+        actual implementation.
+        """
+        from agent.error_classifier import FailoverReason
+
+        is_rate_limited = reason in (
+            FailoverReason.rate_limit,
+            FailoverReason.billing,
+            FailoverReason.overloaded,
+        )
         if is_rate_limited and agent._fallback_index < len(agent._fallback_chain):
             pool = agent._credential_pool
-            pool_may_recover = pool is not None and pool.has_available()
+            rotation_may_help = reason not in (
+                FailoverReason.overloaded,
+            )
+            pool_may_recover = rotation_may_help and pool is not None and pool.has_available()
             if not pool_may_recover:
                 agent._try_activate_fallback()
+
+    def test_rate_limit_deferred_when_pool_has_credentials(self):
+        """429 (rate_limit) with active pool should NOT trigger eager fallback."""
+        from agent.error_classifier import FailoverReason
+
+        agent = self._make_agent(has_pool=True, pool_has_creds=True, has_fallback=True)
+        self._simulate_eager_fallback_check(agent, FailoverReason.rate_limit)
 
         agent._try_activate_fallback.assert_not_called()
 
-    def test_eager_fallback_fires_when_no_pool(self):
+    def test_rate_limit_fires_when_no_pool(self):
         """429 without pool should trigger eager fallback."""
-        agent = self._make_agent(has_pool=False, has_fallback=True)
+        from agent.error_classifier import FailoverReason
 
-        is_rate_limited = True
-        if is_rate_limited and agent._fallback_index < len(agent._fallback_chain):
-            pool = agent._credential_pool
-            pool_may_recover = pool is not None and pool.has_available()
-            if not pool_may_recover:
-                agent._try_activate_fallback()
+        agent = self._make_agent(has_pool=False, has_fallback=True)
+        self._simulate_eager_fallback_check(agent, FailoverReason.rate_limit)
 
         agent._try_activate_fallback.assert_called_once()
 
-    def test_eager_fallback_fires_when_pool_exhausted(self):
+    def test_rate_limit_fires_when_pool_exhausted(self):
         """429 with exhausted pool should trigger eager fallback."""
-        agent = self._make_agent(has_pool=True, pool_has_creds=False, has_fallback=True)
+        from agent.error_classifier import FailoverReason
 
-        is_rate_limited = True
-        if is_rate_limited and agent._fallback_index < len(agent._fallback_chain):
-            pool = agent._credential_pool
-            pool_may_recover = pool is not None and pool.has_available()
-            if not pool_may_recover:
-                agent._try_activate_fallback()
+        agent = self._make_agent(has_pool=True, pool_has_creds=False, has_fallback=True)
+        self._simulate_eager_fallback_check(agent, FailoverReason.rate_limit)
+
+        agent._try_activate_fallback.assert_called_once()
+
+    # -- overloaded (503/529) bypasses credential pool --
+
+    def test_overloaded_fires_fallback_even_with_active_pool(self):
+        """503/529 (overloaded) should bypass pool check and trigger fallback immediately.
+
+        Credential rotation cannot fix provider-side overload, so the pool
+        must not block the fallback.
+        """
+        from agent.error_classifier import FailoverReason
+
+        agent = self._make_agent(has_pool=True, pool_has_creds=True, has_fallback=True)
+        self._simulate_eager_fallback_check(agent, FailoverReason.overloaded)
+
+        agent._try_activate_fallback.assert_called_once()
+
+    def test_overloaded_fires_fallback_when_no_pool(self):
+        """503/529 without pool should still trigger eager fallback."""
+        from agent.error_classifier import FailoverReason
+
+        agent = self._make_agent(has_pool=False, has_fallback=True)
+        self._simulate_eager_fallback_check(agent, FailoverReason.overloaded)
+
+        agent._try_activate_fallback.assert_called_once()
+
+    def test_overloaded_fires_fallback_when_pool_exhausted(self):
+        """503/529 with exhausted pool should trigger eager fallback."""
+        from agent.error_classifier import FailoverReason
+
+        agent = self._make_agent(has_pool=True, pool_has_creds=False, has_fallback=True)
+        self._simulate_eager_fallback_check(agent, FailoverReason.overloaded)
+
+        agent._try_activate_fallback.assert_called_once()
+
+    # -- billing (402) behaves like rate_limit: pool defers fallback --
+
+    def test_billing_deferred_when_pool_has_credentials(self):
+        """402 (billing) with active pool should NOT trigger eager fallback —
+        credential rotation to a different key with remaining credits may help."""
+        from agent.error_classifier import FailoverReason
+
+        agent = self._make_agent(has_pool=True, pool_has_creds=True, has_fallback=True)
+        self._simulate_eager_fallback_check(agent, FailoverReason.billing)
+
+        agent._try_activate_fallback.assert_not_called()
+
+    def test_billing_fires_when_no_pool(self):
+        """402 without pool should trigger eager fallback."""
+        from agent.error_classifier import FailoverReason
+
+        agent = self._make_agent(has_pool=False, has_fallback=True)
+        self._simulate_eager_fallback_check(agent, FailoverReason.billing)
+
+        agent._try_activate_fallback.assert_called_once()
+
+    def test_billing_fires_when_pool_exhausted(self):
+        """402 with exhausted pool should trigger eager fallback."""
+        from agent.error_classifier import FailoverReason
+
+        agent = self._make_agent(has_pool=True, pool_has_creds=False, has_fallback=True)
+        self._simulate_eager_fallback_check(agent, FailoverReason.billing)
 
         agent._try_activate_fallback.assert_called_once()
 
