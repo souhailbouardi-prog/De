@@ -41,7 +41,7 @@ import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 from urllib.parse import urlparse
 
 try:
@@ -186,6 +186,11 @@ class QQAdapter(BasePlatformAdapter):
         self._http_client: Optional[httpx.AsyncClient] = None
         self._listen_task: Optional[asyncio.Task] = None
         self._heartbeat_task: Optional[asyncio.Task] = None
+        # Strong references to fire-and-forget dispatch tasks (resume /
+        # identify / inbound message handlers) so the event loop's
+        # weak-ref-only tracking of ``create_task`` does not garbage-
+        # collect them mid-flight.
+        self._bg_tasks: Set[asyncio.Task] = set()
         self._heartbeat_interval: float = 30.0  # seconds, updated by Hello
         self._session_id: Optional[str] = None
         self._last_seq: Optional[int] = None
@@ -293,6 +298,15 @@ class QQAdapter(BasePlatformAdapter):
             except asyncio.CancelledError:
                 pass
             self._heartbeat_task = None
+
+        # Cancel any in-flight fire-and-forget tasks (resume / identify
+        # / inbound message handlers) so they don't keep running after
+        # the WebSocket is torn down.
+        if self._bg_tasks:
+            for task in list(self._bg_tasks):
+                task.cancel()
+            await asyncio.gather(*self._bg_tasks, return_exceptions=True)
+            self._bg_tasks.clear()
 
         await self._cleanup()
         self._release_platform_lock()
@@ -685,18 +699,24 @@ class QQAdapter(BasePlatformAdapter):
             self._session_id = None
             self._last_seq = None
 
-    @staticmethod
-    def _create_task(coro):
+    def _create_task(self, coro):
         """Schedule a coroutine, silently skipping if no event loop is running.
 
-        This avoids ``RuntimeError: no running event loop`` when tests call
-        ``_dispatch_payload`` synchronously outside of ``asyncio.run()``.
+        Tracks the task in ``self._bg_tasks`` so the event loop's
+        weak-reference tracking of ``create_task`` does not
+        garbage-collect it mid-flight (see Python docs for
+        ``asyncio.create_task``). Returns ``None`` when called from a
+        synchronous test context where no loop is running, so callers
+        that chose to ignore the return value continue to work.
         """
         try:
             loop = asyncio.get_running_loop()
-            return loop.create_task(coro)
         except RuntimeError:
             return None
+        task = loop.create_task(coro)
+        self._bg_tasks.add(task)
+        task.add_done_callback(self._bg_tasks.discard)
+        return task
 
     def _dispatch_payload(self, payload: Dict[str, Any]) -> None:
         """Route inbound WebSocket payloads (dispatch synchronously, spawn async handlers)."""
@@ -740,7 +760,7 @@ class QQAdapter(BasePlatformAdapter):
                     "GUILD_MESSAGE_CREATE",
                     "GUILD_AT_MESSAGE_CREATE",
             ):
-                asyncio.create_task(self._on_message(t, d))
+                self._create_task(self._on_message(t, d))
             else:
                 logger.debug("[%s] Unhandled dispatch: %s", self._log_tag, t)
             return

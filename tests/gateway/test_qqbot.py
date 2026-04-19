@@ -582,3 +582,92 @@ class TestWaitForReconnection:
         assert not result.success
         assert result.retryable is True
         assert "Not connected" in result.error
+
+
+class TestQQBackgroundTaskTracking:
+    """Regression: fire-and-forget dispatch tasks (resume / identify /
+    inbound message handlers) must be tracked in ``_bg_tasks`` so
+    Python's weak-reference tracking of ``create_task`` does not
+    garbage-collect them mid-flight.
+    """
+
+    def _make_adapter(self):
+        from gateway.platforms.qqbot import QQAdapter
+        return QQAdapter(_make_config(app_id="a", client_secret="b"))
+
+    def test_create_task_tracks_and_discards(self):
+        async def _run():
+            adapter = self._make_adapter()
+            assert len(adapter._bg_tasks) == 0
+
+            gate = asyncio.Event()
+
+            async def work():
+                await gate.wait()
+
+            task = adapter._create_task(work())
+            assert task is not None
+            assert len(adapter._bg_tasks) == 1
+
+            gate.set()
+            for _ in range(5):
+                await asyncio.sleep(0)
+                if len(adapter._bg_tasks) == 0:
+                    break
+            assert len(adapter._bg_tasks) == 0
+
+        asyncio.run(_run())
+
+    def test_create_task_returns_none_without_running_loop(self):
+        """Preserves backwards-compat for tests that invoke
+        ``_dispatch_payload`` synchronously."""
+        adapter = self._make_adapter()
+
+        async def never_runs():
+            pass
+
+        coro = never_runs()
+        try:
+            result = adapter._create_task(coro)
+            assert result is None
+            assert len(adapter._bg_tasks) == 0
+        finally:
+            coro.close()
+
+    def test_dispatch_inbound_uses_tracked_task(self):
+        """The dispatch path for inbound message types must now route
+        through ``_create_task`` — the bare ``asyncio.create_task`` at
+        the dispatch site would have left the message-handling task
+        subject to GC mid-flight.
+        """
+        async def _run():
+            adapter = self._make_adapter()
+            started = asyncio.Event()
+            gate = asyncio.Event()
+
+            async def fake_on_message(t, d):
+                started.set()
+                await gate.wait()
+
+            adapter._on_message = fake_on_message
+            adapter._dispatch_payload({
+                "op": 0,
+                "t": "C2C_MESSAGE_CREATE",
+                "s": 1,
+                "d": {"id": "m1"},
+            })
+
+            await asyncio.wait_for(started.wait(), timeout=1.0)
+            assert len(adapter._bg_tasks) == 1, (
+                "inbound dispatch task is not tracked — it could be "
+                "garbage-collected before the user's message is processed"
+            )
+
+            gate.set()
+            for _ in range(10):
+                await asyncio.sleep(0)
+                if len(adapter._bg_tasks) == 0:
+                    break
+            assert len(adapter._bg_tasks) == 0
+
+        asyncio.run(_run())
