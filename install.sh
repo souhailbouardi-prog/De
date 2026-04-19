@@ -104,28 +104,28 @@ done
 print_banner() {
     echo ""
     echo -e "${MAGENTA}${BOLD}"
-    echo "┌─────────────────────────────────────────────────────────┐"
-    echo "│             ⚕ Hermes Agent Installer                    │"
-    echo "├─────────────────────────────────────────────────────────┤"
-    echo "│  An open source AI agent by Nous Research.              │"
-    echo "└─────────────────────────────────────────────────────────┘"
+    echo "����������������������������������������������������������������������������������������������������������������������"
+    echo "��             ? Hermes Agent Installer                    ��"
+    echo "����������������������������������������������������������������������������������������������������������������������"
+    echo "��  An open source AI agent by Nous Research.              ��"
+    echo "����������������������������������������������������������������������������������������������������������������������"
     echo -e "${NC}"
 }
 
 log_info() {
-    echo -e "${CYAN}→${NC} $1"
+    echo -e "${CYAN}��${NC} $1"
 }
 
 log_success() {
-    echo -e "${GREEN}✓${NC} $1"
+    echo -e "${GREEN}?${NC} $1"
 }
 
 log_warn() {
-    echo -e "${YELLOW}⚠${NC} $1"
+    echo -e "${YELLOW}?${NC} $1"
 }
 
 log_error() {
-    echo -e "${RED}✗${NC} $1"
+    echo -e "${RED}?${NC} $1"
 }
 
 prompt_yes_no() {
@@ -242,7 +242,7 @@ detect_os() {
 
 install_uv() {
     if [ "$DISTRO" = "termux" ]; then
-        log_info "Termux detected — using Python's stdlib venv + pip instead of uv"
+        log_info "Termux detected �� using Python's stdlib venv + pip instead of uv"
         UV_CMD=""
         return 0
     fi
@@ -319,7 +319,7 @@ check_python() {
 
     log_info "Checking Python $PYTHON_VERSION..."
 
-    # Let uv handle Python — it can download and manage Python versions
+    # Let uv handle Python �� it can download and manage Python versions
     # First check if a suitable Python is already available
     if $UV_CMD python find "$PYTHON_VERSION" &> /dev/null; then
         PYTHON_PATH=$($UV_CMD python find "$PYTHON_VERSION")
@@ -328,7 +328,7 @@ check_python() {
         return 0
     fi
 
-    # Python not found — use uv to install it (no sudo needed!)
+    # Python not found �� use uv to install it (no sudo needed!)
     log_info "Python $PYTHON_VERSION not found, installing via uv..."
     if $UV_CMD python install "$PYTHON_VERSION"; then
         PYTHON_PATH=$($UV_CMD python find "$PYTHON_VERSION")
@@ -413,9 +413,9 @@ check_node() {
     fi
 
     if [ "$DISTRO" = "termux" ]; then
-        log_info "Node.js not found — installing Node.js via pkg..."
+        log_info "Node.js not found �� installing Node.js via pkg..."
     else
-        log_info "Node.js not found — installing Node.js $NODE_VERSION LTS..."
+        log_info "Node.js not found �� installing Node.js $NODE_VERSION LTS..."
     fi
     install_node
 }
@@ -577,7 +577,7 @@ install_system_packages() {
         return 0
     fi
 
-    # Nothing to install — done
+    # Nothing to install �� done
     if [ "$need_ripgrep" = false ] && [ "$need_ffmpeg" = false ]; then
         return 0
     fi
@@ -596,7 +596,7 @@ install_system_packages() {
     local description
     description=$(IFS=" and "; echo "${desc_parts[*]}")
 
-    # ── macOS: brew ──
+    # ���� macOS: brew ����
     if [ "$OS" = "macos" ]; then
         if command -v brew &> /dev/null; then
             log_info "Installing ${pkgs[*]} via Homebrew..."
@@ -611,7 +611,7 @@ install_system_packages() {
         return 0
     fi
 
-    # ── Linux: resolve package manager command ──
+    # ���� Linux: resolve package manager command ����
     local pkg_install=""
     case "$DISTRO" in
         ubuntu|debian) pkg_install="apt install -y"   ;;
@@ -627,7 +627,7 @@ install_system_packages() {
             ubuntu|debian) export DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a ;;
         esac
 
-        # Already root — just install
+        # Already root �� just install
         if [ "$(id -u)" -eq 0 ]; then
             log_info "Installing ${pkgs[*]}..."
             if $install_cmd; then
@@ -635,7 +635,7 @@ install_system_packages() {
                 [ "$need_ffmpeg" = true ]  && HAS_FFMPEG=true  && log_success "ffmpeg installed"
                 return 0
             fi
-        # Passwordless sudo — just install
+        # Passwordless sudo �� just install
         elif command -v sudo &> /dev/null && sudo -n true 2>/dev/null; then
             log_info "Installing ${pkgs[*]}..."
             if sudo DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a $install_cmd; then
@@ -643,7 +643,7 @@ install_system_packages() {
                 [ "$need_ffmpeg" = true ]  && HAS_FFMPEG=true  && log_success "ffmpeg installed"
                 return 0
             fi
-        # sudo needs password — ask once for everything
+        # sudo needs password �� ask once for everything
         elif command -v sudo &> /dev/null; then
             if [ "$IS_INTERACTIVE" = true ]; then
                 echo ""
@@ -670,13 +670,13 @@ install_system_packages() {
                     fi
                 fi
             else
-                log_warn "Non-interactive mode and no terminal available — cannot install system packages"
+                log_warn "Non-interactive mode and no terminal available �� cannot install system packages"
                 log_info "Install manually after setup completes: sudo $install_cmd"
             fi
         fi
     fi
 
-    # ── Fallback for ripgrep: cargo ──
+    # ���� Fallback for ripgrep: cargo ����
     if [ "$need_ripgrep" = true ] && [ "$HAS_RIPGREP" = false ]; then
         if command -v cargo &> /dev/null; then
             log_info "Trying cargo install ripgrep (no sudo needed)..."
@@ -687,7 +687,7 @@ install_system_packages() {
         fi
     fi
 
-    # ── Show manual instructions for anything still missing ──
+    # ���� Show manual instructions for anything still missing ����
     if [ "$HAS_RIPGREP" = false ] && [ "$need_ripgrep" = true ]; then
         log_warn "ripgrep not installed (file search will use grep fallback)"
         show_manual_install_hint "ripgrep"
@@ -896,7 +896,7 @@ install_deps() {
         log_info "Termux note: browser/WhatsApp tooling is not installed by default; see the Termux guide for optional follow-up steps."
 
         if [ -d "tinker-atropos" ] && [ -f "tinker-atropos/pyproject.toml" ]; then
-            log_info "tinker-atropos submodule found — skipping install (optional, for RL training)"
+            log_info "tinker-atropos submodule found �� skipping install (optional, for RL training)"
             log_info "  To install later: $PIP_PYTHON -m pip install -e \"./tinker-atropos\""
         fi
 
@@ -956,10 +956,10 @@ install_deps() {
 
     log_success "Main package installed"
 
-    # tinker-atropos (RL training) is optional — skip by default.
+    # tinker-atropos (RL training) is optional �� skip by default.
     # To enable RL tools: git submodule update --init tinker-atropos && uv pip install -e "./tinker-atropos"
     if [ -d "tinker-atropos" ] && [ -f "tinker-atropos/pyproject.toml" ]; then
-        log_info "tinker-atropos submodule found — skipping install (optional, for RL training)"
+        log_info "tinker-atropos submodule found �� skipping install (optional, for RL training)"
         log_info "  To install: $UV_CMD pip install -e \"./tinker-atropos\""
     fi
 
@@ -999,7 +999,7 @@ setup_path() {
     # Create a user-facing shim for the hermes command.
     mkdir -p "$command_link_dir"
     ln -sf "$HERMES_BIN" "$command_link_dir/hermes"
-    log_success "Symlinked hermes → $command_link_display_dir/hermes"
+    log_success "Symlinked hermes �� $command_link_display_dir/hermes"
 
     if [ "$DISTRO" = "termux" ]; then
         export PATH="$command_link_dir:$PATH"
@@ -1030,7 +1030,7 @@ setup_path() {
                 [ -f "$HOME/.bash_profile" ] && SHELL_CONFIGS+=("$HOME/.bash_profile")
                 ;;
             fish)
-                # fish uses ~/.config/fish/config.fish and fish_add_path — not export PATH=
+                # fish uses ~/.config/fish/config.fish and fish_add_path �� not export PATH=
                 IS_FISH=true
                 FISH_CONFIG="$HOME/.config/fish/config.fish"
                 mkdir -p "$(dirname "$FISH_CONFIG")"
@@ -1050,7 +1050,7 @@ setup_path() {
         for SHELL_CONFIG in "${SHELL_CONFIGS[@]}"; do
             if ! grep -v '^[[:space:]]*#' "$SHELL_CONFIG" 2>/dev/null | grep -qE 'PATH=.*\.local/bin'; then
                 echo "" >> "$SHELL_CONFIG"
-                echo "# Hermes Agent — ensure ~/.local/bin is on PATH" >> "$SHELL_CONFIG"
+                echo "# Hermes Agent �� ensure ~/.local/bin is on PATH" >> "$SHELL_CONFIG"
                 echo "$PATH_LINE" >> "$SHELL_CONFIG"
                 log_success "Added ~/.local/bin to PATH in $SHELL_CONFIG"
             fi
@@ -1060,7 +1060,7 @@ setup_path() {
         if [ "$IS_FISH" = "true" ]; then
             if ! grep -q 'fish_add_path.*\.local/bin' "$FISH_CONFIG" 2>/dev/null; then
                 echo "" >> "$FISH_CONFIG"
-                echo "# Hermes Agent — ensure ~/.local/bin is on PATH" >> "$FISH_CONFIG"
+                echo "# Hermes Agent �� ensure ~/.local/bin is on PATH" >> "$FISH_CONFIG"
                 echo 'fish_add_path "$HOME/.local/bin"' >> "$FISH_CONFIG"
                 log_success "Added ~/.local/bin to PATH in $FISH_CONFIG"
             fi
@@ -1175,15 +1175,15 @@ install_node_deps() {
         case "$DISTRO" in
             ubuntu|debian|raspbian|pop|linuxmint|elementary|zorin|kali|parrot)
                 log_info "Playwright may request sudo to install browser system dependencies (shared libraries)."
-                log_info "This is standard Playwright setup — Hermes itself does not require root access."
+                log_info "This is standard Playwright setup �� Hermes itself does not require root access."
                 cd "$INSTALL_DIR" && npx playwright install --with-deps chromium 2>/dev/null || {
-                    log_warn "Playwright browser installation failed — browser tools will not work."
+                    log_warn "Playwright browser installation failed �� browser tools will not work."
                     log_warn "Try running manually: cd $INSTALL_DIR && npx playwright install --with-deps chromium"
                 }
                 ;;
             arch|manjaro)
                 if command -v pacman &> /dev/null; then
-                    log_info "Arch/Manjaro detected — installing Chromium system dependencies via pacman..."
+                    log_info "Arch/Manjaro detected �� installing Chromium system dependencies via pacman..."
                     if command -v sudo &> /dev/null && sudo -n true 2>/dev/null; then
                         sudo NEEDRESTART_MODE=a pacman -S --noconfirm --needed \
                             nss atk at-spi2-core cups libdrm libxkbcommon mesa pango cairo alsa-lib >/dev/null 2>&1 || true
@@ -1196,7 +1196,7 @@ install_node_deps() {
                     fi
                 fi
                 cd "$INSTALL_DIR" && npx playwright install chromium 2>/dev/null || {
-                    log_warn "Playwright browser installation failed — browser tools will not work."
+                    log_warn "Playwright browser installation failed �� browser tools will not work."
                 }
                 ;;
             fedora|rhel|centos|rocky|alma)
@@ -1204,7 +1204,7 @@ install_node_deps() {
                 log_info "Install Chromium system dependencies manually before using browser tools:"
                 log_info "  sudo dnf install nss atk at-spi2-core cups-libs libdrm libxkbcommon mesa-libgbm pango cairo alsa-lib"
                 cd "$INSTALL_DIR" && npx playwright install chromium 2>/dev/null || {
-                    log_warn "Playwright browser installation failed — install dependencies above and retry."
+                    log_warn "Playwright browser installation failed �� install dependencies above and retry."
                 }
                 ;;
             opensuse*|sles)
@@ -1212,7 +1212,7 @@ install_node_deps() {
                 log_info "Install Chromium system dependencies manually before using browser tools:"
                 log_info "  sudo zypper install mozilla-nss libatk-1_0-0 at-spi2-core cups-libs libdrm2 libxkbcommon0 Mesa-libgbm1 pango cairo libasound2"
                 cd "$INSTALL_DIR" && npx playwright install chromium 2>/dev/null || {
-                    log_warn "Playwright browser installation failed — install dependencies above and retry."
+                    log_warn "Playwright browser installation failed �� install dependencies above and retry."
                 }
                 ;;
             *)
@@ -1352,9 +1352,9 @@ maybe_start_gateway() {
             fi
         else
             if [ "$DISTRO" = "termux" ]; then
-                log_info "Termux detected — starting gateway in best-effort background mode..."
+                log_info "Termux detected �� starting gateway in best-effort background mode..."
             else
-                log_info "systemd not available — starting gateway in background..."
+                log_info "systemd not available �� starting gateway in background..."
             fi
             nohup $HERMES_CMD gateway > "$HERMES_HOME/logs/gateway.log" 2>&1 &
             GATEWAY_PID=$!
@@ -1373,14 +1373,14 @@ maybe_start_gateway() {
 print_success() {
     echo ""
     echo -e "${GREEN}${BOLD}"
-    echo "┌─────────────────────────────────────────────────────────┐"
-    echo "│              ✓ Installation Complete!                   │"
-    echo "└─────────────────────────────────────────────────────────┘"
+    echo "����������������������������������������������������������������������������������������������������������������������"
+    echo "��              ? Installation Complete!                   ��"
+    echo "����������������������������������������������������������������������������������������������������������������������"
     echo -e "${NC}"
     echo ""
 
     # Show file locations
-    echo -e "${CYAN}${BOLD}📁 Your files (all in ~/.hermes/):${NC}"
+    echo -e "${CYAN}${BOLD}?? Your files (all in ~/.hermes/):${NC}"
     echo ""
     echo -e "   ${YELLOW}Config:${NC}    ~/.hermes/config.yaml"
     echo -e "   ${YELLOW}API Keys:${NC}  ~/.hermes/.env"
@@ -1388,9 +1388,9 @@ print_success() {
     echo -e "   ${YELLOW}Code:${NC}      ~/.hermes/hermes-agent/"
     echo ""
 
-    echo -e "${CYAN}─────────────────────────────────────────────────────────${NC}"
+    echo -e "${CYAN}������������������������������������������������������������������������������������������������������������������${NC}"
     echo ""
-    echo -e "${CYAN}${BOLD}🚀 Commands:${NC}"
+    echo -e "${CYAN}${BOLD}?? Commands:${NC}"
     echo ""
     echo -e "   ${GREEN}hermes${NC}              Start chatting"
     echo -e "   ${GREEN}hermes setup${NC}        Configure API keys & settings"
@@ -1400,13 +1400,13 @@ print_success() {
     echo -e "   ${GREEN}hermes update${NC}       Update to latest version"
     echo ""
 
-    echo -e "${CYAN}─────────────────────────────────────────────────────────${NC}"
+    echo -e "${CYAN}������������������������������������������������������������������������������������������������������������������${NC}"
     echo ""
     if [ "$DISTRO" = "termux" ]; then
-        echo -e "${YELLOW}⚡ 'hermes' was linked into $(get_command_link_display_dir), which is already on PATH in Termux.${NC}"
+        echo -e "${YELLOW}? 'hermes' was linked into $(get_command_link_display_dir), which is already on PATH in Termux.${NC}"
         echo ""
     else
-        echo -e "${YELLOW}⚡ Reload your shell to use 'hermes' command:${NC}"
+        echo -e "${YELLOW}? Reload your shell to use 'hermes' command:${NC}"
         echo ""
         LOGIN_SHELL="$(basename "${SHELL:-/bin/bash}")"
         if [ "$LOGIN_SHELL" = "zsh" ]; then
