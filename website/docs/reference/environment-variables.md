@@ -8,6 +8,14 @@ description: "Complete reference of all environment variables used by Hermes Age
 
 All variables go in `~/.hermes/.env`. You can also set them with `hermes config set VAR value`.
 
+## Env File Loading
+
+Hermes loads environment files in this order (each later source overrides earlier):
+
+1. **`~/.hermes/.env`** — main env file
+2. **`~/.hermes/env.d/*.env`** — drop-in directory, loaded alphabetically (useful for secret manager symlinks)
+3. **Project `.env`** — only fills values not already set by the above
+
 ## LLM Providers
 
 | Variable | Description |

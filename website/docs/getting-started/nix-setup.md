@@ -335,16 +335,20 @@ Quick reference for the most common things Nix users want to customize:
 Values in Nix expressions end up in `/nix/store`, which is world-readable. Always use `environmentFiles` with a secrets manager.
 :::
 
-Both `environment` (non-secret vars) and `environmentFiles` (secret files) are merged into `$HERMES_HOME/.env` at activation time (`nixos-rebuild switch`). Hermes reads this file on every startup, so changes take effect with a `systemctl restart hermes-agent` — no container recreation needed.
+Both `environment` (non-secret vars) and `environmentFiles` (secret files) are placed in `$HERMES_HOME/env.d/` at activation time (`nixos-rebuild switch`). Non-secret vars are written to `env.d/nix-environment.env`; secret files are symlinked (no copying). Hermes reads all `*.env` files from this directory on every startup, so changes take effect with a `systemctl restart hermes-agent` — no container recreation needed.
 
 ### sops-nix
 
 ```nix
-{
+{ config, ... }: {
   sops = {
     defaultSopsFile = ./secrets/hermes.yaml;
     age.keyFile = "/home/user/.config/sops/age/keys.txt";
-    secrets."hermes-env" = { format = "yaml"; };
+    secrets."hermes-env" = {
+      format = "yaml";
+      owner = config.services.hermes-agent.user;
+      group = config.services.hermes-agent.group;
+    };
   };
 
   services.hermes-agent.environmentFiles = [
@@ -366,8 +370,12 @@ hermes-env: |
 ### agenix
 
 ```nix
-{
-  age.secrets.hermes-env.file = ./secrets/hermes-env.age;
+{ config, ... }: {
+  age.secrets.hermes-env = {
+    file = ./secrets/hermes-env.age;
+    owner = config.services.hermes-agent.user;
+    group = config.services.hermes-agent.group;
+  };
 
   services.hermes-agent.environmentFiles = [
     config.age.secrets.hermes-env.path
@@ -557,10 +565,12 @@ Host                                    Container
   ├── .gc-root -> /nix/store/...           (prevents nix-collect-garbage)
   ├── .container-identity                  (sha256 hash, triggers recreation)
   ├── .hermes/                             (HERMES_HOME)
-  │   ├── .env                             (merged from environment + environmentFiles)
   │   ├── config.yaml                      (Nix-generated, deep-merged by activation)
   │   ├── .managed                         (marker file)
   │   ├── .container-mode                  (routing metadata: backend, exec_user, etc.)
+  │   ├── env.d/                           (Nix-managed env files)
+  │   │   ├── nix-environment.env          (from environment option)
+  │   │   └── 0.env -> /nix/store/...      (symlink to sops-nix/agenix secret)
   │   ├── state.db, sessions/, memories/   (runtime state)
   │   └── mcp-tokens/                      (OAuth tokens for MCP servers)
   ├── home/                                ──►  /home/hermes    (rw)
@@ -583,7 +593,7 @@ The Nix-built binary works inside the Ubuntu container because `/nix/store` is b
 | `nix-collect-garbage` | No (GC root) | Persists | Persists | Persists |
 | Image change (`container.image`) | **Yes** | Persists | Persists | **Lost** |
 | Volume/options change | **Yes** | Persists | Persists | **Lost** |
-| `environment`/`environmentFiles` change | No | Persists | Persists | Persists |
+| `environment`/`environmentFiles` change | No | `env.d/` updated | Persists | Persists |
 
 The container is only recreated when its **identity hash** changes. The hash covers: schema version, image, `extraVolumes`, `extraOptions`, and the entrypoint script. Changes to environment variables, settings, documents, or the hermes package itself do **not** trigger recreation.
 
@@ -687,8 +697,8 @@ nix build .#checks.x86_64-linux.config-roundtrip    # merge script preserves use
 
 | Option | Type | Default | Description |
 |---|---|---|---|
-| `environmentFiles` | `listOf str` | `[]` | Paths to env files with secrets. Merged into `$HERMES_HOME/.env` at activation time |
-| `environment` | `attrsOf str` | `{}` | Non-secret env vars. **Visible in Nix store** — do not put secrets here |
+| `environmentFiles` | `listOf str` | `[]` | Paths to env files with secrets. Symlinked into `$HERMES_HOME/env.d/` — no copying |
+| `environment` | `attrsOf str` | `{}` | Non-secret env vars. Written to `$HERMES_HOME/env.d/nix-environment.env`. **Visible in Nix store** — do not put secrets here |
 | `authFile` | `null` or `path` | `null` | OAuth credentials seed. Only copied on first deploy |
 | `authFileForceOverwrite` | `bool` | `false` | Always overwrite `auth.json` from `authFile` on activation |
 
@@ -746,7 +756,9 @@ nix build .#checks.x86_64-linux.config-roundtrip    # merge script preserves use
 ├── .hermes/                         # HERMES_HOME
 │   ├── config.yaml                  # Nix-generated (deep-merged each rebuild)
 │   ├── .managed                     # Marker: CLI config mutation blocked
-│   ├── .env                         # Merged from environment + environmentFiles
+│   ├── env.d/                       # Nix-managed env files (loaded by load_hermes_dotenv)
+│   │   ├── nix-environment.env      #   from environment option
+│   │   └── nix-0.env -> ...         #   symlink to sops-nix/agenix secret
 │   ├── auth.json                    # OAuth credentials (seeded, then self-managed)
 │   ├── gateway.pid
 │   ├── state.db
@@ -829,14 +841,14 @@ sudo systemctl start hermes-agent
 
 ### Verify Secrets Are Loaded
 
-If the agent starts but can't authenticate with the LLM provider, check that the `.env` file was merged correctly:
+If the agent starts but can't authenticate with the LLM provider, check that the `env.d/` files are present and readable:
 
 ```bash
 # Native mode
-sudo -u hermes cat /var/lib/hermes/.hermes/.env
+sudo -u hermes ls -la /var/lib/hermes/.hermes/env.d/
 
 # Container mode
-docker exec hermes-agent cat /data/.hermes/.env
+docker exec hermes-agent ls -la /data/.hermes/env.d/
 ```
 
 ### GC Root Verification

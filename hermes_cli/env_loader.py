@@ -116,6 +116,14 @@ def load_hermes_dotenv(
         _load_dotenv_with_fallback(user_env, override=True)
         loaded.append(user_env)
 
+    # Drop-in directory: $HERMES_HOME/env.d/*.env (sorted, override=True)
+    env_d = home_path / "env.d"
+    if env_d.is_dir():
+        for f in sorted(env_d.glob("*.env")):
+            if f.is_file():
+                _load_dotenv_with_fallback(f, override=True)
+                loaded.append(f)
+
     if project_env_path and project_env_path.exists():
         _load_dotenv_with_fallback(project_env_path, override=not loaded)
         loaded.append(project_env_path)
