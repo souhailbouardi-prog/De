@@ -1029,10 +1029,13 @@ def _try_custom_endpoint() -> Tuple[Optional[OpenAI], Optional[str]]:
         return None, None
     model = _read_main_model() or "gpt-4o-mini"
     logger.debug("Auxiliary client: custom endpoint (%s, api_mode=%s)", model, custom_mode or "chat_completions")
+    extra = {}
+    if "api.kimi.com" in custom_base.lower():
+        extra["default_headers"] = {"User-Agent": "KimiCLI/1.30.0"}
     if custom_mode == "codex_responses":
-        real_client = OpenAI(api_key=custom_key, base_url=custom_base)
+        real_client = OpenAI(api_key=custom_key, base_url=custom_base, **extra)
         return CodexAuxiliaryClient(real_client, model), model
-    return OpenAI(api_key=custom_key, base_url=custom_base), model
+    return OpenAI(api_key=custom_key, base_url=custom_base, **extra), model
 
 
 def _try_codex() -> Tuple[Optional[Any], Optional[str]]:
@@ -1583,7 +1586,10 @@ def resolve_provider_client(
                     model or custom_entry.get("model") or _read_main_model() or "gpt-4o-mini",
                     provider,
                 )
-                client = OpenAI(api_key=custom_key, base_url=custom_base)
+                extra = {}
+                if "api.kimi.com" in custom_base.lower():
+                    extra["default_headers"] = {"User-Agent": "KimiCLI/1.30.0"}
+                client = OpenAI(api_key=custom_key, base_url=custom_base, **extra)
                 client = _wrap_if_needed(client, final_model, custom_base)
                 logger.debug(
                     "resolve_provider_client: named custom provider %r (%s)",
