@@ -899,8 +899,8 @@ def delegate_task(
                     result=entry.get("summary", "") or "",
                     child_session_id=getattr(children[entry["task_index"]][2], "session_id", "") if entry["task_index"] < len(children) else "",
                 )
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("on_delegation notification failed for task %d: %s", entry.get("task_index", -1), e)
 
     total_duration = round(time.monotonic() - overall_start, 2)
 
