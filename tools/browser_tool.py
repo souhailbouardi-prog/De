@@ -431,6 +431,11 @@ def _socket_safe_tmpdir() -> str:
 # Stores: session_name (always), bb_session_id + cdp_url (cloud mode only)
 _active_sessions: Dict[str, Dict[str, str]] = {}  # task_id -> {session_name, ...}
 _recording_sessions: set = set()  # task_ids with active recordings
+_live_cdp_task_warning = (
+    "Live Chrome via /browser connect is shared-state and does not support multiple "
+    "concurrent browser tasks safely. Finish the existing browser task or disconnect "
+    "from live Chrome before starting another."
+)
 
 # Flag to track if cleanup has been done
 _cleanup_done = False
@@ -913,6 +918,7 @@ def _create_cdp_session(task_id: str, cdp_url: str) -> Dict[str, str]:
         "bb_session_id": None,
         "cdp_url": cdp_url,
         "features": {"cdp_override": True},
+        "_persistent_cdp_connected": False,
     }
 
 
@@ -939,6 +945,25 @@ def _get_session_info(task_id: Optional[str] = None) -> Dict[str, str]:
     
     # Update activity timestamp for this session
     _update_session_activity(task_id)
+
+    cdp_override = _get_cdp_override()
+    if cdp_override:
+        with _cleanup_lock:
+            existing = _active_sessions.get(task_id)
+            if existing:
+                return existing
+            live_cdp_tasks = [
+                active_task_id
+                for active_task_id, info in _active_sessions.items()
+                if active_task_id != task_id and info.get("features", {}).get("cdp_override")
+            ]
+            if live_cdp_tasks:
+                raise RuntimeError(
+                    f"{_live_cdp_task_warning} Active live browser task(s): {', '.join(sorted(live_cdp_tasks))}"
+                )
+            session_info = _create_cdp_session(task_id, cdp_override)
+            _active_sessions[task_id] = session_info
+            return session_info
     
     with _cleanup_lock:
         # Check if we already have a session for this task
@@ -946,45 +971,41 @@ def _get_session_info(task_id: Optional[str] = None) -> Dict[str, str]:
             return _active_sessions[task_id]
     
     # Create session outside the lock (network call in cloud mode)
-    cdp_override = _get_cdp_override()
-    if cdp_override:
-        session_info = _create_cdp_session(task_id, cdp_override)
+    provider = _get_cloud_provider()
+    if provider is None:
+        session_info = _create_local_session(task_id)
     else:
-        provider = _get_cloud_provider()
-        if provider is None:
-            session_info = _create_local_session(task_id)
-        else:
+        try:
+            session_info = provider.create_session(task_id)
+            # Validate cloud provider returned a usable session
+            if not session_info or not isinstance(session_info, dict):
+                raise ValueError(f"Cloud provider returned invalid session: {session_info!r}")
+            if session_info.get("cdp_url"):
+                # Some cloud providers (including Browser-Use v3) return an HTTP
+                # CDP discovery URL instead of a raw websocket endpoint.
+                session_info = dict(session_info)
+                session_info["cdp_url"] = _resolve_cdp_override(str(session_info["cdp_url"]))
+        except Exception as e:
+            provider_name = type(provider).__name__
+            logger.warning(
+                "Cloud provider %s failed (%s); attempting fallback to local "
+                "Chromium for task %s",
+                provider_name, e, task_id,
+                exc_info=True,
+            )
             try:
-                session_info = provider.create_session(task_id)
-                # Validate cloud provider returned a usable session
-                if not session_info or not isinstance(session_info, dict):
-                    raise ValueError(f"Cloud provider returned invalid session: {session_info!r}")
-                if session_info.get("cdp_url"):
-                    # Some cloud providers (including Browser-Use v3) return an HTTP
-                    # CDP discovery URL instead of a raw websocket endpoint.
-                    session_info = dict(session_info)
-                    session_info["cdp_url"] = _resolve_cdp_override(str(session_info["cdp_url"]))
-            except Exception as e:
-                provider_name = type(provider).__name__
-                logger.warning(
-                    "Cloud provider %s failed (%s); attempting fallback to local "
-                    "Chromium for task %s",
-                    provider_name, e, task_id,
-                    exc_info=True,
-                )
-                try:
-                    session_info = _create_local_session(task_id)
-                except Exception as local_error:
-                    raise RuntimeError(
-                        f"Cloud provider {provider_name} failed ({e}) and local "
-                        f"fallback also failed ({local_error})"
-                    ) from e
-                # Mark session as degraded for observability
-                if isinstance(session_info, dict):
-                    session_info = dict(session_info)
-                    session_info["fallback_from_cloud"] = True
-                    session_info["fallback_reason"] = str(e)
-                    session_info["fallback_provider"] = provider_name
+                session_info = _create_local_session(task_id)
+            except Exception as local_error:
+                raise RuntimeError(
+                    f"Cloud provider {provider_name} failed ({e}) and local "
+                    f"fallback also failed ({local_error})"
+                ) from e
+            # Mark session as degraded for observability
+            if isinstance(session_info, dict):
+                session_info = dict(session_info)
+                session_info["fallback_from_cloud"] = True
+                session_info["fallback_reason"] = str(e)
+                session_info["fallback_provider"] = provider_name
     
     with _cleanup_lock:
         # Double-check: another thread may have created a session while we
@@ -1070,6 +1091,198 @@ def _find_agent_browser() -> str:
     )
 
 
+def _get_agent_browser_socket_dir(session_name: str) -> str:
+    """Return the per-session socket directory used by agent-browser."""
+    return os.path.join(_socket_safe_tmpdir(), f"agent-browser-{session_name}")
+
+
+def _build_agent_browser_env(task_socket_dir: str) -> Dict[str, str]:
+    """Build the subprocess environment for agent-browser commands."""
+    browser_env = {**os.environ}
+    browser_env["PATH"] = _merge_browser_path(browser_env.get("PATH", ""))
+    browser_env["AGENT_BROWSER_SOCKET_DIR"] = task_socket_dir
+    return browser_env
+
+
+def _reset_agent_browser_socket_dir(session_name: str) -> None:
+    """Kill the agent-browser daemon for a session (if any) and remove its socket dir."""
+    task_socket_dir = _get_agent_browser_socket_dir(session_name)
+    pid_file = os.path.join(task_socket_dir, f"{session_name}.pid")
+    if os.path.isfile(pid_file):
+        try:
+            daemon_pid = int(Path(pid_file).read_text().strip())
+            os.kill(daemon_pid, signal.SIGTERM)
+            logger.debug("Killed browser daemon pid %s for %s", daemon_pid, session_name)
+        except (ProcessLookupError, ValueError, PermissionError, OSError):
+            logger.debug("Could not kill daemon pid for %s during socket reset", session_name)
+    shutil.rmtree(task_socket_dir, ignore_errors=True)
+
+
+def _execute_browser_cli(
+    cmd_parts: List[str],
+    command: str,
+    timeout: int,
+    task_id: str,
+    task_socket_dir: str,
+    browser_env: Dict[str, str],
+) -> Dict[str, Any]:
+    """Execute an agent-browser CLI command and parse the JSON response."""
+    os.makedirs(task_socket_dir, mode=0o700, exist_ok=True)
+    session_name = os.path.basename(task_socket_dir).removeprefix("agent-browser-")
+    if session_name:
+        _write_owner_pid(task_socket_dir, session_name)
+    logger.debug("browser cmd=%s task=%s socket_dir=%s (%d chars)",
+                 command, task_id, task_socket_dir, len(task_socket_dir))
+
+    stdout_path = os.path.join(task_socket_dir, f"_stdout_{command}")
+    stderr_path = os.path.join(task_socket_dir, f"_stderr_{command}")
+    stdout_fd = os.open(stdout_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    stderr_fd = os.open(stderr_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        proc = subprocess.Popen(
+            cmd_parts,
+            stdout=stdout_fd,
+            stderr=stderr_fd,
+            stdin=subprocess.DEVNULL,
+            env=browser_env,
+        )
+    finally:
+        os.close(stdout_fd)
+        os.close(stderr_fd)
+
+    try:
+        proc.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait()
+        logger.warning("browser '%s' timed out after %ds (task=%s, socket_dir=%s)",
+                       command, timeout, task_id, task_socket_dir)
+        return {"success": False, "error": f"Command timed out after {timeout} seconds"}
+
+    with open(stdout_path, "r") as f:
+        stdout = f.read()
+    with open(stderr_path, "r") as f:
+        stderr = f.read()
+    returncode = proc.returncode
+
+    for p in (stdout_path, stderr_path):
+        try:
+            os.unlink(p)
+        except OSError:
+            pass
+
+    if stderr and stderr.strip():
+        level = logging.WARNING if returncode != 0 else logging.DEBUG
+        logger.log(level, "browser '%s' stderr: %s", command, stderr.strip()[:500])
+
+    stdout_text = stdout.strip()
+    if not stdout_text and returncode == 0 and command not in _EMPTY_OK_COMMANDS:
+        logger.warning("browser '%s' returned empty output (rc=0)", command)
+        return {"success": False, "error": f"Browser command '{command}' returned no output"}
+
+    if stdout_text:
+        try:
+            parsed = json.loads(stdout_text)
+            if command == "snapshot" and parsed.get("success"):
+                snap_data = parsed.get("data", {})
+                if not snap_data.get("snapshot") and not snap_data.get("refs"):
+                    logger.warning("snapshot returned empty content. "
+                                   "Possible stale daemon or CDP connection issue. "
+                                   "returncode=%s", returncode)
+            return parsed
+        except json.JSONDecodeError:
+            raw = stdout_text[:2000]
+            logger.warning("browser '%s' returned non-JSON output (rc=%s): %s",
+                           command, returncode, raw[:500])
+
+            if command == "screenshot":
+                stderr_text = (stderr or "").strip()
+                combined_text = "\n".join(
+                    part for part in [stdout_text, stderr_text] if part
+                )
+                recovered_path = _extract_screenshot_path_from_text(combined_text)
+
+                if recovered_path and Path(recovered_path).exists():
+                    logger.info(
+                        "browser 'screenshot' recovered file from non-JSON output: %s",
+                        recovered_path,
+                    )
+                    return {
+                        "success": True,
+                        "data": {
+                            "path": recovered_path,
+                            "raw": raw,
+                        },
+                    }
+
+            return {
+                "success": False,
+                "error": f"Non-JSON output from agent-browser for '{command}': {raw}"
+            }
+
+    if returncode != 0:
+        error_msg = stderr.strip() if stderr else f"Command failed with code {returncode}"
+        logger.warning("browser '%s' failed (rc=%s): %s", command, returncode, error_msg[:300])
+        return {"success": False, "error": error_msg}
+
+    return {"success": True, "data": {}}
+
+
+def _is_live_cdp_session(session_info: Dict[str, Any]) -> bool:
+    """Return True only for /browser connect style live-CDP sessions."""
+    return bool(session_info.get("features", {}).get("cdp_override"))
+
+
+def _connect_live_cdp_session(
+    cmd_prefix: List[str],
+    session_info: Dict[str, Any],
+    task_id: str,
+    timeout: int,
+) -> Dict[str, Any]:
+    """Establish or re-establish the persistent live-CDP agent-browser session."""
+    session_name = session_info["session_name"]
+    refreshed_cdp_url = _get_cdp_override()
+    if refreshed_cdp_url:
+        session_info["cdp_url"] = refreshed_cdp_url
+    task_socket_dir = _get_agent_browser_socket_dir(session_name)
+    browser_env = _build_agent_browser_env(task_socket_dir)
+    connect_cmd = cmd_prefix + [
+        "connect",
+        "--session",
+        session_name,
+        session_info["cdp_url"],
+        "--json",
+    ]
+    result = _execute_browser_cli(
+        connect_cmd,
+        "connect",
+        timeout,
+        task_id,
+        task_socket_dir,
+        browser_env,
+    )
+    session_info["_persistent_cdp_connected"] = bool(result.get("success"))
+    return result
+
+
+def _should_retry_live_cdp_command(command: str, result: Dict[str, Any]) -> bool:
+    """Return True when a live-CDP command looks recoverable via reconnect."""
+    if command == "close" or result.get("success"):
+        return False
+    error = str(result.get("error") or "").lower()
+    if "timed out" in error:
+        return True
+    retry_markers = (
+        "socket hang up",
+        "websocket connect failed",
+        "connection closed",
+        "target closed",
+        "browser has been closed",
+        "context or browser has been closed",
+    )
+    return any(marker in error for marker in retry_markers)
+
+
 def _extract_screenshot_path_from_text(text: str) -> Optional[str]:
     """Extract a screenshot file path from agent-browser human-readable output."""
     if not text:
@@ -1096,24 +1309,26 @@ def _run_browser_command(
     command: str,
     args: List[str] = None,
     timeout: Optional[int] = None,
+    _live_cdp_retry_attempted: bool = False,
 ) -> Dict[str, Any]:
     """
     Run an agent-browser CLI command using our pre-created Browserbase session.
-    
+
     Args:
         task_id: Task identifier to get the right session
         command: The command to run (e.g., "open", "click")
         args: Additional arguments for the command
         timeout: Command timeout in seconds.  ``None`` reads
                  ``browser.command_timeout`` from config (default 30s).
-        
+
     Returns:
         Parsed JSON response from agent-browser
     """
     if timeout is None:
         timeout = _get_command_timeout()
     args = args or []
-    
+
+    # Empty stdout is handled as "returned no output" inside _execute_browser_cli.
     # Build the command
     try:
         browser_cmd = _find_agent_browser()
@@ -1125,7 +1340,7 @@ def _run_browser_command(
         error = _termux_browser_install_error()
         logger.warning("browser command blocked on Termux: %s", error)
         return {"success": False, "error": error}
-    
+
     from tools.interrupt import is_interrupted
     if is_interrupted():
         return {"success": False, "error": "Interrupted"}
@@ -1136,157 +1351,72 @@ def _run_browser_command(
     except Exception as e:
         logger.warning("Failed to create browser session for task=%s: %s", task_id, e)
         return {"success": False, "error": f"Failed to create browser session: {str(e)}"}
-    
-    # Build the command with the appropriate backend flag.
-    # Cloud mode: --cdp <websocket_url> connects to Browserbase.
-    # Local mode: --session <name> launches a local headless Chromium.
-    # The rest of the command (--json, command, args) is identical.
-    if session_info.get("cdp_url"):
-        # Cloud mode — connect to remote Browserbase browser via CDP
-        # IMPORTANT: Do NOT use --session with --cdp. In agent-browser >=0.13,
-        # --session creates a local browser instance and silently ignores --cdp.
-        backend_args = ["--cdp", session_info["cdp_url"]]
-    else:
-        # Local mode — launch a headless Chromium instance
-        backend_args = ["--session", session_info["session_name"]]
 
-    # Keep concrete executable paths intact, even when they contain spaces.
-    # Only the synthetic npx fallback needs to expand into multiple argv items.
-    cmd_prefix = ["npx", "agent-browser"] if browser_cmd == "npx agent-browser" else [browser_cmd]
-
-    cmd_parts = cmd_prefix + backend_args + [
-        "--json",
-        command
-    ] + args
-    
     try:
-        # Give each task its own socket directory to prevent concurrency conflicts.
-        # Without this, parallel workers fight over the same default socket path,
-        # causing "Failed to create socket directory: Permission denied" errors.
-        task_socket_dir = os.path.join(
-            _socket_safe_tmpdir(),
-            f"agent-browser-{session_info['session_name']}"
+        is_live_cdp = _is_live_cdp_session(session_info)
+
+        # Keep concrete executable paths intact, even when they contain spaces.
+        # Only the synthetic npx fallback needs to expand into multiple argv items.
+        cmd_prefix = ["npx", "agent-browser"] if browser_cmd == "npx agent-browser" else [browser_cmd]
+
+        if is_live_cdp and not session_info.get("_persistent_cdp_connected"):
+            connect_result = _connect_live_cdp_session(cmd_prefix, session_info, task_id, timeout)
+            if not connect_result.get("success"):
+                return connect_result
+
+        if is_live_cdp:
+            backend_args = ["--session", session_info["session_name"]]
+        elif session_info.get("cdp_url"):
+            # Cloud mode — connect to remote Browserbase browser via CDP
+            # IMPORTANT: Do NOT use --session with --cdp. In agent-browser >=0.13,
+            # --session creates a local browser instance and silently ignores --cdp.
+            backend_args = ["--cdp", session_info["cdp_url"]]
+        else:
+            # Local mode — launch a headless Chromium instance
+            backend_args = ["--session", session_info["session_name"]]
+
+        cmd_parts = cmd_prefix + backend_args + [
+            "--json",
+            command,
+        ] + args
+        task_socket_dir = _get_agent_browser_socket_dir(session_info["session_name"])
+        browser_env = _build_agent_browser_env(task_socket_dir)
+        result = _execute_browser_cli(
+            cmd_parts,
+            command,
+            timeout,
+            task_id,
+            task_socket_dir,
+            browser_env,
         )
-        os.makedirs(task_socket_dir, mode=0o700, exist_ok=True)
-        # Record this hermes PID as the session owner (cross-process safe
-        # orphan detection — see _write_owner_pid).
-        _write_owner_pid(task_socket_dir, session_info['session_name'])
-        logger.debug("browser cmd=%s task=%s socket_dir=%s (%d chars)",
-                     command, task_id, task_socket_dir, len(task_socket_dir))
-        
-        browser_env = {**os.environ}
 
-        # Ensure subprocesses inherit the same browser-specific PATH fallbacks
-        # used during CLI discovery.
-        browser_env["PATH"] = _merge_browser_path(browser_env.get("PATH", ""))
-        browser_env["AGENT_BROWSER_SOCKET_DIR"] = task_socket_dir
-        
-        # Use temp files for stdout/stderr instead of pipes.
-        # agent-browser starts a background daemon that inherits file
-        # descriptors.  With capture_output=True (pipes), the daemon keeps
-        # the pipe fds open after the CLI exits, so communicate() never
-        # sees EOF and blocks until the timeout fires.
-        stdout_path = os.path.join(task_socket_dir, f"_stdout_{command}")
-        stderr_path = os.path.join(task_socket_dir, f"_stderr_{command}")
-        stdout_fd = os.open(stdout_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        stderr_fd = os.open(stderr_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        try:
-            proc = subprocess.Popen(
-                cmd_parts,
-                stdout=stdout_fd,
-                stderr=stderr_fd,
-                stdin=subprocess.DEVNULL,
-                env=browser_env,
+        if (
+            is_live_cdp
+            and not _live_cdp_retry_attempted
+            and _should_retry_live_cdp_command(command, result)
+        ):
+            logger.info(
+                "Retrying live-CDP browser command after resetting socket state "
+                "(task=%s command=%s session=%s)",
+                task_id,
+                command,
+                session_info["session_name"],
             )
-        finally:
-            os.close(stdout_fd)
-            os.close(stderr_fd)
+            _reset_agent_browser_socket_dir(session_info["session_name"])
+            session_info["_persistent_cdp_connected"] = False
+            connect_result = _connect_live_cdp_session(cmd_prefix, session_info, task_id, timeout)
+            if not connect_result.get("success"):
+                return connect_result
+            return _run_browser_command(
+                task_id,
+                command,
+                args,
+                timeout=timeout,
+                _live_cdp_retry_attempted=True,
+            )
 
-        try:
-            proc.wait(timeout=timeout)
-        except subprocess.TimeoutExpired:
-            proc.kill()
-            proc.wait()
-            logger.warning("browser '%s' timed out after %ds (task=%s, socket_dir=%s)",
-                           command, timeout, task_id, task_socket_dir)
-            return {"success": False, "error": f"Command timed out after {timeout} seconds"}
+        return result
 
-        with open(stdout_path, "r") as f:
-            stdout = f.read()
-        with open(stderr_path, "r") as f:
-            stderr = f.read()
-        returncode = proc.returncode
-
-        # Clean up temp files (best-effort)
-        for p in (stdout_path, stderr_path):
-            try:
-                os.unlink(p)
-            except OSError:
-                pass
-
-        # Log stderr for diagnostics — use warning level on failure so it's visible
-        if stderr and stderr.strip():
-            level = logging.WARNING if returncode != 0 else logging.DEBUG
-            logger.log(level, "browser '%s' stderr: %s", command, stderr.strip()[:500])
-        
-        stdout_text = stdout.strip()
-
-        # Empty output with rc=0 is a broken state — treat as failure rather
-        # than silently returning {"success": True, "data": {}}.
-        # Some commands (close, record) legitimately return no output.
-        if not stdout_text and returncode == 0 and command not in _EMPTY_OK_COMMANDS:
-            logger.warning("browser '%s' returned empty output (rc=0)", command)
-            return {"success": False, "error": f"Browser command '{command}' returned no output"}
-
-        if stdout_text:
-            try:
-                parsed = json.loads(stdout_text)
-                # Warn if snapshot came back empty (common sign of daemon/CDP issues)
-                if command == "snapshot" and parsed.get("success"):
-                    snap_data = parsed.get("data", {})
-                    if not snap_data.get("snapshot") and not snap_data.get("refs"):
-                        logger.warning("snapshot returned empty content. "
-                                       "Possible stale daemon or CDP connection issue. "
-                                       "returncode=%s", returncode)
-                return parsed
-            except json.JSONDecodeError:
-                raw = stdout_text[:2000]
-                logger.warning("browser '%s' returned non-JSON output (rc=%s): %s",
-                               command, returncode, raw[:500])
-
-                if command == "screenshot":
-                    stderr_text = (stderr or "").strip()
-                    combined_text = "\n".join(
-                        part for part in [stdout_text, stderr_text] if part
-                    )
-                    recovered_path = _extract_screenshot_path_from_text(combined_text)
-
-                    if recovered_path and Path(recovered_path).exists():
-                        logger.info(
-                            "browser 'screenshot' recovered file from non-JSON output: %s",
-                            recovered_path,
-                        )
-                        return {
-                            "success": True,
-                            "data": {
-                                "path": recovered_path,
-                                "raw": raw,
-                            },
-                        }
-
-                return {
-                    "success": False,
-                    "error": f"Non-JSON output from agent-browser for '{command}': {raw}"
-                }
-        
-        # Check for errors
-        if returncode != 0:
-            error_msg = stderr.strip() if stderr else f"Command failed with code {returncode}"
-            logger.warning("browser '%s' failed (rc=%s): %s", command, returncode, error_msg[:300])
-            return {"success": False, "error": error_msg}
-        
-        return {"success": True, "data": {}}
-        
     except Exception as e:
         logger.warning("browser '%s' exception: %s", command, e, exc_info=True)
         return {"success": False, "error": str(e)}
@@ -1437,7 +1567,13 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
     
     # Get session info to check if this is a new session
     # (will create one with features logged if not exists)
-    session_info = _get_session_info(effective_task_id)
+    try:
+        session_info = _get_session_info(effective_task_id)
+    except Exception as e:
+        return json.dumps({
+            "success": False,
+            "error": f"Failed to create browser session: {str(e)}"
+        }, ensure_ascii=False)
     is_first_nav = session_info.get("_first_nav", True)
     
     # Auto-start recording if configured and this is first navigation
@@ -2265,11 +2401,21 @@ def cleanup_browser(task_id: Optional[str] = None) -> None:
         _maybe_stop_recording(task_id)
         
         # Try to close via agent-browser first (needs session in _active_sessions)
-        try:
-            _run_browser_command(task_id, "close", [], timeout=10)
-            logger.debug("agent-browser close command completed for task %s", task_id)
-        except Exception as e:
-            logger.warning("agent-browser close failed for task %s: %s", task_id, e)
+        should_close_via_agent_browser = not (
+            _is_live_cdp_session(session_info)
+            and not session_info.get("_persistent_cdp_connected")
+        )
+        if should_close_via_agent_browser:
+            try:
+                _run_browser_command(task_id, "close", [], timeout=10)
+                logger.debug("agent-browser close command completed for task %s", task_id)
+            except Exception as e:
+                logger.warning("agent-browser close failed for task %s: %s", task_id, e)
+        else:
+            logger.debug(
+                "Skipping agent-browser close for live-CDP task %s because no persistent session was established",
+                task_id,
+            )
         
         # Now remove from tracking under lock
         with _cleanup_lock:
@@ -2288,18 +2434,7 @@ def cleanup_browser(task_id: Optional[str] = None) -> None:
         # Kill the daemon process and clean up socket directory
         session_name = session_info.get("session_name", "")
         if session_name:
-            socket_dir = os.path.join(_socket_safe_tmpdir(), f"agent-browser-{session_name}")
-            if os.path.exists(socket_dir):
-                # agent-browser writes {session}.pid in the socket dir
-                pid_file = os.path.join(socket_dir, f"{session_name}.pid")
-                if os.path.isfile(pid_file):
-                    try:
-                        daemon_pid = int(Path(pid_file).read_text().strip())
-                        os.kill(daemon_pid, signal.SIGTERM)
-                        logger.debug("Killed daemon pid %s for %s", daemon_pid, session_name)
-                    except (ProcessLookupError, ValueError, PermissionError, OSError):
-                        logger.debug("Could not kill daemon pid for %s (already dead or inaccessible)", session_name)
-                shutil.rmtree(socket_dir, ignore_errors=True)
+            _reset_agent_browser_socket_dir(session_name)
         
         logger.debug("Removed task %s from active sessions", task_id)
     else:
