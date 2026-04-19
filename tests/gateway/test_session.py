@@ -843,6 +843,29 @@ class TestWhatsAppDMSessionKeyConsistency:
         # DM logic: chat_id + thread_id, user_id never included
         assert key == "agent:main:telegram:dm:99:topic-1"
 
+    def test_named_profile_uses_profile_prefix(self):
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="99",
+            chat_type="dm",
+        )
+
+        with patch("hermes_cli.profiles.get_active_profile_name", return_value="coder"):
+            assert build_session_key(source) == "agent:coder:telegram:dm:99"
+
+    def test_named_profile_store_keeps_sessions_isolated(self, store):
+        source = SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="guild-123",
+            chat_type="group",
+            user_id="alice",
+        )
+
+        with patch("hermes_cli.profiles.get_active_profile_name", return_value="wecom"):
+            entry = store.get_or_create_session(source)
+
+        assert entry.session_key == "agent:wecom:discord:group:guild-123:alice"
+
 
 class TestSessionStoreEntriesAttribute:
     """Regression: /reset must access _entries, not _sessions."""

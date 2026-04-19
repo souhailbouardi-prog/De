@@ -247,6 +247,7 @@ AUTHOR_MAP = {
     "ysfalweshcan@gmail.com": "Junass1",
     "ysfwaxlycan@gmail.com": "WAXLYY",
     "yusufalweshdemir@gmail.com": "Dusk1e",
+    "zhangzelin@deepjoy.ai": "cola-runner",
     "zhouboli@gmail.com": "zhouboli",
     "zqiao@microsoft.com": "tomqiaozc",
     "zzn+pa@zzn.im": "xinbenlv",

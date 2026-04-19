@@ -360,8 +360,13 @@ class TestBlockingApprovalE2E:
 
         session_key = "e2e-test"
         notified = []
+        notified_event = threading.Event()
 
-        register_gateway_notify(session_key, lambda d: notified.append(d))
+        def _on_notify(data):
+            notified.append(data)
+            notified_event.set()
+
+        register_gateway_notify(session_key, _on_notify)
 
         result_holder = [None]
 
@@ -382,23 +387,23 @@ class TestBlockingApprovalE2E:
                 os.environ.pop("HERMES_SESSION_KEY", None)
                 reset_current_session_key(token)
 
-        t = threading.Thread(target=agent_thread)
-        t.start()
+        with patch(
+            "tools.tirith_security.check_command_security",
+            return_value={"action": "allow", "findings": [], "summary": ""},
+        ):
+            t = threading.Thread(target=agent_thread)
+            t.start()
 
-        for _ in range(50):
-            if notified:
-                break
-            time.sleep(0.05)
+            assert notified_event.wait(timeout=10), "gateway approval notification never arrived"
+            assert len(notified) == 1
+            assert "rm -rf /important" in notified[0]["command"]
 
-        assert len(notified) == 1
-        assert "rm -rf /important" in notified[0]["command"]
+            resolve_gateway_approval(session_key, "once")
+            t.join(timeout=5)
 
-        resolve_gateway_approval(session_key, "once")
-        t.join(timeout=5)
-
-        assert result_holder[0] is not None
-        assert result_holder[0]["approved"] is True
-        unregister_gateway_notify(session_key)
+            assert result_holder[0] is not None
+            assert result_holder[0]["approved"] is True
+            unregister_gateway_notify(session_key)
 
     def test_blocking_approval_deny(self):
         """check_all_command_guards returns BLOCKED when denied."""

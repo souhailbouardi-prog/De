@@ -382,6 +382,11 @@ def test_parse_session_key_valid():
     assert result == {"platform": "telegram", "chat_type": "group", "chat_id": "-100"}
 
 
+def test_parse_session_key_named_profile():
+    result = _parse_session_key("agent:coder:telegram:group:-100")
+    assert result == {"platform": "telegram", "chat_type": "group", "chat_id": "-100"}
+
+
 def test_parse_session_key_with_extra_parts():
     """6th part in a group key may be a user_id, not a thread_id — omit it."""
     result = _parse_session_key("agent:main:discord:group:chan123:thread456")
@@ -413,4 +418,4 @@ def test_parse_session_key_too_short():
 
 def test_parse_session_key_wrong_prefix():
     assert _parse_session_key("cron:main:telegram:dm:123") is None
-    assert _parse_session_key("agent:cron:telegram:dm:123") is None
+    assert _parse_session_key("agent::telegram:dm:123") is None

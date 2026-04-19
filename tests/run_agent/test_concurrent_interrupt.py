@@ -78,6 +78,7 @@ def _make_agent(monkeypatch):
     stub.interrupt = _ra.AIAgent.interrupt.__get__(stub)
     stub.clear_interrupt = _ra.AIAgent.clear_interrupt.__get__(stub)
     stub._invoke_tool = MagicMock(side_effect=lambda *a, **kw: '{"ok": true}')
+    stub._apply_pending_steer_to_tool_results = lambda messages, num_tool_msgs: None
     return stub
 
 
@@ -257,4 +258,3 @@ def test_clear_interrupt_clears_worker_tids(monkeypatch):
         "clear_interrupt() did not clear the interrupt bit for a tracked "
         "worker tid — stale interrupt can leak into the next turn"
     )
-

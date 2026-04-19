@@ -27,6 +27,26 @@ def _now() -> datetime:
     return datetime.now()
 
 
+def _session_key_agent_prefix() -> str:
+    """Return the session-key prefix for the active profile.
+
+    ``agent:main`` is preserved for the default/custom-root deployment to keep
+    existing session keys stable. Named profiles use their profile name so
+    sessions do not collide across isolated Hermes homes.
+    """
+    try:
+        from hermes_cli.profiles import get_active_profile_name
+
+        profile_name = get_active_profile_name()
+    except Exception:
+        profile_name = "default"
+
+    if profile_name in ("", "default", "custom"):
+        profile_name = "main"
+
+    return f"agent:{profile_name}"
+
+
 # ---------------------------------------------------------------------------
 # PII redaction helpers
 # ---------------------------------------------------------------------------
@@ -496,17 +516,18 @@ def build_session_key(
       - Without identifiers, messages fall back to one session per platform/chat_type.
     """
     platform = source.platform.value
+    agent_prefix = _session_key_agent_prefix()
     if source.chat_type == "dm":
         if source.chat_id:
             if source.thread_id:
-                return f"agent:main:{platform}:dm:{source.chat_id}:{source.thread_id}"
-            return f"agent:main:{platform}:dm:{source.chat_id}"
+                return f"{agent_prefix}:{platform}:dm:{source.chat_id}:{source.thread_id}"
+            return f"{agent_prefix}:{platform}:dm:{source.chat_id}"
         if source.thread_id:
-            return f"agent:main:{platform}:dm:{source.thread_id}"
-        return f"agent:main:{platform}:dm"
+            return f"{agent_prefix}:{platform}:dm:{source.thread_id}"
+        return f"{agent_prefix}:{platform}:dm"
 
     participant_id = source.user_id_alt or source.user_id
-    key_parts = ["agent:main", platform, source.chat_type]
+    key_parts = [agent_prefix, platform, source.chat_type]
 
     if source.chat_id:
         key_parts.append(source.chat_id)
