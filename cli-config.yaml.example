@@ -772,6 +772,31 @@ delegation:
   # provider: "openrouter"                    # Override provider for subagents (empty = inherit parent)
   #                                           # Resolves full credentials (base_url, api_key) automatically.
   #                                           # Supported: openrouter, nous, zai, kimi-coding, minimax
+  # reasoning_effort: "low"                   # Flat override for all delegated children
+  # default_tier: "heavy"                     # Fallback tier when no explicit tier is chosen
+  # auto_tier_selection: false                # Heuristic auto-router when no explicit tier is provided
+  # tiers:
+  #   light:
+  #     model: "gpt-5.4-mini"
+  #     reasoning_effort: "low"
+  #     max_iterations: 25
+  #   heavy:
+  #     model: "gpt-5.4"
+  #     reasoning_effort: "medium"
+  #     max_iterations: 50
+  #   review:
+  #     model: "gpt-5.4"
+  #     reasoning_effort: "high"             # Floor: review >= high
+  #     max_iterations: 60
+  #   planning:
+  #     model: "xiaomi/mimo-v2-pro"
+  #     provider: "nous"
+  #     reasoning_effort: "high"             # Floor: planning >= high
+  #     max_iterations: 60
+  #   research:
+  #     model: "gpt-5.4"
+  #     reasoning_effort: "high"             # Floor: research >= medium
+  #     max_iterations: 60
 
 # =============================================================================
 # Honcho Integration (Cross-Session User Modeling)

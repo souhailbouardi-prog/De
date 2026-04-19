@@ -20,6 +20,7 @@ import json
 import logging
 logger = logging.getLogger(__name__)
 import os
+import re
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -51,6 +52,112 @@ _TOOLSET_LIST_STR = ", ".join(f"'{n}'" for n in _SUBAGENT_TOOLSETS)
 
 _DEFAULT_MAX_CONCURRENT_CHILDREN = 3
 MAX_DEPTH = 2  # parent (0) -> child (1) -> grandchild rejected (2)
+
+# ---------------------------------------------------------------------------
+# Task-tier profiles: named delegation presets for task shape/routing/effort
+# ---------------------------------------------------------------------------
+SUPPORTED_TIERS = frozenset({"light", "heavy", "review", "planning", "research"})
+_REVIEW_SIGNALS = {
+    "review", "audit", "critique", "inspect", "find bugs", "find bug",
+    "security check", "validate", "verify", "look for issues", "diff",
+}
+_PLANNING_SIGNALS = {
+    "plan", "design", "architect", "architecture", "roadmap", "strategy",
+    "how should we", "how should i", "migration plan", "outline",
+    "decompose", "break down",
+}
+_RESEARCH_SIGNALS = {
+    "research", "investigate", "compare options", "survey", "look up",
+    "look into", "gather", "summarize options", "benchmark",
+}
+_LIGHT_SIGNALS = {
+    "count", "list", "show", "display", "format", "read", "how many",
+    "simple lookup",
+}
+_TIER_REASONING_FLOORS = {
+    "heavy": "medium",
+    "research": "medium",
+    "planning": "high",
+    "review": "high",
+}
+_REASONING_ORDER = {
+    "none": 0,
+    "minimal": 1,
+    "low": 2,
+    "medium": 3,
+    "high": 4,
+    "xhigh": 5,
+}
+
+
+def resolve_tier_config(cfg: dict, tier: Optional[str] = None) -> dict:
+    """Resolve a delegation tier into an effective config dict.
+
+    Always returns a shallow copy with ``tiers`` and ``default_tier`` removed.
+    Applies tier overrides when available and enforces reasoning floor guardrails.
+    """
+    merged = dict(cfg or {})
+    tiers = merged.pop("tiers", None)
+    default_tier = merged.pop("default_tier", None)
+
+    if not isinstance(tiers, dict) or not tiers:
+        return merged
+
+    if tier is not None and str(tier).strip():
+        effective_tier = str(tier).strip().lower()
+        if effective_tier not in SUPPORTED_TIERS:
+            logger.warning("unknown delegation tier '%s'; falling back to flat config", tier)
+            return merged
+    else:
+        effective_tier = str(default_tier or "").strip().lower() or None
+        if not effective_tier:
+            return merged
+        if effective_tier not in SUPPORTED_TIERS:
+            logger.warning("unknown default_tier '%s'; falling back to flat config", default_tier)
+            return merged
+
+    tier_cfg = tiers.get(effective_tier)
+    if not isinstance(tier_cfg, dict):
+        return merged
+
+    merged.update(tier_cfg)
+    floor = _TIER_REASONING_FLOORS.get(effective_tier)
+    if floor:
+        current = str(merged.get("reasoning_effort") or "").strip().lower()
+        if _REASONING_ORDER.get(current, 0) < _REASONING_ORDER[floor]:
+            merged["reasoning_effort"] = floor
+    return merged
+
+
+def _contains_signal(text: str, signal: str) -> bool:
+    if " " in signal:
+        return signal in text
+    return re.search(rf"\b{re.escape(signal)}\b", text) is not None
+
+
+def _infer_delegate_tier(goal, context, toolsets, cfg) -> Optional[str]:
+    text = f"{goal or ''} {context or ''}".strip().lower()
+    if len(text) < 10:
+        return None
+
+    if any(_contains_signal(text, sig) for sig in _REVIEW_SIGNALS):
+        return "review"
+    if any(_contains_signal(text, sig) for sig in _PLANNING_SIGNALS):
+        return "planning"
+    if any(_contains_signal(text, sig) for sig in _RESEARCH_SIGNALS):
+        return "research"
+    if any(_contains_signal(text, sig) for sig in _LIGHT_SIGNALS):
+        return "light"
+    return None
+
+
+def _resolve_effective_tier(tier, goal, context, toolsets, cfg) -> Optional[str]:
+    raw_tier = str(tier or "").strip().lower() or None
+    if raw_tier:
+        return raw_tier
+    if cfg.get("auto_tier_selection") is True:
+        return _infer_delegate_tier(goal, context, toolsets, cfg)
+    return None
 
 
 def _get_max_concurrent_children() -> int:
@@ -276,6 +383,7 @@ def _build_child_agent(
     override_base_url: Optional[str] = None,
     override_api_key: Optional[str] = None,
     override_api_mode: Optional[str] = None,
+    override_reasoning_effort: Optional[str] = None,
     # ACP transport overrides — lets a non-ACP parent spawn ACP child agents
     override_acp_command: Optional[str] = None,
     override_acp_args: Optional[List[str]] = None,
@@ -354,24 +462,34 @@ def _build_child_agent(
     effective_acp_command = override_acp_command or getattr(parent_agent, "acp_command", None)
     effective_acp_args = list(override_acp_args if override_acp_args is not None else (getattr(parent_agent, "acp_args", []) or []))
 
-    # Resolve reasoning config: delegation override > parent inherit
+    # Resolve reasoning config: explicit override > delegation override > parent inherit
     parent_reasoning = getattr(parent_agent, "reasoning_config", None)
     child_reasoning = parent_reasoning
-    try:
-        delegation_cfg = _load_config()
-        delegation_effort = str(delegation_cfg.get("reasoning_effort") or "").strip()
-        if delegation_effort:
-            from hermes_constants import parse_reasoning_effort
-            parsed = parse_reasoning_effort(delegation_effort)
-            if parsed is not None:
-                child_reasoning = parsed
-            else:
-                logger.warning(
-                    "Unknown delegation.reasoning_effort '%s', inheriting parent level",
-                    delegation_effort,
-                )
-    except Exception as exc:
-        logger.debug("Could not load delegation reasoning_effort: %s", exc)
+    from hermes_constants import parse_reasoning_effort
+    if override_reasoning_effort is not None and str(override_reasoning_effort).strip():
+        parsed = parse_reasoning_effort(str(override_reasoning_effort).strip().lower())
+        if parsed is not None:
+            child_reasoning = parsed
+        else:
+            logger.warning(
+                "Unknown override reasoning_effort '%s', inheriting parent level",
+                override_reasoning_effort,
+            )
+    else:
+        try:
+            delegation_cfg = _load_config()
+            delegation_effort = str(delegation_cfg.get("reasoning_effort") or "").strip()
+            if delegation_effort:
+                parsed = parse_reasoning_effort(delegation_effort)
+                if parsed is not None:
+                    child_reasoning = parsed
+                else:
+                    logger.warning(
+                        "Unknown delegation.reasoning_effort '%s', inheriting parent level",
+                        delegation_effort,
+                    )
+        except Exception as exc:
+            logger.debug("Could not load delegation reasoning_effort: %s", exc)
 
     child = AIAgent(
         base_url=effective_base_url,
@@ -683,6 +801,7 @@ def delegate_task(
     toolsets: Optional[List[str]] = None,
     tasks: Optional[List[Dict[str, Any]]] = None,
     max_iterations: Optional[int] = None,
+    tier: Optional[str] = None,
     acp_command: Optional[str] = None,
     acp_args: Optional[List[str]] = None,
     parent_agent=None,
@@ -702,27 +821,13 @@ def delegate_task(
     # Depth limit
     depth = getattr(parent_agent, '_delegate_depth', 0)
     if depth >= MAX_DEPTH:
-        return json.dumps({
-            "error": (
-                f"Delegation depth limit reached ({MAX_DEPTH}). "
-                "Subagents cannot spawn further subagents."
-            )
-        })
+        return tool_error(
+            f"Delegation depth limit reached ({MAX_DEPTH}). "
+            "Subagents cannot spawn further subagents."
+        )
 
     # Load config
-    cfg = _load_config()
-    default_max_iter = cfg.get("max_iterations", DEFAULT_MAX_ITERATIONS)
-    effective_max_iter = max_iterations or default_max_iter
-
-    # Resolve delegation credentials (provider:model pair).
-    # When delegation.provider is configured, this resolves the full credential
-    # bundle (base_url, api_key, api_mode) via the same runtime provider system
-    # used by CLI/gateway startup.  When unconfigured, returns None values so
-    # children inherit from the parent.
-    try:
-        creds = _resolve_delegation_credentials(cfg, parent_agent)
-    except ValueError as exc:
-        return tool_error(str(exc))
+    raw_cfg = _load_config()
 
     # Normalize to task list
     max_children = _get_max_concurrent_children()
@@ -737,7 +842,7 @@ def delegate_task(
             )
         task_list = tasks
     elif goal and isinstance(goal, str) and goal.strip():
-        task_list = [{"goal": goal, "context": context, "toolsets": toolsets}]
+        task_list = [{"goal": goal, "context": context, "toolsets": toolsets, "tier": tier}]
     else:
         return tool_error("Provide either 'goal' (single task) or 'tasks' (batch).")
 
@@ -768,13 +873,27 @@ def delegate_task(
     children = []
     try:
         for i, t in enumerate(task_list):
+            task_tier = _resolve_effective_tier(
+                t.get("tier") if t.get("tier") is not None else tier,
+                t["goal"],
+                t.get("context"),
+                t.get("toolsets") or toolsets,
+                raw_cfg,
+            )
+            task_cfg = resolve_tier_config(raw_cfg, tier=task_tier)
+            task_max_iter = max_iterations if max_iterations is not None else task_cfg.get("max_iterations", DEFAULT_MAX_ITERATIONS)
+            try:
+                task_creds = _resolve_delegation_credentials(task_cfg, parent_agent)
+            except ValueError as exc:
+                return tool_error(str(exc))
             child = _build_child_agent(
                 task_index=i, goal=t["goal"], context=t.get("context"),
-                toolsets=t.get("toolsets") or toolsets, model=creds["model"],
-                max_iterations=effective_max_iter, task_count=n_tasks, parent_agent=parent_agent,
-                override_provider=creds["provider"], override_base_url=creds["base_url"],
-                override_api_key=creds["api_key"],
-                override_api_mode=creds["api_mode"],
+                toolsets=t.get("toolsets") or toolsets, model=task_creds["model"],
+                max_iterations=task_max_iter, task_count=n_tasks, parent_agent=parent_agent,
+                override_provider=task_creds["provider"], override_base_url=task_creds["base_url"],
+                override_api_key=task_creds["api_key"],
+                override_api_mode=task_creds["api_mode"],
+                override_reasoning_effort=task_cfg.get("reasoning_effort"),
                 override_acp_command=t.get("acp_command") or acp_command,
                 override_acp_args=t.get("acp_args") or acp_args,
             )
@@ -1128,6 +1247,11 @@ DELEGATE_TASK_SCHEMA = {
                             "items": {"type": "string"},
                             "description": f"Toolsets for this specific task. Available: {_TOOLSET_LIST_STR}. Use 'web' for network access, 'terminal' for shell, 'browser' for web interaction.",
                         },
+                        "tier": {
+                            "type": "string",
+                            "enum": sorted(SUPPORTED_TIERS),
+                            "description": "Per-task complexity tier. Overrides the top-level tier for this task only.",
+                        },
                         "acp_command": {
                             "type": "string",
                             "description": "Per-task ACP command override (e.g. 'claude'). Overrides the top-level acp_command for this task only.",
@@ -1154,6 +1278,16 @@ DELEGATE_TASK_SCHEMA = {
                 "description": (
                     "Max tool-calling turns per subagent (default: 50). "
                     "Only set lower for simple tasks."
+                ),
+            },
+            "tier": {
+                "type": "string",
+                "enum": sorted(SUPPORTED_TIERS),
+                "description": (
+                    "Task complexity tier. Explicit values only: 'light' (fast/cheap lookups), "
+                    "'heavy' (default implementation/debugging), 'review' (deep analysis/code review), "
+                    "'planning' (strategy/architecture), 'research' (information gathering). "
+                    "Per-task tiers in tasks[] override this top-level tier."
                 ),
             },
             "acp_command": {
@@ -1192,6 +1326,7 @@ registry.register(
         toolsets=args.get("toolsets"),
         tasks=args.get("tasks"),
         max_iterations=args.get("max_iterations"),
+        tier=args.get("tier"),
         acp_command=args.get("acp_command"),
         acp_args=args.get("acp_args"),
         parent_agent=kw.get("parent_agent")),
