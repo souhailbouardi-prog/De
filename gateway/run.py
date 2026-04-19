@@ -1544,6 +1544,12 @@ class GatewayRunner:
         if now - last_ack < _BUSY_ACK_COOLDOWN:
             return True  # interrupt sent, ack already delivered recently
 
+        # Agent-to-agent adapters opt out of the ⚡ ack — it's UX reassurance
+        # for a human recipient; an agent peer reads it as unsolicited
+        # semantic content. Interrupt + pending-queue already happened above.
+        if not getattr(adapter, "WANTS_BUSY_ACK", True):
+            return True
+
         self._busy_ack_ts[session_key] = now
 
         # Build a status-rich acknowledgment
@@ -2794,6 +2800,16 @@ class GatewayRunner:
                 return None
             return QQAdapter(config)
 
+        elif platform == Platform.HUB:
+            from gateway.platforms.hub import HubAdapter, check_hub_requirements
+            if not check_hub_requirements():
+                logger.warning("Hub: httpx or websockets not installed")
+                return None
+            if not config.extra.get("agent_secret"):
+                logger.warning("Hub: agent_secret not configured")
+                return None
+            return HubAdapter(config)
+
         return None
 
     def _is_user_authorized(self, source: SessionSource) -> bool:
@@ -2812,7 +2828,10 @@ class GatewayRunner:
         # connection, so HA events are always authorized.
         # Webhook events are authenticated via HMAC signature validation in
         # the adapter itself — no user allowlist applies.
-        if source.platform in (Platform.HOMEASSISTANT, Platform.WEBHOOK):
+        # Hub agents authenticate with Hub via agent secrets — the per-user
+        # allowlist model doesn't apply to agent-to-agent messaging.  Hub is
+        # NOT in platform_env_map/platform_allow_all_map intentionally.
+        if source.platform in (Platform.HOMEASSISTANT, Platform.WEBHOOK, Platform.HUB):
             return True
 
         user_id = source.user_id
@@ -7440,7 +7459,7 @@ class GatewayRunner:
         Platform.TELEGRAM, Platform.DISCORD, Platform.SLACK, Platform.WHATSAPP,
         Platform.SIGNAL, Platform.MATTERMOST, Platform.MATRIX,
         Platform.HOMEASSISTANT, Platform.EMAIL, Platform.SMS, Platform.DINGTALK,
-        Platform.FEISHU, Platform.WECOM, Platform.WECOM_CALLBACK, Platform.WEIXIN, Platform.BLUEBUBBLES, Platform.QQBOT, Platform.LOCAL,
+        Platform.FEISHU, Platform.WECOM, Platform.WECOM_CALLBACK, Platform.WEIXIN, Platform.BLUEBUBBLES, Platform.QQBOT, Platform.LOCAL, Platform.HUB,
     })
 
     async def _handle_debug_command(self, event: MessageEvent) -> str:
@@ -9061,7 +9080,7 @@ class GatewayRunner:
         # tool progress and token streaming. Users can keep tool_progress quiet
         # in chat platforms while opting into concise mid-turn updates.
         interim_assistant_messages_enabled = (
-            source.platform != Platform.WEBHOOK
+            source.platform not in (Platform.WEBHOOK, Platform.HUB)
             and is_truthy_value(
                 display_config.get("interim_assistant_messages"),
                 default=True,
@@ -9563,7 +9582,13 @@ class GatewayRunner:
             agent.step_callback = _step_callback_sync if _hooks_ref.loaded_hooks else None
             agent.stream_delta_callback = _stream_delta_cb
             agent.interim_assistant_callback = _interim_assistant_cb if _want_interim_messages else None
-            agent.status_callback = _status_callback_sync
+            # Hub carries agent-to-agent traffic — lifecycle/status messages
+            # (rate-limit notices, retries, fallbacks) have no value to the
+            # partner agent and amplify into a feedback loop when each status
+            # ping triggers a fresh LLM call on the receiving side.
+            agent.status_callback = (
+                None if source.platform == Platform.HUB else _status_callback_sync
+            )
             agent.reasoning_config = reasoning_config
             agent.service_tier = self._service_tier
             agent.request_overrides = turn_route.get("request_overrides")

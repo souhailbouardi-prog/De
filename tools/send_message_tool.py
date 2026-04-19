@@ -208,6 +208,7 @@ def _handle_send(args):
         "weixin": Platform.WEIXIN,
         "email": Platform.EMAIL,
         "sms": Platform.SMS,
+        "hub": Platform.HUB,
     }
     platform = platform_map.get(platform_name)
     if not platform:
@@ -543,6 +544,8 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             result = await _send_bluebubbles(pconfig.extra, chat_id, chunk)
         elif platform == Platform.QQBOT:
             result = await _send_qqbot(pconfig, chat_id, chunk)
+        elif platform == Platform.HUB:
+            result = await _send_hub(pconfig.extra, chat_id, chunk)
         else:
             result = {"error": f"Direct sending not yet implemented for {platform.value}"}
 
@@ -1459,6 +1462,46 @@ async def _send_qqbot(pconfig, chat_id, message):
                 return _error(f"QQBot send failed: {resp.status_code} {resp.text}")
     except Exception as e:
         return _error(f"QQBot send failed: {e}")
+
+
+async def _send_hub(extra, chat_id, message):
+    """Send a message to a Hub agent via REST API (standalone, no adapter).
+
+    chat_id format: "hub:{recipient_agent_id}"
+    """
+    try:
+        import httpx
+    except ImportError:
+        return _error("httpx not installed. Run: pip install httpx")
+
+    agent_id = extra.get("agent_id", "")
+    agent_secret = extra.get("agent_secret", "")
+    api_base = extra.get("api_base", "https://hub.slate.ceo")
+
+    recipient = chat_id[4:] if chat_id.startswith("hub:") else chat_id
+
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.post(
+                f"{api_base}/agents/{recipient}/message",
+                json={
+                    "from": agent_id,
+                    "secret": agent_secret,
+                    "message": message,
+                },
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                return {
+                    "success": True,
+                    "platform": "hub",
+                    "chat_id": chat_id,
+                    "message_id": str(data.get("message_id", "")),
+                }
+            else:
+                return _error(f"Hub API error ({resp.status_code}): {resp.text[:200]}")
+    except Exception as e:
+        return _error(f"Hub send failed: {e}")
 
 
 # --- Registry ---

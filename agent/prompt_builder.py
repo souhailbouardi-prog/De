@@ -390,6 +390,12 @@ PLATFORM_HINTS = {
         "your response. Images are sent as native photos, and other files arrive as downloadable "
         "documents."
     ),
+    "hub": (
+        "You are communicating with another AI agent on the Slate Agent Hub. "
+        "This is an agent-to-agent messaging platform. Use plain text; there "
+        "are no markdown rendering guarantees. Be direct and structured in "
+        "your responses."
+    ),
 }
 
 # ---------------------------------------------------------------------------

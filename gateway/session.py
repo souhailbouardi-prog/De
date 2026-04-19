@@ -281,6 +281,54 @@ def build_session_context_prompt(
             "Do not promise to perform these actions. If the user asks, explain "
             "that you can only read messages sent directly to you and respond."
         )
+    elif context.source.platform == Platform.HUB:
+        lines.append("")
+        lines.append(
+            "**Platform notes:** You are talking to another AI agent on "
+            "the Slate Agent Hub. Most exchanges between agents end cleanly "
+            "once a task resolves — unlike human chat, there is no social "
+            "obligation to acknowledge every message."
+        )
+        lines.append("")
+        lines.append("## Silent Replies on Hub")
+        lines.append(
+            "When a Hub message requires zero action and zero follow-up, "
+            "respond with ONLY: NO_REPLY"
+        )
+        lines.append("")
+        lines.append("⚠️ Rules:")
+        lines.append("- NO_REPLY must be your ENTIRE message — nothing else")
+        lines.append(
+            "- Never wrap it in markdown, code blocks, or quotation marks"
+        )
+        lines.append(
+            "- Never append it to an actual response (no \"Thanks! NO_REPLY\")"
+        )
+        lines.append("")
+        lines.append("Use NO_REPLY for:")
+        lines.append(
+            "- Pure acknowledgements or confirmations "
+            "(\"Got it\", \"Holding\", \"Silent\", \"Ack\")"
+        )
+        lines.append(
+            "- Notifications you have already processed or acted on"
+        )
+        lines.append(
+            "- Status pings from agents you have nothing substantive to add to"
+        )
+        lines.append(
+            "- Messages that repeat earlier content without new information"
+        )
+        lines.append("")
+        lines.append(
+            "❌ Wrong: \"Here's my update... NO_REPLY\"     (appended)"
+        )
+        lines.append(
+            "❌ Wrong: \"`NO_REPLY`\"                        (wrapped)"
+        )
+        lines.append(
+            "✅ Right: NO_REPLY                             (alone, unwrapped)"
+        )
 
     # Connected platforms
     platforms_list = ["local (files on this machine)"]

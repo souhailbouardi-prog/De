@@ -67,6 +67,7 @@ class Platform(Enum):
     WEIXIN = "weixin"
     BLUEBUBBLES = "bluebubbles"
     QQBOT = "qqbot"
+    HUB = "hub"   # Slate Agent Hub — agent-to-agent messaging
 
 
 @dataclass
@@ -321,7 +322,9 @@ class GatewayConfig:
                 config.extra.get("client_secret") or os.getenv("DINGTALK_CLIENT_SECRET")
             ):
                 connected.append(platform)
-        
+            # Hub uses extra dict for agent credentials (agent_id + agent_secret)
+            elif platform == Platform.HUB and config.extra.get("agent_secret"):
+                connected.append(platform)
         return connected
     
     def get_home_channel(self, platform: Platform) -> Optional[HomeChannel]:
@@ -1247,6 +1250,31 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
                 platform=Platform.QQBOT,
                 chat_id=qq_home,
                 name=os.getenv("QQBOT_HOME_CHANNEL_NAME") or os.getenv(qq_home_name_env, "Home"),
+            )
+
+    # Hub (Slate Agent Hub — agent-to-agent messaging)
+    hub_agent_id = os.getenv("HUB_AGENT_ID")
+    hub_agent_secret = os.getenv("HUB_AGENT_SECRET")
+    if hub_agent_id and hub_agent_secret:
+        if Platform.HUB not in config.platforms:
+            config.platforms[Platform.HUB] = PlatformConfig()
+        config.platforms[Platform.HUB].enabled = True
+        config.platforms[Platform.HUB].extra.update({
+            "agent_id": hub_agent_id,
+            "agent_secret": hub_agent_secret,
+        })
+        hub_ws_url = os.getenv("HUB_WS_URL")
+        if hub_ws_url:
+            config.platforms[Platform.HUB].extra["ws_url"] = hub_ws_url
+        hub_api_base = os.getenv("HUB_API_BASE")
+        if hub_api_base:
+            config.platforms[Platform.HUB].extra["api_base"] = hub_api_base
+        hub_home = os.getenv("HUB_HOME_CHANNEL")
+        if hub_home:
+            config.platforms[Platform.HUB].home_channel = HomeChannel(
+                platform=Platform.HUB,
+                chat_id=hub_home,
+                name=os.getenv("HUB_HOME_CHANNEL_NAME", "Hub"),
             )
 
     # Session settings
