@@ -10284,20 +10284,37 @@ class GatewayRunner:
             pending_event = None
             pending = None
             if result and adapter and session_key:
-                pending_event = _dequeue_pending_event(adapter, session_key)
-                if result.get("interrupted") and not pending_event and result.get("interrupt_message"):
-                    interrupt_message = result.get("interrupt_message")
-                    if _is_control_interrupt_message(interrupt_message):
-                        logger.info(
-                            "Ignoring control interrupt message for session %s: %s",
-                            session_key[:20] if session_key else "?",
-                            interrupt_message,
-                        )
-                    else:
-                        pending = interrupt_message
-                elif pending_event:
-                    pending = pending_event.text or _build_media_placeholder(pending_event)
-                    logger.debug("Processing queued message after agent completion: '%s...'", pending[:40])
+                # Stale-generation guard: if /new (or similar) bumped the
+                # session's run generation while we were unwinding, DO NOT
+                # consume from the adapter's pending queue.  Leaving those
+                # messages in place lets base.py's post-run drain re-enter
+                # via _process_message_background → handle_message, which
+                # claims a fresh run generation.  Consuming them here would
+                # recurse with this stale generation; the recursive result
+                # would then be discarded at _handle_message_with_agent's
+                # stale check, silently swallowing the user's follow-up.
+                if not self._is_session_run_current(session_key, run_generation):
+                    logger.info(
+                        "Leaving pending messages in adapter queue for %s — "
+                        "run generation %d is stale; late-arrival drain will reprocess",
+                        session_key[:20] if session_key else "?",
+                        run_generation,
+                    )
+                else:
+                    pending_event = _dequeue_pending_event(adapter, session_key)
+                    if result.get("interrupted") and not pending_event and result.get("interrupt_message"):
+                        interrupt_message = result.get("interrupt_message")
+                        if _is_control_interrupt_message(interrupt_message):
+                            logger.info(
+                                "Ignoring control interrupt message for session %s: %s",
+                                session_key[:20] if session_key else "?",
+                                interrupt_message,
+                            )
+                        else:
+                            pending = interrupt_message
+                    elif pending_event:
+                        pending = pending_event.text or _build_media_placeholder(pending_event)
+                        logger.debug("Processing queued message after agent completion: '%s...'", pending[:40])
 
             # Safety net: if the pending text is a slash command (e.g. "/stop",
             # "/new"), discard it — commands should never be passed to the agent
