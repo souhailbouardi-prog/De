@@ -1552,7 +1552,15 @@ class WeixinAdapter(BasePlatformAdapter):
                 )
                 if wait > 0:
                     await asyncio.sleep(wait)
-        assert last_error is not None
+        # Retry loop exited without success; last_error must be set because
+        # the loop only exits through the except branch. Use an explicit
+        # raise rather than ``assert`` so Python's -O/-OO optimization flags
+        # cannot strip the invariant check.
+        if last_error is None:
+            raise RuntimeError(
+                "weixin retry loop exited without success or error — "
+                "this should be impossible"
+            )
         raise last_error
 
     async def send(
