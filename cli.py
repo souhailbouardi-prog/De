@@ -2852,8 +2852,10 @@ class HermesCLI:
         # the configured model (e.g. "qwen3.6-plus"), causing 400 errors.
         runtime_model = runtime.get("model")
         if runtime_model and isinstance(runtime_model, str):
-            self.model = runtime_model
-
+            # However, if user explicitly selected a model via /model command,
+            # respect that choice and don't overwrite it.
+            if not getattr(self, '_explicit_model', None):
+                self.model = runtime_model
         # If model is still empty (e.g. user ran `hermes auth add openai-codex`
         # without `hermes model`), fall back to the provider's first catalog
         # model so the API call doesn't fail with "model must be non-empty".
@@ -4704,6 +4706,8 @@ class HermesCLI:
         self.model = result.new_model
         self.provider = result.target_provider
         self.requested_provider = result.target_provider
+        # Mark that user explicitly selected this model via /model command
+        self._explicit_model = result.new_model
         if result.api_key:
             self.api_key = result.api_key
             self._explicit_api_key = result.api_key
