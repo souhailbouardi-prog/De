@@ -617,6 +617,7 @@ class MattermostAdapter(BasePlatformAdapter):
         # Config (env vars):
         #   MATTERMOST_REQUIRE_MENTION: Require @mention in channels (default: true)
         #   MATTERMOST_FREE_RESPONSE_CHANNELS: Channel IDs where bot responds without mention
+        #   MATTERMOST_FREE_RESPONSE_PREFIX: Channel name prefixes for mention-free response
         if channel_type_raw != "D":
             require_mention = os.getenv(
                 "MATTERMOST_REQUIRE_MENTION", "true"
@@ -625,6 +626,23 @@ class MattermostAdapter(BasePlatformAdapter):
             free_channels_raw = os.getenv("MATTERMOST_FREE_RESPONSE_CHANNELS", "")
             free_channels = {ch.strip() for ch in free_channels_raw.split(",") if ch.strip()}
             is_free_channel = channel_id in free_channels
+
+            # Prefix-based matching (e.g. "dev-" matches dev-general, dev-backend, etc.)
+            if not is_free_channel:
+                prefix_raw = os.getenv("MATTERMOST_FREE_RESPONSE_PREFIX", "")
+                prefixes = [p.strip() for p in prefix_raw.split(",") if p.strip()]
+                if prefixes:
+                    if not hasattr(self, "_channel_name_cache"):
+                        self._channel_name_cache: Dict[str, str] = {}
+                    ch_name = self._channel_name_cache.get(channel_id)
+                    if ch_name is None:
+                        try:
+                            ch_data = await self._api_get(f"channels/{channel_id}")
+                            ch_name = ch_data.get("name", "")
+                        except Exception:
+                            ch_name = ""
+                        self._channel_name_cache[channel_id] = ch_name
+                    is_free_channel = any(ch_name.startswith(p) for p in prefixes)
 
             mention_patterns = [
                 f"@{self._bot_username}",

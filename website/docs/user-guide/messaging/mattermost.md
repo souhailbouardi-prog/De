@@ -155,6 +155,9 @@ MATTERMOST_ALLOWED_USERS=3uo8dkh1p7g1mfk49ear5fzs5c
 
 # Optional: channels where bot responds without @mention (comma-separated channel IDs)
 # MATTERMOST_FREE_RESPONSE_CHANNELS=channel_id_1,channel_id_2
+
+# Optional: channel name prefixes for mention-free response (comma-separated)
+# MATTERMOST_FREE_RESPONSE_PREFIX=dev-,sop-
 ```
 
 Optional behavior settings in `~/.hermes/config.yaml`:
@@ -220,8 +223,11 @@ By default, the bot only responds in channels when `@mentioned`. You can change 
 |----------|---------|-------------|
 | `MATTERMOST_REQUIRE_MENTION` | `true` | Set to `false` to respond to all messages in channels (DMs always work). |
 | `MATTERMOST_FREE_RESPONSE_CHANNELS` | _(none)_ | Comma-separated channel IDs where the bot responds without `@mention`, even when require_mention is true. |
+| `MATTERMOST_FREE_RESPONSE_PREFIX` | _(none)_ | Comma-separated channel name prefixes (e.g. `dev-,sop-`). Any channel whose name starts with a listed prefix is treated as a free-response channel. |
 
 To find a channel ID in Mattermost: open the channel, click the channel name header, and look for the ID in the URL or channel details.
+
+`MATTERMOST_FREE_RESPONSE_PREFIX` is useful when you have many channels following a naming convention (e.g. `dev-general`, `dev-backend`, `dev-frontend`) and don't want to maintain a list of IDs. Channel names are cached in memory to avoid repeated API calls.
 
 When the bot is `@mentioned`, the mention is automatically stripped from the message before processing.
 
