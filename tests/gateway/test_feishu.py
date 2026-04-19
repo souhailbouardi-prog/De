@@ -3278,3 +3278,108 @@ class TestSenderNameResolution(unittest.TestCase):
             result = asyncio.run(adapter._resolve_sender_name_from_api("ou_broken"))
 
         self.assertIsNone(result)
+
+
+class TestPerGroupRequireMention(unittest.TestCase):
+    """Tests for the per-group require_mention toggle."""
+
+    @patch.dict(
+        os.environ,
+        {
+            "FEISHU_GROUP_POLICY": "open",
+            "FEISHU_BOT_NAME": "TestBot",
+        },
+        clear=True,
+    )
+    def test_require_mention_false_accepts_without_mention(self):
+        """When require_mention=False, messages are accepted without @mention."""
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter, FeishuGroupRule
+
+        adapter = FeishuAdapter(PlatformConfig())
+        chat_id = "oc_test_group"
+        adapter._group_rules = {chat_id: FeishuGroupRule(
+            policy="open", allowlist=set(), blacklist=set(), require_mention=False,
+        )}
+        adapter._allowed_group_users = set()
+        adapter._group_policy = "open"
+
+        message = SimpleNamespace(mentions=[], content="hello")
+        sender_id = SimpleNamespace(open_id="ou_any", user_id=None)
+        self.assertTrue(adapter._should_accept_group_message(message, sender_id, chat_id))
+
+    @patch.dict(
+        os.environ,
+        {
+            "FEISHU_GROUP_POLICY": "open",
+            "FEISHU_BOT_NAME": "TestBot",
+        },
+        clear=True,
+    )
+    def test_require_mention_true_still_requires_mention(self):
+        """When require_mention=True (default), @mention is still required."""
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter, FeishuGroupRule
+
+        adapter = FeishuAdapter(PlatformConfig())
+        chat_id = "oc_test_group"
+        adapter._group_rules = {chat_id: FeishuGroupRule(
+            policy="open", allowlist=set(), blacklist=set(), require_mention=True,
+        )}
+        adapter._allowed_group_users = set()
+        adapter._group_policy = "open"
+
+        message = SimpleNamespace(mentions=[], content="hello")
+        sender_id = SimpleNamespace(open_id="ou_any", user_id=None)
+        self.assertFalse(adapter._should_accept_group_message(message, sender_id, chat_id))
+
+    @patch.dict(
+        os.environ,
+        {
+            "FEISHU_GROUP_POLICY": "open",
+            "FEISHU_BOT_NAME": "TestBot",
+        },
+        clear=True,
+    )
+    def test_require_mention_default_is_true(self):
+        """Groups without explicit require_mention still require @mention (backward compat)."""
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        chat_id = "oc_no_rule_group"
+        adapter._group_rules = {}
+        adapter._allowed_group_users = set()
+        adapter._group_policy = "open"
+
+        message = SimpleNamespace(mentions=[], content="hello")
+        sender_id = SimpleNamespace(open_id="ou_any", user_id=None)
+        self.assertFalse(adapter._should_accept_group_message(message, sender_id, chat_id))
+
+    @patch.dict(
+        os.environ,
+        {
+            "FEISHU_GROUP_POLICY": "open",
+            "FEISHU_BOT_NAME": "TestBot",
+        },
+        clear=True,
+    )
+    def test_require_mention_false_but_policy_blocks_sender(self):
+        """require_mention=False doesn't bypass sender allowlist/blacklist checks."""
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter, FeishuGroupRule
+
+        adapter = FeishuAdapter(PlatformConfig())
+        chat_id = "oc_test_group"
+        adapter._group_rules = {chat_id: FeishuGroupRule(
+            policy="allowlist",
+            allowlist={"ou_allowed"},
+            blacklist=set(),
+            require_mention=False,
+        )}
+        adapter._allowed_group_users = set()
+        adapter._group_policy = "allowlist"
+
+        message = SimpleNamespace(mentions=[], content="hello")
+        blocked_sender = SimpleNamespace(open_id="ou_blocked", user_id=None)
+        self.assertFalse(adapter._should_accept_group_message(message, blocked_sender, chat_id))
