@@ -95,22 +95,68 @@ class TestInitialize:
 
 class TestAuthenticate:
     @pytest.mark.asyncio
-    async def test_authenticate_with_provider_configured(self, agent, monkeypatch):
+    async def test_authenticate_with_matching_method_id(self, agent, monkeypatch):
         monkeypatch.setattr(
-            "acp_adapter.server.has_provider",
-            lambda: True,
+            "acp_adapter.server.detect_provider",
+            lambda: "openrouter",
         )
         resp = await agent.authenticate(method_id="openrouter")
         assert isinstance(resp, AuthenticateResponse)
 
     @pytest.mark.asyncio
+    async def test_authenticate_accepts_case_insensitive_method_id(self, agent, monkeypatch):
+        """initialize() advertises the lowercased provider id; accept equivalent casings."""
+        monkeypatch.setattr(
+            "acp_adapter.server.detect_provider",
+            lambda: "openrouter",
+        )
+        resp = await agent.authenticate(method_id="  OpenRouter  ")
+        assert isinstance(resp, AuthenticateResponse)
+
+    @pytest.mark.asyncio
     async def test_authenticate_without_provider(self, agent, monkeypatch):
         monkeypatch.setattr(
-            "acp_adapter.server.has_provider",
-            lambda: False,
+            "acp_adapter.server.detect_provider",
+            lambda: None,
         )
         resp = await agent.authenticate(method_id="openrouter")
         assert resp is None
+
+    @pytest.mark.asyncio
+    async def test_authenticate_rejects_unknown_method_id(self, agent, monkeypatch):
+        """Regression for #9438: method_id that does not match the advertised provider is rejected."""
+        monkeypatch.setattr(
+            "acp_adapter.server.detect_provider",
+            lambda: "openrouter",
+        )
+        resp = await agent.authenticate(method_id="definitely-not-advertised")
+        assert resp is None
+
+    @pytest.mark.asyncio
+    async def test_authenticate_rejects_non_string_method_id(self, agent, monkeypatch):
+        """Defensive: non-string method_id must not be accepted."""
+        monkeypatch.setattr(
+            "acp_adapter.server.detect_provider",
+            lambda: "openrouter",
+        )
+        assert await agent.authenticate(method_id=None) is None  # type: ignore[arg-type]
+        assert await agent.authenticate(method_id="") is None
+
+    @pytest.mark.asyncio
+    async def test_authenticate_canonicalizes_provider_and_method(self, agent, monkeypatch):
+        """If detect_provider() ever returns non-canonical casing, both initialize() and
+        authenticate() should still agree on the advertised id."""
+        monkeypatch.setattr(
+            "acp_adapter.server.detect_provider",
+            lambda: "  OpenRouter  ",
+        )
+        init = await agent.initialize(protocol_version=1)
+        assert init.auth_methods is not None
+        advertised_id = init.auth_methods[0].id
+        assert advertised_id == "openrouter"
+
+        resp = await agent.authenticate(method_id=advertised_id)
+        assert isinstance(resp, AuthenticateResponse)
 
 
 # ---------------------------------------------------------------------------

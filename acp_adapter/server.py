@@ -72,6 +72,14 @@ except Exception:
 _executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="acp-agent")
 
 
+def _canonical_provider_id(value: str | None) -> str | None:
+    """Normalize a provider/method id so `initialize()` and `authenticate()` compare apples to apples."""
+    if not isinstance(value, str):
+        return None
+    canonical = value.strip().lower()
+    return canonical or None
+
+
 def _extract_text(
     prompt: list[
         TextContentBlock
@@ -318,7 +326,7 @@ class HermesACPAgent(acp.Agent):
         resolved_protocol_version = (
             protocol_version if isinstance(protocol_version, int) else acp.PROTOCOL_VERSION
         )
-        provider = detect_provider()
+        provider = _canonical_provider_id(detect_provider())
         auth_methods = None
         if provider:
             auth_methods = [
@@ -351,9 +359,17 @@ class HermesACPAgent(acp.Agent):
         )
 
     async def authenticate(self, method_id: str, **kwargs: Any) -> AuthenticateResponse | None:
-        if has_provider():
-            return AuthenticateResponse()
-        return None
+        provider = _canonical_provider_id(detect_provider())
+        if not provider:
+            return None
+        if not isinstance(method_id, str) or _canonical_provider_id(method_id) != provider:
+            logger.info(
+                "authenticate: rejecting method_id=%r; advertised method id is %r",
+                method_id,
+                provider,
+            )
+            return None
+        return AuthenticateResponse()
 
     # ---- Session management -------------------------------------------------
 
