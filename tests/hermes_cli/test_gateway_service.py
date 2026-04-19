@@ -59,6 +59,30 @@ class TestSystemdServiceRefresh:
             ["systemctl", "--user", "start", gateway_cli.get_service_name()],
         ]
 
+    def test_systemd_start_missing_unit_prints_install_guidance(self, tmp_path, monkeypatch, capsys):
+        import pytest
+
+        unit_path = tmp_path / "hermes-gateway.service"
+        monkeypatch.setattr(gateway_cli, "get_systemd_unit_path", lambda system=False: unit_path)
+
+        calls = []
+
+        def fake_run(cmd, check=True, **kwargs):
+            calls.append(cmd)
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        with pytest.raises(SystemExit) as exc_info:
+            gateway_cli.systemd_start()
+
+        output = capsys.readouterr().out
+        assert exc_info.value.code == 1
+        assert "service is not installed" in output
+        assert "hermes gateway install" in output
+        assert "hermes gateway run" in output
+        assert calls == []
+
     def test_systemd_restart_refreshes_outdated_unit(self, tmp_path, monkeypatch):
         unit_path = tmp_path / "hermes-gateway.service"
         unit_path.write_text("old unit\n", encoding="utf-8")

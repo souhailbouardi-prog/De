@@ -1484,6 +1484,18 @@ def systemd_start(system: bool = False):
     system = _select_systemd_scope(system)
     if system:
         _require_root_for_system_service("start")
+    unit_path = get_systemd_unit_path(system=system)
+    if not unit_path.exists():
+        scope_flag = " --system" if system else ""
+        scope_label = _service_scope_label(system)
+        print(f"✗ Hermes gateway {scope_label} service is not installed.")
+        print()
+        print("Install it first:")
+        print(f"  {'sudo ' if system else ''}hermes gateway install{scope_flag}")
+        print()
+        print("Or run the gateway without a background service:")
+        print("  hermes gateway run")
+        sys.exit(1)
     refresh_systemd_unit_if_needed(system=system)
     _run_systemctl(["start", get_service_name()], system=system, check=True, timeout=30)
     print(f"✓ {_service_scope_label(system).capitalize()} service started")
