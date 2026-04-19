@@ -102,6 +102,18 @@ class TestGetAndPoll:
         assert result["status"] == "exited"
         assert result["exit_code"] == 0
 
+    def test_poll_hides_session_from_other_task(self, registry):
+        s = _make_session(task_id="task-a")
+        registry._running[s.id] = s
+        result = registry.poll(s.id, task_id="task-b")
+        assert result["status"] == "not_found"
+
+    def test_kill_hides_session_from_other_task(self, registry):
+        s = _make_session(task_id="task-a")
+        registry._running[s.id] = s
+        result = registry.kill_process(s.id, task_id="task-b")
+        assert result["status"] == "not_found"
+
 
 # =========================================================================
 # Read log
@@ -142,6 +154,18 @@ class TestReadLog:
 class TestStdinHelpers:
     def test_close_stdin_not_found(self, registry):
         result = registry.close_stdin("nonexistent")
+        assert result["status"] == "not_found"
+
+    def test_close_stdin_hides_session_from_other_task(self, registry):
+        proc = MagicMock()
+        proc.stdin = MagicMock()
+        s = _make_session(task_id="task-a")
+        s.process = proc
+        registry._running[s.id] = s
+
+        result = registry.close_stdin(s.id, task_id="task-b")
+
+        proc.stdin.close.assert_not_called()
         assert result["status"] == "not_found"
 
     def test_close_stdin_pipe_mode(self, registry):
@@ -635,3 +659,26 @@ class TestProcessToolHandler:
         from tools.process_registry import _handle_process
         result = json.loads(_handle_process({"action": "unknown_action"}))
         assert "error" in result
+
+    def test_poll_action_hides_other_task_processes(self, monkeypatch):
+        from tools.process_registry import _handle_process, ProcessRegistry
+
+        isolated_registry = ProcessRegistry()
+        s = _make_session(task_id="task-a")
+        isolated_registry._running[s.id] = s
+        monkeypatch.setattr("tools.process_registry.process_registry", isolated_registry)
+
+        result = json.loads(_handle_process({"action": "poll", "session_id": s.id}, task_id="task-b"))
+        assert result["status"] == "not_found"
+
+    def test_poll_action_allows_owner_task(self, monkeypatch):
+        from tools.process_registry import _handle_process, ProcessRegistry
+
+        isolated_registry = ProcessRegistry()
+        s = _make_session(task_id="task-a", output="hello")
+        isolated_registry._running[s.id] = s
+        monkeypatch.setattr("tools.process_registry.process_registry", isolated_registry)
+
+        result = json.loads(_handle_process({"action": "poll", "session_id": s.id}, task_id="task-a"))
+        assert result["status"] == "running"
+        assert result["session_id"] == s.id
