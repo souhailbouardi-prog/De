@@ -283,12 +283,14 @@ class HomeAssistantAdapter(BasePlatformAdapter):
             # No filters configured and watch_all is off — drop the event
             return
 
-        # Apply cooldown
+        # Apply cooldown check — but do NOT record the timestamp yet.
+        # Unchanged or malformed events (where ``_format_state_change``
+        # returns ``None`` below) must not consume the cooldown window
+        # and suppress the next real state change.  See #12062.
         now = time.time()
         last = self._last_event_time.get(entity_id, 0)
         if (now - last) < self._cooldown_seconds:
             return
-        self._last_event_time[entity_id] = now
 
         # Build human-readable message
         old_state = event_data.get("old_state", {})
@@ -297,6 +299,9 @@ class HomeAssistantAdapter(BasePlatformAdapter):
 
         if not message:
             return
+
+        # Only consume the cooldown window for events we actually forward.
+        self._last_event_time[entity_id] = now
 
         # Build MessageEvent and forward to handler
         source = self.build_source(

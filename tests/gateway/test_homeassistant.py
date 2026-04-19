@@ -416,6 +416,115 @@ class TestCooldown:
 
 
 # ---------------------------------------------------------------------------
+# Regression coverage: #12062 — no-op events must not consume cooldown.
+#
+# The cooldown timestamp is meant to throttle *forwarded* messages. Events
+# that the adapter decides not to forward (state didn't actually change,
+# new_state missing, etc.) must leave the cooldown window untouched so the
+# next genuine change still reaches handle_message.
+# ---------------------------------------------------------------------------
+
+
+class TestCooldownIssue12062:
+    @pytest.mark.asyncio
+    async def test_no_op_state_change_does_not_consume_cooldown(self):
+        """Reporter's repro: no-op followed by a real change within the
+        cooldown window must still forward the real change."""
+        adapter = _make_adapter(watch_all=True, cooldown_seconds=60)
+
+        # First event: old_state == new_state — adapter must not forward,
+        # and must not consume the cooldown window.
+        await adapter._handle_ha_event(
+            _make_event("sensor.temp", "20", "20",
+                        new_attrs={"friendly_name": "Temp"})
+        )
+        adapter.handle_message.assert_not_called()
+
+        # Second event: real change, fired immediately. Under the bug the
+        # no-op had already written _last_event_time, so this gets dropped.
+        await adapter._handle_ha_event(
+            _make_event("sensor.temp", "20", "21",
+                        new_attrs={"friendly_name": "Temp"})
+        )
+        assert adapter.handle_message.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_no_op_does_not_write_last_event_time(self):
+        """Direct structural pin: the cooldown map must be empty after
+        a no-op event so a future refactor can't reintroduce the leak."""
+        adapter = _make_adapter(watch_all=True, cooldown_seconds=60)
+
+        await adapter._handle_ha_event(
+            _make_event("sensor.temp", "on", "on",
+                        new_attrs={"friendly_name": "Temp"})
+        )
+
+        assert adapter.handle_message.await_count == 0
+        assert "sensor.temp" not in adapter._last_event_time
+
+    @pytest.mark.asyncio
+    async def test_missing_new_state_does_not_consume_cooldown(self):
+        """Malformed event (no new_state payload) must also not block the
+        next real change."""
+        adapter = _make_adapter(watch_all=True, cooldown_seconds=60)
+
+        # _format_state_change returns None for empty new_state too;
+        # cooldown must not be consumed in that branch either.
+        await adapter._handle_ha_event({
+            "data": {
+                "entity_id": "sensor.temp",
+                "old_state": {"state": "20", "attributes": {}},
+                "new_state": {},  # empty → formatter returns None
+            }
+        })
+        adapter.handle_message.assert_not_called()
+        assert "sensor.temp" not in adapter._last_event_time
+
+        await adapter._handle_ha_event(
+            _make_event("sensor.temp", "20", "21",
+                        new_attrs={"friendly_name": "Temp"})
+        )
+        assert adapter.handle_message.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_forwarded_event_still_consumes_cooldown(self):
+        """Preserved behaviour canary: once an event *is* forwarded, the
+        cooldown window must close for subsequent rapid events."""
+        adapter = _make_adapter(watch_all=True, cooldown_seconds=60)
+
+        await adapter._handle_ha_event(
+            _make_event("sensor.temp", "20", "21",
+                        new_attrs={"friendly_name": "Temp"})
+        )
+        assert adapter.handle_message.await_count == 1
+        assert "sensor.temp" in adapter._last_event_time
+
+        # Rapid follow-up real change — cooldown blocks it (unchanged).
+        await adapter._handle_ha_event(
+            _make_event("sensor.temp", "21", "22",
+                        new_attrs={"friendly_name": "Temp"})
+        )
+        assert adapter.handle_message.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_no_op_then_real_change_across_entities(self):
+        """Regression: a no-op for entity A must not affect entity B's
+        independent cooldown accounting."""
+        adapter = _make_adapter(watch_all=True, cooldown_seconds=60)
+
+        await adapter._handle_ha_event(
+            _make_event("sensor.a", "1", "1", new_attrs={"friendly_name": "A"})
+        )
+        await adapter._handle_ha_event(
+            _make_event("sensor.b", "3", "4", new_attrs={"friendly_name": "B"})
+        )
+        # A was a no-op (not forwarded), B is a real change (forwarded once)
+        assert adapter.handle_message.await_count == 1
+        assert "sensor.a" not in adapter._last_event_time
+        assert "sensor.b" in adapter._last_event_time
+
+
+# ---------------------------------------------------------------------------
 # Config integration (env overrides, round-trip)
 # ---------------------------------------------------------------------------
 
