@@ -64,6 +64,27 @@ hermes doctor       # Diagnose any issues
 
 📖 **[Full documentation →](https://hermes-agent.nousresearch.com/docs/)**
 
+### External MCP servers
+
+Hermes can load external MCP servers at startup. If you want the bundled Zectrix Note server from this repo, install with the MCP extra and launch the console script:
+
+```bash
+uv pip install -e ".[mcp]"
+zectrix-note-mcp
+```
+
+Then add it to `~/.hermes/config.yaml`:
+
+```yaml
+mcp_servers:
+  zectrix_note:
+    command: "zectrix-note-mcp"
+    env:
+      ZECTRIX_API_KEY: "your-api-key"
+      ZECTRIX_DEFAULT_DEVICE_ID: "your-device-id"
+```
+
+
 ## CLI vs Messaging Quick Reference
 
 Hermes has two entry points: start the terminal UI with `hermes`, or run the gateway and talk to it from Telegram, Discord, Slack, WhatsApp, Signal, or Email. Once you're in a conversation, many slash commands are shared across both interfaces.
