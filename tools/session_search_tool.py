@@ -220,8 +220,21 @@ async def _summarize_session(
                 await asyncio.sleep(1 * (attempt + 1))
                 continue
             return content
-        except RuntimeError:
-            logging.warning("No auxiliary model available for session summarization")
+        except RuntimeError as e:
+            err_msg = str(e).lower()
+            # Known transient errors from _validate_llm_response() —
+            # the LLM returned a malformed or empty payload that may
+            # succeed on a subsequent attempt.
+            _transient = ("llm returned none response" in err_msg
+                          or "llm returned invalid response" in err_msg)
+            if _transient and attempt < max_retries - 1:
+                logging.warning("Session summarization RuntimeError (attempt %d/%d): %s", attempt + 1, max_retries, e)
+                await asyncio.sleep(1 * (attempt + 1))
+                continue
+            # Non-transient (e.g. no provider, missing API key) or
+            # final attempt — give up immediately.
+            logging.warning("Session summarization failed: %s", e,
+                            exc_info=(attempt >= max_retries - 1))
             return None
         except Exception as e:
             if attempt < max_retries - 1:

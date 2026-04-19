@@ -251,7 +251,7 @@ class TestSessionSearch:
         from unittest.mock import AsyncMock, patch as _patch
         with _patch("tools.session_search_tool.async_call_llm",
                      new_callable=AsyncMock,
-                     side_effect=RuntimeError("no provider")):
+                     side_effect=RuntimeError("No LLM provider configured for task=session_search provider=auto. Run: hermes setup")):
             result = json.loads(session_search(
                 query="test", db=mock_db, current_session_id=current_sid,
             ))
@@ -375,3 +375,111 @@ class TestSessionSearch:
         assert result["count"] == 0
         assert result["results"] == []
         assert result["sessions_searched"] == 0
+
+
+# =========================================================================
+# _summarize_session — RuntimeError handling (#8045)
+# =========================================================================
+
+class TestSummarizeSessionRuntimeError:
+    """Verify that _summarize_session distinguishes provider-missing errors
+    (immediate return None) from transient RuntimeErrors (retry)."""
+
+    @pytest.mark.asyncio
+    async def test_provider_missing_error_returns_none_immediately(self):
+        """RuntimeError with 'No LLM provider' should return None without retrying."""
+        from unittest.mock import patch as _patch
+        from tools.session_search_tool import _summarize_session
+
+        call_count = 0
+        async def _fail_no_provider(**kwargs):
+            nonlocal call_count
+            call_count += 1
+            raise RuntimeError("No LLM provider configured for task=session_search provider=auto. Run: hermes setup")
+
+        with _patch("tools.session_search_tool.async_call_llm", side_effect=_fail_no_provider):
+            result = await _summarize_session("test convo", "query", {"source": "telegram"})
+
+        assert result is None
+        assert call_count == 1  # Should NOT retry
+
+    @pytest.mark.asyncio
+    async def test_transient_runtime_error_retries(self):
+        """RuntimeError from invalid LLM response should trigger retries."""
+        from unittest.mock import patch as _patch
+        from tools.session_search_tool import _summarize_session
+
+        call_count = 0
+        async def _fail_invalid_response(**kwargs):
+            nonlocal call_count
+            call_count += 1
+            raise RuntimeError("Auxiliary session_search: LLM returned None response")
+
+        with _patch("tools.session_search_tool.async_call_llm", side_effect=_fail_invalid_response):
+            result = await _summarize_session("test convo", "query", {"source": "telegram"})
+
+        assert result is None
+        assert call_count == 3  # Should retry 3 times
+
+    @pytest.mark.asyncio
+    async def test_transient_runtime_error_succeeds_on_retry(self):
+        """A transient RuntimeError on first attempt should succeed on retry."""
+        from unittest.mock import patch as _patch
+        from types import SimpleNamespace
+        from tools.session_search_tool import _summarize_session
+
+        call_count = 0
+        async def _fail_then_succeed(**kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise RuntimeError("Auxiliary session_search: LLM returned invalid response (type=str)")
+            # Return a valid response on second attempt
+            msg = SimpleNamespace(content="Summary of conversation", reasoning_content=None)
+            choice = SimpleNamespace(message=msg)
+            return SimpleNamespace(choices=[choice])
+
+        with _patch("tools.session_search_tool.async_call_llm", side_effect=_fail_then_succeed):
+            result = await _summarize_session("test convo", "query", {"source": "telegram"})
+
+        assert result == "Summary of conversation"
+        assert call_count == 2  # First failed, second succeeded
+
+    @pytest.mark.asyncio
+    async def test_api_key_missing_error_returns_none_immediately(self):
+        """RuntimeError about missing API key should return None without retrying."""
+        from unittest.mock import patch as _patch
+        from tools.session_search_tool import _summarize_session
+
+        call_count = 0
+        async def _fail_no_key(**kwargs):
+            nonlocal call_count
+            call_count += 1
+            raise RuntimeError(
+                "Provider 'google' is set in config.yaml but no API key "
+                "was found. Set the GOOGLE_API_KEY environment variable."
+            )
+
+        with _patch("tools.session_search_tool.async_call_llm", side_effect=_fail_no_key):
+            result = await _summarize_session("test convo", "query", {"source": "telegram"})
+
+        assert result is None
+        assert call_count == 1  # Should NOT retry
+
+    @pytest.mark.asyncio
+    async def test_unknown_runtime_error_does_not_retry(self):
+        """Unrecognized RuntimeError should fail fast, not retry."""
+        from unittest.mock import patch as _patch
+        from tools.session_search_tool import _summarize_session
+
+        call_count = 0
+        async def _fail_unknown(**kwargs):
+            nonlocal call_count
+            call_count += 1
+            raise RuntimeError("Something completely unexpected happened")
+
+        with _patch("tools.session_search_tool.async_call_llm", side_effect=_fail_unknown):
+            result = await _summarize_session("test convo", "query", {"source": "telegram"})
+
+        assert result is None
+        assert call_count == 1  # Unknown errors should NOT retry
