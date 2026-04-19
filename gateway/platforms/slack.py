@@ -191,6 +191,20 @@ class SlackAdapter(BasePlatformAdapter):
             async def handle_app_mention(event, say):
                 pass
 
+            # Acknowledge file_shared events to prevent Bolt 404 errors.
+            # When a user uploads a file, Slack fires both a "message" event
+            # (which includes the files array and is already handled above)
+            # and a separate "file_shared" event.  Without this handler the
+            # framework returns HTTP 404 for every file_shared delivery,
+            # causing Slack to retry up to three times per upload and
+            # flooding logs with "Unhandled request" warnings.  See #7384.
+            @self._app.event("file_shared")
+            async def handle_file_shared(event, say):
+                logger.debug(
+                    "[Slack] Acknowledged file_shared event (file_id=%s)",
+                    event.get("file_id", "unknown"),
+                )
+
             @self._app.event("assistant_thread_started")
             async def handle_assistant_thread_started(event, say):
                 await self._handle_assistant_thread_lifecycle_event(event)
