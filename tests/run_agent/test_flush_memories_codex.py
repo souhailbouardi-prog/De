@@ -145,6 +145,70 @@ class TestFlushMemoriesRespectsConfigTimeout:
             f"Expected timeout={custom_timeout} from config, got {call_kwargs.kwargs.get('timeout')}"
         )
 
+    def test_groq_fallback_strips_reasoning_content(self, monkeypatch):
+        """When flush_memories falls back to the direct primary client and
+        the base_url targets Groq, the outgoing messages must not carry
+        ``reasoning_content`` — Groq rejects it with HTTP 400. Regression
+        for the Copilot review follow-up on #11089."""
+        agent = _make_agent(monkeypatch, api_mode="chat_completions", provider="custom")
+        agent.base_url = "https://api.groq.com/openai/v1"
+        agent.client = MagicMock()
+        agent.client.chat.completions.create.return_value = _chat_response_with_memory_call()
+
+        with patch("agent.auxiliary_client.call_llm", side_effect=RuntimeError("no provider")), \
+             patch("agent.auxiliary_client._get_task_timeout", return_value=60.0), \
+             patch("tools.memory_tool.memory_tool", return_value="Saved."):
+            messages = [
+                {"role": "user", "content": "Hello"},
+                {
+                    "role": "assistant",
+                    "content": "Hi there.",
+                    "reasoning": "greet the user",
+                },
+                {"role": "user", "content": "Note my preference."},
+            ]
+            agent.flush_memories(messages)
+
+        agent.client.chat.completions.create.assert_called_once()
+        sent_messages = agent.client.chat.completions.create.call_args.kwargs["messages"]
+        assistant_msgs = [m for m in sent_messages if m.get("role") == "assistant"]
+        assert assistant_msgs, "expected at least one assistant message"
+        for m in assistant_msgs:
+            assert "reasoning_content" not in m, (
+                f"reasoning_content leaked into Groq flush payload: {m}"
+            )
+        # Internal history intact — a later switch back to a reasoning-aware
+        # provider still carries the reasoning context.
+        assert messages[1].get("reasoning") == "greet the user"
+
+    def test_non_groq_fallback_keeps_reasoning_content(self, monkeypatch):
+        """On non-Groq providers the direct-client fallback still forwards
+        reasoning_content so Moonshot/Novita/etc. continue to receive
+        multi-turn reasoning context."""
+        agent = _make_agent(monkeypatch, api_mode="chat_completions", provider="openrouter")
+        agent.base_url = "https://openrouter.ai/api/v1"
+        agent.client = MagicMock()
+        agent.client.chat.completions.create.return_value = _chat_response_with_memory_call()
+
+        with patch("agent.auxiliary_client.call_llm", side_effect=RuntimeError("no provider")), \
+             patch("agent.auxiliary_client._get_task_timeout", return_value=60.0), \
+             patch("tools.memory_tool.memory_tool", return_value="Saved."):
+            messages = [
+                {"role": "user", "content": "Hello"},
+                {
+                    "role": "assistant",
+                    "content": "Hi there.",
+                    "reasoning": "greet the user",
+                },
+                {"role": "user", "content": "Note my preference."},
+            ]
+            agent.flush_memories(messages)
+
+        sent_messages = agent.client.chat.completions.create.call_args.kwargs["messages"]
+        assistant_msgs = [m for m in sent_messages if m.get("role") == "assistant"]
+        # At least one assistant message carries the forwarded reasoning.
+        assert any(m.get("reasoning_content") == "greet the user" for m in assistant_msgs)
+
 
 class TestFlushMemoriesUsesAuxiliaryClient:
     """When an auxiliary client is available, flush_memories should use it
