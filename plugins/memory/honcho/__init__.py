@@ -177,6 +177,20 @@ CONCLUDE_SCHEMA = {
 }
 
 
+# Runtime validation for exactly-one-of constraint (Anthropic doesn't support anyOf/oneOf at top level)
+def _validate_conclude_params(args: dict) -> tuple[bool, str]:
+    """Validate that exactly one of conclusion or delete_id is provided."""
+    conclusion = (args.get("conclusion") or "").strip()
+    delete_id = (args.get("delete_id") or "").strip()
+    has_conclusion = bool(conclusion)
+    has_delete_id = bool(delete_id)
+    if has_conclusion and has_delete_id:
+        return False, "Provide exactly one of: conclusion (to create) or delete_id (to delete), not both."
+    if not has_conclusion and not has_delete_id:
+        return False, "Provide exactly one of: conclusion (to create) or delete_id (to delete). Neither was provided."
+    return True, ""
+
+
 ALL_TOOL_SCHEMAS = [PROFILE_SCHEMA, SEARCH_SCHEMA, REASONING_SCHEMA, CONTEXT_SCHEMA, CONCLUDE_SCHEMA]
 
 
@@ -1207,14 +1221,17 @@ class HonchoMemoryProvider(MemoryProvider):
                 return json.dumps({"result": "\n\n".join(parts) or "No context available."})
 
             elif tool_name == "honcho_conclude":
+                # Runtime validation for exactly-one-of constraint
+                is_valid, error_msg = _validate_conclude_params(args)
+                if not is_valid:
+                    return tool_error(error_msg)
+
                 delete_id = (args.get("delete_id") or "").strip()
                 conclusion = args.get("conclusion", "").strip()
                 peer = args.get("peer", "user")
 
                 has_delete_id = bool(delete_id)
                 has_conclusion = bool(conclusion)
-                if has_delete_id == has_conclusion:
-                    return tool_error("Exactly one of conclusion or delete_id must be provided.")
 
                 if has_delete_id:
                     ok = self._manager.delete_conclusion(self._session_key, delete_id, peer=peer)
