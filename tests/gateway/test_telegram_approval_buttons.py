@@ -176,6 +176,7 @@ class TestTelegramApprovalCallback:
     """Test the approval callback handling in _handle_callback_query."""
 
     @pytest.mark.asyncio
+    @patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": ""}, clear=False)
     async def test_resolves_approval_on_click(self):
         adapter = _make_adapter()
         # Set up approval state
@@ -187,11 +188,13 @@ class TestTelegramApprovalCallback:
         query.message = MagicMock()
         query.message.chat_id = 12345
         query.from_user = MagicMock()
+        query.from_user.id = 101
         query.from_user.first_name = "Norbert"
         query.answer = AsyncMock()
         query.edit_message_text = AsyncMock()
 
         update = MagicMock()
+        update.update_id = 1001
         update.callback_query = query
         context = MagicMock()
 
@@ -206,6 +209,7 @@ class TestTelegramApprovalCallback:
         assert 1 not in adapter._approval_state
 
     @pytest.mark.asyncio
+    @patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": ""}, clear=False)
     async def test_deny_button(self):
         adapter = _make_adapter()
         adapter._approval_state[2] = "some-session"
@@ -215,11 +219,13 @@ class TestTelegramApprovalCallback:
         query.message = MagicMock()
         query.message.chat_id = 12345
         query.from_user = MagicMock()
+        query.from_user.id = 102
         query.from_user.first_name = "Alice"
         query.answer = AsyncMock()
         query.edit_message_text = AsyncMock()
 
         update = MagicMock()
+        update.update_id = 1002
         update.callback_query = query
         context = MagicMock()
 
@@ -231,6 +237,7 @@ class TestTelegramApprovalCallback:
         assert "Denied" in edit_kwargs["text"]
 
     @pytest.mark.asyncio
+    @patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": ""}, clear=False)
     async def test_already_resolved(self):
         adapter = _make_adapter()
         # No state for approval_id 99 — already resolved
@@ -240,10 +247,12 @@ class TestTelegramApprovalCallback:
         query.message = MagicMock()
         query.message.chat_id = 12345
         query.from_user = MagicMock()
+        query.from_user.id = 103
         query.from_user.first_name = "Bob"
         query.answer = AsyncMock()
 
         update = MagicMock()
+        update.update_id = 1003
         update.callback_query = query
         context = MagicMock()
 
@@ -266,8 +275,10 @@ class TestTelegramApprovalCallback:
         query.message = MagicMock()
         query.message.chat_id = 12345
         query.from_user = MagicMock()
+        query.from_user.id = 104
 
         update = MagicMock()
+        update.update_id = 1004
         update.callback_query = query
         context = MagicMock()
 

@@ -76,6 +76,7 @@ from gateway.platforms.base import (
     utf16_len,
     _prefix_within_utf16_limit,
 )
+from gateway.platforms.helpers import MessageDeduplicator
 from gateway.platforms.telegram_network import (
     TelegramFallbackTransport,
     discover_fallback_ips,
@@ -209,6 +210,7 @@ class TelegramAdapter(BasePlatformAdapter):
     
     # Telegram message limits
     MAX_MESSAGE_LENGTH = 4096
+    _WEBHOOK_SECRET_MIN_LENGTH = 16
     # Threshold for detecting Telegram client-side message splits.
     # When a chunk is near this limit, a continuation is almost certain.
     _SPLIT_THRESHOLD = 4000
@@ -248,6 +250,8 @@ class TelegramAdapter(BasePlatformAdapter):
         self._model_picker_state: Dict[str, dict] = {}
         # Approval button state: message_id → session_key
         self._approval_state: Dict[int, str] = {}
+        # Dedup cache: prevents duplicate webhook/polling updates from being reprocessed.
+        self._update_dedup = MessageDeduplicator()
 
     @staticmethod
     def _is_callback_user_authorized(user_id: str) -> bool:
@@ -770,7 +774,38 @@ class TelegramAdapter(BasePlatformAdapter):
                 # enables cloud platforms (Fly.io, Railway) to auto-wake
                 # suspended machines on inbound HTTP traffic.
                 webhook_port = int(os.getenv("TELEGRAM_WEBHOOK_PORT", "8443"))
-                webhook_secret = os.getenv("TELEGRAM_WEBHOOK_SECRET", "").strip() or None
+                webhook_secret = os.getenv("TELEGRAM_WEBHOOK_SECRET", "").strip()
+                try:
+                    from hermes_cli.auth import has_usable_secret
+                except ImportError:
+                    has_usable_secret = None  # type: ignore[assignment]
+                if not webhook_secret:
+                    message = (
+                        "TELEGRAM_WEBHOOK_SECRET must be set when TELEGRAM_WEBHOOK_URL is enabled."
+                    )
+                    logger.error("[%s] %s", self.name, message)
+                    self._set_fatal_error(
+                        "telegram_webhook_secret_missing",
+                        message,
+                        retryable=False,
+                    )
+                    await self._notify_fatal_error()
+                    return False
+                if has_usable_secret is not None and not has_usable_secret(
+                    webhook_secret, min_length=self._WEBHOOK_SECRET_MIN_LENGTH
+                ):
+                    message = (
+                        "TELEGRAM_WEBHOOK_SECRET must be a non-placeholder value of at least "
+                        f"{self._WEBHOOK_SECRET_MIN_LENGTH} characters when TELEGRAM_WEBHOOK_URL is enabled."
+                    )
+                    logger.error("[%s] %s", self.name, message)
+                    self._set_fatal_error(
+                        "telegram_webhook_secret_weak",
+                        message,
+                        retryable=False,
+                    )
+                    await self._notify_fatal_error()
+                    return False
                 from urllib.parse import urlparse
                 webhook_path = urlparse(webhook_url).path or "/telegram"
 
@@ -899,6 +934,8 @@ class TelegramAdapter(BasePlatformAdapter):
         self._mark_disconnected()
         self._app = None
         self._bot = None
+        if hasattr(self, "_update_dedup"):
+            self._update_dedup.clear()
         logger.info("[%s] Disconnected from Telegram", self.name)
 
     def _should_thread_reply(self, reply_to: Optional[str], chunk_index: int) -> bool:
@@ -1559,6 +1596,8 @@ class TelegramAdapter(BasePlatformAdapter):
         """Handle inline keyboard button clicks."""
         query = update.callback_query
         if not query or not query.data:
+            return
+        if self._should_skip_duplicate_update(update):
             return
         data = query.data
 
@@ -2297,6 +2336,20 @@ class TelegramAdapter(BasePlatformAdapter):
         cleaned = re.sub(rf"(?i)@{username}\b[,:\-]*\s*", "", text).strip()
         return cleaned or text
 
+    def _should_skip_duplicate_update(self, update: Update) -> bool:
+        """Return True when Telegram redelivers an already-processed update."""
+        update_id = getattr(update, "update_id", None)
+        if update_id is None:
+            return False
+        dedup = getattr(self, "_update_dedup", None)
+        if dedup is None:
+            dedup = MessageDeduplicator()
+            self._update_dedup = dedup
+        if dedup.is_duplicate(str(update_id)):
+            logger.debug("[%s] Dropping duplicate Telegram update_id=%s", self.name, update_id)
+            return True
+        return False
+
     def _should_process_message(self, message: Message, *, is_command: bool = False) -> bool:
         """Apply Telegram group trigger rules.
 
@@ -2338,6 +2391,8 @@ class TelegramAdapter(BasePlatformAdapter):
         """
         if not update.message or not update.message.text:
             return
+        if self._should_skip_duplicate_update(update):
+            return
         if not self._should_process_message(update.message):
             return
 
@@ -2349,6 +2404,8 @@ class TelegramAdapter(BasePlatformAdapter):
         """Handle incoming command messages."""
         if not update.message or not update.message.text:
             return
+        if self._should_skip_duplicate_update(update):
+            return
         if not self._should_process_message(update.message, is_command=True):
             return
         
@@ -2358,6 +2415,8 @@ class TelegramAdapter(BasePlatformAdapter):
     async def _handle_location_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle incoming location/venue pin messages."""
         if not update.message:
+            return
+        if self._should_skip_duplicate_update(update):
             return
         if not self._should_process_message(update.message):
             return
@@ -2517,6 +2576,8 @@ class TelegramAdapter(BasePlatformAdapter):
     async def _handle_media_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle incoming media messages, downloading images to local cache."""
         if not update.message:
+            return
+        if self._should_skip_duplicate_update(update):
             return
         if not self._should_process_message(update.message):
             return
