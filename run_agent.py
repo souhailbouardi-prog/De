@@ -167,6 +167,28 @@ def _install_safe_stdio() -> None:
             setattr(sys, stream_name, _SafeWriter(stream))
 
 
+def _extract_client_default_headers(client: Any) -> Optional[Dict[str, str]]:
+    """Return any default headers attached to an SDK client.
+
+    The OpenAI SDK exposes routed headers on ``default_headers``. Some older
+    wrappers surface them via ``_custom_headers`` or ``_default_headers``.
+    Accept all of them so Hermes
+    preserves provider-required headers consistently when rebuilding or
+    normalizing clients from the auxiliary router.
+    """
+    headers = getattr(client, "default_headers", None)
+    if not headers:
+        headers = getattr(client, "_custom_headers", None)
+    if not headers:
+        headers = getattr(client, "_default_headers", None)
+    if not headers:
+        return None
+    try:
+        return dict(headers)
+    except Exception:
+        return None
+
+
 class IterationBudget:
     """Thread-safe iteration counter for an agent.
 
@@ -1065,8 +1087,9 @@ class AIAgent:
                         "base_url": str(_routed_client.base_url),
                     }
                     # Preserve any default_headers the router set
-                    if hasattr(_routed_client, '_default_headers') and _routed_client._default_headers:
-                        client_kwargs["default_headers"] = dict(_routed_client._default_headers)
+                    routed_headers = _extract_client_default_headers(_routed_client)
+                    if routed_headers:
+                        client_kwargs["default_headers"] = routed_headers
                 else:
                     # When the user explicitly chose a non-OpenRouter provider
                     # but no credentials were found, fail fast with a clear
@@ -6412,9 +6435,7 @@ class AIAgent:
                 # _create_request_openai_client) drop the headers,
                 # causing 403s from providers like Kimi Coding that
                 # require a User-Agent sentinel.
-                fb_headers = getattr(fb_client, "_custom_headers", None)
-                if not fb_headers:
-                    fb_headers = getattr(fb_client, "default_headers", None)
+                fb_headers = _extract_client_default_headers(fb_client)
                 self._client_kwargs = {
                     "api_key": fb_client.api_key,
                     "base_url": fb_base_url,

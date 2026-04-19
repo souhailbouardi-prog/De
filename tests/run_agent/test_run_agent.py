@@ -2853,6 +2853,49 @@ class TestNousCredentialRefresh:
         assert isinstance(agent.client, _RebuiltClient)
 
 
+class TestRoutedClientDefaultHeaders:
+    def test_init_preserves_public_default_headers_from_routed_client(self):
+        """Routed OpenAI clients may expose provider headers via public default_headers."""
+        captured = {}
+        routed_client = SimpleNamespace(
+            api_key="sk-kimi-test",
+            base_url="https://api.kimi.com/v1",
+            default_headers={"User-Agent": "KimiCLI/1.30.0"},
+        )
+
+        def _fake_create(self, client_kwargs, *, reason, shared):
+            captured["reason"] = reason
+            captured["shared"] = shared
+            captured["kwargs"] = dict(client_kwargs)
+            return MagicMock()
+
+        with (
+            patch("run_agent.get_tool_definitions", return_value=_make_tool_defs("web_search")),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch(
+                "agent.auxiliary_client.resolve_provider_client",
+                return_value=(routed_client, "kimi-k2-turbo-preview"),
+            ),
+            patch.object(AIAgent, "_create_openai_client", new=_fake_create),
+        ):
+            agent = AIAgent(
+                model="kimi-k2-turbo-preview",
+                provider="kimi-coding",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+
+        assert captured["reason"] == "agent_init"
+        assert captured["shared"] is True
+        assert captured["kwargs"]["default_headers"] == {
+            "User-Agent": "KimiCLI/1.30.0",
+        }
+        assert agent._client_kwargs["default_headers"] == {
+            "User-Agent": "KimiCLI/1.30.0",
+        }
+
+
 class TestCredentialPoolRecovery:
     def test_recover_with_pool_rotates_on_402(self, agent):
         current = SimpleNamespace(label="primary")
