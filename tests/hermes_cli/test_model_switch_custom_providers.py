@@ -156,3 +156,38 @@ def test_list_deduplicates_same_model_in_group(monkeypatch):
     assert len(my_rows) == 1
     assert my_rows[0]["models"] == ["llama3", "mistral"]
     assert my_rows[0]["total_models"] == 2
+
+
+def test_no_duplicate_when_user_provider_and_custom_provider_share_slug(monkeypatch):
+    """Regression test for #12293: a provider defined in both user_providers
+    (section 3, plain slug) and custom_providers (section 4, 'custom:' slug)
+    must not appear twice in the picker."""
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr(providers_mod, "HERMES_OVERLAYS", {})
+
+    providers = list_authenticated_providers(
+        current_provider="openrouter",
+        user_providers={
+            "modal-endpoint": {
+                "name": "Modal Endpoint",
+                "api": "https://api.us-west-2.modal.direct/v1",
+                "default_model": "deepseek-r1",
+            },
+        },
+        custom_providers=[
+            {
+                "name": "modal-endpoint",
+                "base_url": "https://api.us-west-2.modal.direct/v1",
+                "model": "deepseek-r1",
+            },
+        ],
+        max_models=50,
+    )
+
+    modal_rows = [
+        p for p in providers
+        if "modal" in p.get("slug", "").lower() or "modal" in p.get("name", "").lower()
+    ]
+    assert len(modal_rows) == 1, (
+        f"Expected 1 modal row, got {len(modal_rows)}: {modal_rows}"
+    )

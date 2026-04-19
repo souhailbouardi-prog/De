@@ -1066,6 +1066,7 @@ def list_authenticated_providers(
                 "source": "user-config",
                 "api_url": api_url,
             })
+            seen_slugs.add(ep_name.lower())
 
     # --- 4. Saved custom providers from config ---
     # Each ``custom_providers`` entry represents one model under a named
@@ -1105,7 +1106,10 @@ def list_authenticated_providers(
                 groups[slug]["models"].append(default_model)
 
         for slug, grp in groups.items():
-            if slug.lower() in seen_slugs:
+            # Check both the full slug ("custom:foo") and the plain name ("foo")
+            # so user-config providers from section 3 are recognised as dupes.
+            plain = slug.removeprefix("custom:").lower()
+            if slug.lower() in seen_slugs or plain in seen_slugs:
                 continue
             results.append({
                 "slug": slug,
