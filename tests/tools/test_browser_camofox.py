@@ -82,6 +82,8 @@ class TestCamofoxNavigate:
         result = json.loads(camofox_navigate("https://example.com", task_id="t1"))
         assert result["success"] is True
         assert result["url"] == "https://example.com"
+        assert mock_post.call_args.kwargs["json"]["listItemId"] == "task_t1"
+        assert "sessionKey" not in mock_post.call_args.kwargs["json"]
 
     @patch("tools.browser_camofox.requests.post")
     def test_navigates_existing_tab(self, mock_post, monkeypatch):
