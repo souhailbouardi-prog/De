@@ -2943,8 +2943,12 @@ class HermesCLI:
         if self._resumed and self._session_db and not self.conversation_history:
             session_meta = self._session_db.get_session(self.session_id)
             if not session_meta:
-                _cprint(f"\033[1;31mSession not found: {self.session_id}{_RST}")
-                _cprint(f"{_DIM}Use a session ID from a previous CLI run (hermes sessions list).{_RST}")
+                if getattr(self, "tool_progress_mode", "full") == "off":
+                    print(f"Session not found: {self.session_id}", file=sys.stderr)
+                    print("Use a session ID from a previous CLI run (hermes sessions list).", file=sys.stderr)
+                else:
+                    _cprint(f"\033[1;31mSession not found: {self.session_id}{_RST}")
+                    _cprint(f"{_DIM}Use a session ID from a previous CLI run (hermes sessions list).{_RST}")
                 return False
             restored = self._session_db.get_messages_as_conversation(self.session_id)
             if restored:
@@ -2954,16 +2958,31 @@ class HermesCLI:
                 title_part = ""
                 if session_meta.get("title"):
                     title_part = f" \"{session_meta['title']}\""
-                ChatConsole().print(
-                    f"[bold {_accent_hex()}]↻ Resumed session[/] "
-                    f"[bold]{_escape(self.session_id)}[/]"
-                    f"[bold {_accent_hex()}]{_escape(title_part)}[/] "
-                    f"({msg_count} user message{'s' if msg_count != 1 else ''}, {len(restored)} total messages)"
-                )
+                # In quiet mode (tool_progress_mode == "off"), session status goes
+                # to stderr so stdout remains machine-readable (#11793).
+                if getattr(self, "tool_progress_mode", "full") == "off":
+                    print(
+                        f"↻ Resumed session {self.session_id}{title_part} "
+                        f"({msg_count} user message{'s' if msg_count != 1 else ''}, {len(restored)} total messages)",
+                        file=sys.stderr,
+                    )
+                else:
+                    ChatConsole().print(
+                        f"[bold {_accent_hex()}]↻ Resumed session[/] "
+                        f"[bold]{_escape(self.session_id)}[/]"
+                        f"[bold {_accent_hex()}]{_escape(title_part)}[/] "
+                        f"({msg_count} user message{'s' if msg_count != 1 else ''}, {len(restored)} total messages)"
+                    )
             else:
-                ChatConsole().print(
-                    f"[bold {_accent_hex()}]Session {_escape(self.session_id)} found but has no messages. Starting fresh.[/]"
-                )
+                if getattr(self, "tool_progress_mode", "full") == "off":
+                    print(
+                        f"Session {self.session_id} found but has no messages. Starting fresh.",
+                        file=sys.stderr,
+                    )
+                else:
+                    ChatConsole().print(
+                        f"[bold {_accent_hex()}]Session {_escape(self.session_id)} found but has no messages. Starting fresh.[/]"
+                    )
             # Re-open the session (clear ended_at so it's active again)
             try:
                 self._session_db._conn.execute(
