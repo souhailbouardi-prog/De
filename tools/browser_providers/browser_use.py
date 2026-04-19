@@ -196,7 +196,7 @@ class BrowserUseProvider(CloudBrowserProvider):
                 )
                 return False
         except Exception as e:
-            logger.error("Exception closing Browser Use session %s: %s", session_id, e)
+            logger.error("Exception closing Browser Use session %s: %s", session_id, e, exc_info=True)
             return False
 
     def emergency_cleanup(self, session_id: str) -> None:
