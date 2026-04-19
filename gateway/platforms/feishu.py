@@ -1562,7 +1562,7 @@ class FeishuAdapter(BasePlatformAdapter):
                 }
             return result
         except Exception as exc:
-            logger.warning("[Feishu] send_exec_approval failed: %s", exc)
+            logger.warning("[Feishu] send_exec_approval failed: %s", exc, exc_info=True)
             return SendResult(success=False, error=str(exc))
 
     @staticmethod
