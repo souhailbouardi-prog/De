@@ -12,9 +12,21 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
-from hermes_constants import get_config_path, get_skills_dir
+from hermes_constants import get_config_path, get_skills_dir, get_subprocess_home
 
 logger = logging.getLogger(__name__)
+
+
+def _expand_home(path: str) -> str:
+    """Expand ``~`` using the subprocess HOME when available.
+
+    Falls back to ``os.path.expanduser`` when ``get_subprocess_home()``
+    returns ``None``.
+    """
+    sub_home = get_subprocess_home()
+    if sub_home and path.startswith("~"):
+        return sub_home + path[1:]
+    return os.path.expanduser(path)
 
 # ── Platform mapping ──────────────────────────────────────────────────────
 
@@ -209,7 +221,7 @@ def get_external_skills_dirs() -> List[Path]:
         if not entry:
             continue
         # Expand ~ and environment variables
-        expanded = os.path.expanduser(os.path.expandvars(entry))
+        expanded = _expand_home(os.path.expandvars(entry))
         p = Path(expanded).resolve()
         if p == local_skills:
             continue
@@ -382,7 +394,7 @@ def resolve_skill_config_values(
     Skill config is stored under ``skills.config.<key>`` in config.yaml.
     Returns a dict mapping **logical** keys (as declared by skills) to their
     current values (or the declared default if the key isn't set).
-    Path values are expanded via ``os.path.expanduser``.
+    Path values are expanded via the subprocess HOME (``get_subprocess_home``).
     """
     config_path = get_config_path()
     config: Dict[str, Any] = {}
@@ -405,7 +417,7 @@ def resolve_skill_config_values(
 
         # Expand ~ in path-like values
         if isinstance(value, str) and ("~" in value or "${" in value):
-            value = os.path.expanduser(os.path.expandvars(value))
+            value = _expand_home(os.path.expandvars(value))
 
         resolved[logical_key] = value
 
