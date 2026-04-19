@@ -334,10 +334,13 @@ class BaseEnvironment(ABC):
         ``_snapshot_ready = True`` so subsequent commands source the snapshot
         instead of running with ``bash -l``.
         """
-        # Full capture: env vars, functions (filtered), aliases, shell options.
+        # Full capture: env vars, functions, aliases, shell options.
         bootstrap = (
             f"export -p > {self._snapshot_path}\n"
-            f"declare -f | grep -vE '^_[^_]' >> {self._snapshot_path}\n"
+            # Avoid line-based filtering of function dumps. Grep can remove only
+            # function headers (e.g. names starting with "_") while leaving body
+            # lines behind, which corrupts the snapshot and breaks all commands.
+            f"declare -f >> {self._snapshot_path}\n"
             f"alias -p >> {self._snapshot_path}\n"
             f"echo 'shopt -s expand_aliases' >> {self._snapshot_path}\n"
             f"echo 'set +e' >> {self._snapshot_path}\n"
@@ -348,6 +351,10 @@ class BaseEnvironment(ABC):
         try:
             proc = self._run_bash(bootstrap, login=True, timeout=self._snapshot_timeout)
             result = self._wait_for_process(proc, timeout=self._snapshot_timeout)
+            if int(result.get("returncode") or 0) != 0:
+                raise RuntimeError(
+                    f"snapshot bootstrap failed with exit code {result.get('returncode')}"
+                )
             self._snapshot_ready = True
             self._update_cwd(result)
             logger.info(
