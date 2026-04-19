@@ -114,5 +114,5 @@ def is_safe_url(url: str) -> bool:
     except Exception as exc:
         # Fail closed on unexpected errors — don't let parsing edge cases
         # become SSRF bypass vectors
-        logger.warning("Blocked request — URL safety check error for %s: %s", url, exc)
+        logger.warning("Blocked request — URL safety check error for %s: %s", url, exc, exc_info=True)
         return False
