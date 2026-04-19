@@ -40,6 +40,18 @@ class TestParseTargetPlatformChat:
         target = DeliveryTarget.parse("unknown_platform")
         assert target.platform == Platform.LOCAL
 
+    def test_explicit_chat_id_preserves_case(self):
+        target = DeliveryTarget.parse("slack:C123ABC")
+        assert target.platform == Platform.SLACK
+        assert target.chat_id == "C123ABC"
+        assert target.thread_id is None
+
+    def test_matrix_room_id_with_colon_is_not_split_into_thread(self):
+        target = DeliveryTarget.parse("matrix:!RoomABC:example.org")
+        assert target.platform == Platform.MATRIX
+        assert target.chat_id == "!RoomABC:example.org"
+        assert target.thread_id is None
+
 
 class TestTargetToStringRoundtrip:
     def test_origin_roundtrip(self):
