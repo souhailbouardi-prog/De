@@ -241,6 +241,15 @@ def _mock_response(
         resp.usage = None
     return resp
 
+EMPTY_REASONING_RESPONSE = (
+    "⚠️ The model produced internal reasoning but no visible response after all retries. "
+    "Try again or rephrase your question."
+)
+EMPTY_TRULY_EMPTY_RESPONSE = (
+    "⚠️ The model returned no content after all retries. "
+    "Try again or rephrase your question."
+)
+
 
 # ===================================================================
 # Group 1: Pure Functions
@@ -1981,7 +1990,9 @@ class TestRunConversation:
 
         mock_compress.assert_not_called()  # no compression triggered
         assert result["completed"] is True
-        assert result["final_response"] == "(empty)"
+        assert result["final_response"] == EMPTY_TRULY_EMPTY_RESPONSE
+        assert result["response_is_empty_fallback"] is True
+        assert result["empty_response_reasoning"] is None
         assert result["api_calls"] == 6  # 1 original + 2 prefill + 3 retries
 
     def test_reasoning_only_response_prefill_then_empty(self, agent):
@@ -2001,7 +2012,9 @@ class TestRunConversation:
         ):
             result = agent.run_conversation("answer me")
         assert result["completed"] is True
-        assert result["final_response"] == "(empty)"
+        assert result["final_response"] == EMPTY_REASONING_RESPONSE
+        assert result["response_is_empty_fallback"] is True
+        assert result["empty_response_reasoning"] == "structured reasoning answer"
         assert result["api_calls"] == 6  # 1 original + 2 prefill + 3 retries
 
     def test_reasoning_only_prefill_succeeds_on_continuation(self, agent):
@@ -2048,7 +2061,9 @@ class TestRunConversation:
         ):
             result = agent.run_conversation("answer me")
         assert result["completed"] is True
-        assert result["final_response"] == "(empty)"
+        assert result["final_response"] == EMPTY_TRULY_EMPTY_RESPONSE
+        assert result["response_is_empty_fallback"] is True
+        assert result["empty_response_reasoning"] is None
         assert result["api_calls"] == 4  # 1 original + 3 retries
 
     def test_truly_empty_response_succeeds_on_nudge(self, agent):
@@ -2144,7 +2159,8 @@ class TestRunConversation:
         ):
             result = agent.run_conversation("answer me")
         assert result["completed"] is True
-        assert result["final_response"] == "(empty)"
+        assert result["final_response"] == EMPTY_TRULY_EMPTY_RESPONSE
+        assert result["response_is_empty_fallback"] is True
 
     def test_empty_response_emits_status_for_gateway(self, agent):
         """_emit_status is called during empty retries so gateway users see feedback."""
@@ -2170,7 +2186,8 @@ class TestRunConversation:
         ):
             result = agent.run_conversation("answer me")
 
-        assert result["final_response"] == "(empty)"
+        assert result["final_response"] == EMPTY_TRULY_EMPTY_RESPONSE
+        assert result["response_is_empty_fallback"] is True
         # Should have emitted retry statuses (3 retries) + final failure
         retry_msgs = [m for m in status_messages if "retrying" in m.lower()]
         assert len(retry_msgs) == 3, f"Expected 3 retry status messages, got {len(retry_msgs)}: {status_messages}"

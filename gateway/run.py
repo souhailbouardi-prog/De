@@ -4313,18 +4313,11 @@ class GatewayRunner:
                 return None
 
             response = agent_result.get("final_response") or ""
+            if (not response or response == "(empty)") and (
+                agent_result.get("response_is_empty_fallback") or not agent_result.get("failed")
+            ):
+                response = self._build_empty_response_message(agent_result)
 
-            # Convert the agent's internal "(empty)" sentinel into a
-            # user-friendly message.  "(empty)" means the model failed to
-            # produce visible content after exhausting all retries (nudge,
-            # prefill, empty-retry, fallback).  Sending the raw sentinel
-            # looks like a bug; a short explanation is more helpful.
-            if response == "(empty)":
-                response = (
-                    "⚠️ The model returned no response after processing tool "
-                    "results. This can happen with some models — try again or "
-                    "rephrase your question."
-                )
             agent_messages = agent_result.get("messages", [])
             _response_time = time.time() - _msg_start_time
             _api_calls = agent_result.get("api_calls", 0)
@@ -4641,6 +4634,40 @@ class GatewayRunner:
             # Restore session context variables to their pre-handler state
             self._clear_session_env(_session_env_tokens)
     
+    @staticmethod
+    def _build_empty_response_message(agent_result: dict) -> str:
+        """Return a user-facing fallback when the model produced no visible content."""
+        reasoning_text = ""
+        if isinstance(agent_result, dict):
+            reasoning_text = (
+                agent_result.get("empty_response_reasoning")
+                or agent_result.get("last_reasoning")
+                or ""
+            )
+        if reasoning_text:
+            return (
+                "⚠️ The model produced internal reasoning but no visible response "
+                "after all retries. Try again or rephrase your question."
+            )
+        return (
+            "⚠️ The model returned no content after all retries. "
+            "Try again or rephrase your question."
+        )
+
+    @staticmethod
+    def _is_empty_response_fallback(agent_result: dict, response_text: str = "") -> bool:
+        """Detect legacy and current empty-response fallbacks.
+
+        Returns True when the response should still be delivered even if the
+        stream consumer or interim preview already sent other text. This covers
+        the historical "(empty)" sentinel as well as the newer descriptive
+        fallback message returned by run_agent.
+        """
+        if isinstance(agent_result, dict) and agent_result.get("response_is_empty_fallback"):
+            return True
+        response_text = (response_text or "").strip()
+        return not response_text or response_text == "(empty)"
+
     def _format_session_info(self) -> str:
         """Resolve current model config and return a formatted info block.
 
@@ -10377,7 +10404,8 @@ class GatewayRunner:
                         or _previewed
                     )
                     first_response = result.get("final_response", "")
-                    if first_response and not _already_streamed:
+                    _force_delivery = self._is_empty_response_fallback(result, first_response)
+                    if first_response and (not _already_streamed or _force_delivery):
                         try:
                             logger.info(
                                 "Queued follow-up for session %s: final stream delivery not confirmed; sending first response before continuing.",
@@ -10501,17 +10529,15 @@ class GatewayRunner:
         # message is new content the user hasn't seen, and it must reach
         # them even if streaming had sent earlier partial output.
         #
-        # Also never suppress when the final response is "(empty)" — this
-        # means the model failed to produce content after tool calls (common
-        # with mimo-v2-pro, GLM-5, etc.).  The stream consumer may have
-        # sent intermediate text ("Let me search for that…") alongside the
-        # tool call, setting already_sent=True, but that text is NOT the
-        # final answer.  Suppressing delivery here leaves the user staring
-        # at silence.  (#10xxx — "agent stops after web search")
+        # Also never suppress when the final response is a fallback for an
+        # empty model reply — this means the model failed to produce visible
+        # content after tool calls, and the user still needs to receive the
+        # fallback text even if the stream consumer already sent partial
+        # narration.
         _sc = stream_consumer_holder[0]
         if isinstance(response, dict) and not response.get("failed"):
             _final = response.get("final_response") or ""
-            _is_empty_sentinel = not _final or _final == "(empty)"
+            _is_empty_sentinel = self._is_empty_response_fallback(response, _final)
             _streamed = bool(
                 _sc and getattr(_sc, "final_response_sent", False)
             )
