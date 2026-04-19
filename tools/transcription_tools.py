@@ -288,15 +288,18 @@ def _transcribe_local(file_path: str, model_name: str) -> Dict[str, Any]:
 
     try:
         from faster_whisper import WhisperModel
+        local_cfg = _load_stt_config().get("local", {})
         # Lazy-load the model (downloads on first use, ~150 MB for 'base')
         if _local_model is None or _local_model_name != model_name:
             logger.info("Loading faster-whisper model '%s' (first load downloads the model)...", model_name)
-            _local_model = WhisperModel(model_name, device="auto", compute_type="auto")
+            device = local_cfg.get("device", "auto")
+            compute_type = local_cfg.get("compute_type", "auto")
+            _local_model = WhisperModel(model_name, device=device, compute_type=compute_type)
             _local_model_name = model_name
 
         # Language: config.yaml (stt.local.language) > env var > auto-detect.
         _forced_lang = (
-            _load_stt_config().get("local", {}).get("language")
+            local_cfg.get("language")
             or os.getenv(LOCAL_STT_LANGUAGE_ENV)
             or None
         )
