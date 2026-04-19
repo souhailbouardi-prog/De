@@ -10255,6 +10255,16 @@ class HermesCLI:
                     self.agent.flush_memories(self.conversation_history)
                 except (Exception, KeyboardInterrupt):
                     pass
+            # Persist in-memory messages to session log + SQLite so
+            # conversations are not lost on SIGTERM / SIGHUP / window close.
+            if self.agent and self.conversation_history:
+                try:
+                    self.agent._persist_session(
+                        self.conversation_history,
+                        self.conversation_history,
+                    )
+                except (Exception, KeyboardInterrupt):
+                    pass
             # Shut down voice recorder (release persistent audio stream)
             if hasattr(self, '_voice_recorder') and self._voice_recorder:
                 try:
