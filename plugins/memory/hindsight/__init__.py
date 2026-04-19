@@ -107,13 +107,39 @@ RETAIN_SCHEMA = {
 RECALL_SCHEMA = {
     "name": "hindsight_recall",
     "description": (
-        "Search long-term memory. Returns memories ranked by relevance using "
-        "semantic search, keyword matching, entity graph traversal, and reranking."
+        "Search long-term memory. Use default recall first. "
+        "If results are missing or too vague: use method \"list\" for exact "
+        "keyword/name matches, method \"entity\" for relationship queries "
+        "(who is X's Y?), or increase budget / set types [\"world\"] for "
+        "deeper retrieval."
     ),
     "parameters": {
         "type": "object",
         "properties": {
             "query": {"type": "string", "description": "What to search for."},
+            "method": {
+                "type": "string",
+                "enum": ["recall", "list", "entity"],
+                "description": (
+                    "Search method. \"recall\" (default): semantic + reranked. "
+                    "\"list\": exact keyword match with pagination. "
+                    "\"entity\": search the entity/relationship graph."
+                ),
+            },
+            "budget": {
+                "type": "string",
+                "enum": ["low", "mid", "high"],
+                "description": "Recall thoroughness (default from config). Use \"high\" when default recall missed something.",
+            },
+            "max_tokens": {
+                "type": "integer",
+                "description": "Maximum tokens in results (default 4096). Increase for deep dives.",
+            },
+            "types": {
+                "type": "array",
+                "items": {"type": "string", "enum": ["world", "experience", "observation"]},
+                "description": "Memory type filter. Valid values: \"world\" (entity-extracted facts), \"experience\" (events), \"observation\" (synthesized insights). Applies to recall and entity methods.",
+            },
         },
         "required": ["query"],
     },
@@ -807,18 +833,97 @@ class HindsightMemoryProvider(MemoryProvider):
             query = args.get("query", "")
             if not query:
                 return tool_error("Missing required parameter: query")
+
+            method = args.get("method", "recall")
+
+            # ---- method: list (keyword search) ----
+            if method == "list":
+                try:
+                    logger.debug("Tool hindsight_recall(list): bank=%s, query=%s",
+                                 self._bank_id, query[:80])
+                    resp = _run_sync(client._memory_api.list_memories(
+                        bank_id=self._bank_id,
+                        q=query,
+                        limit=50,
+                        offset=0,
+                        _request_timeout=30,
+                    ))
+                    units = getattr(resp, "items", None) or getattr(resp, "units", None) or getattr(resp, "results", None) or []
+                    if not units:
+                        return json.dumps({"result": "No memories matching that keyword.", "total": 0})
+                    lines = []
+                    for i, u in enumerate(units, 1):
+                        text = getattr(u, "text", None) or getattr(u, "content", None) or str(u)
+                        lines.append(f"{i}. {text}")
+                    total = getattr(resp, "total", len(units))
+                    logger.debug("Tool hindsight_recall(list): %d/%d results", len(units), total)
+                    return json.dumps({"result": "\n".join(lines), "total": total})
+                except Exception as e:
+                    logger.warning("hindsight_recall(list) failed: %s", e, exc_info=True)
+                    return tool_error(f"Failed to list memories: {e}")
+
+            # ---- method: entity (relationship/entity-focused recall) ----
+            # Uses the standard recall pipeline with include_entities=True
+            # so the response surfaces entity graph data alongside memory
+            # results — all via the official client.
+            if method == "entity":
+                try:
+                    budget = args.get("budget") or "high"
+                    max_tokens = args.get("max_tokens") or self._recall_max_tokens
+                    types = args.get("types") or ["world"]
+                    logger.debug("Tool hindsight_recall(entity): bank=%s, query=%s, budget=%s, types=%s",
+                                 self._bank_id, query[:80], budget, types)
+                    resp = _run_sync(client.arecall(
+                        bank_id=self._bank_id,
+                        query=query,
+                        budget=budget,
+                        max_tokens=int(max_tokens),
+                        types=types,
+                        include_entities=True,
+                        max_entity_tokens=2000,
+                    ))
+                    parts = []
+                    if resp.results:
+                        parts.append("Memories:")
+                        for i, r in enumerate(resp.results, 1):
+                            parts.append(f"  {i}. {r.text}")
+                    entities = getattr(resp, "entities", None)
+                    if entities:
+                        parts.append("Entities:")
+                        for i, ent in enumerate(entities, 1):
+                            label = getattr(ent, "label", None) or getattr(ent, "name", None) or str(ent)
+                            etype = getattr(ent, "type", "")
+                            obs = getattr(ent, "observation", "") or getattr(ent, "summary", "") or ""
+                            line = f"  {i}. [{etype}] {label}"
+                            if obs:
+                                line += f" — {obs[:200]}"
+                            parts.append(line)
+                    if not parts:
+                        return json.dumps({"result": "No entities or related memories found."})
+                    logger.debug("Tool hindsight_recall(entity): %d results, %d entities",
+                                 len(resp.results) if resp.results else 0,
+                                 len(entities) if entities else 0)
+                    return json.dumps({"result": "\n".join(parts)})
+                except Exception as e:
+                    logger.warning("hindsight_recall(entity) failed: %s", e, exc_info=True)
+                    return tool_error(f"Failed to search entities: {e}")
+
+            # ---- method: recall (default — semantic + reranked) ----
             try:
+                budget = args.get("budget") or self._budget
+                max_tokens = args.get("max_tokens") or self._recall_max_tokens
+                types = args.get("types") or self._recall_types
                 recall_kwargs: dict = {
-                    "bank_id": self._bank_id, "query": query, "budget": self._budget,
-                    "max_tokens": self._recall_max_tokens,
+                    "bank_id": self._bank_id, "query": query, "budget": budget,
+                    "max_tokens": int(max_tokens),
                 }
                 if self._recall_tags:
                     recall_kwargs["tags"] = self._recall_tags
                     recall_kwargs["tags_match"] = self._recall_tags_match
-                if self._recall_types:
-                    recall_kwargs["types"] = self._recall_types
-                logger.debug("Tool hindsight_recall: bank=%s, query_len=%d, budget=%s",
-                             self._bank_id, len(query), self._budget)
+                if types:
+                    recall_kwargs["types"] = types
+                logger.debug("Tool hindsight_recall: bank=%s, query_len=%d, budget=%s, max_tokens=%d",
+                             self._bank_id, len(query), budget, int(max_tokens))
                 resp = _run_sync(client.arecall(**recall_kwargs))
                 num_results = len(resp.results) if resp.results else 0
                 logger.debug("Tool hindsight_recall: %d results", num_results)
