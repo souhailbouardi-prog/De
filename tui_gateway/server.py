@@ -2782,9 +2782,25 @@ def _(rid, params: dict) -> dict:
 @method("browser.manage")
 def _(rid, params: dict) -> dict:
     action = params.get("action", "status")
+    try:
+        from tools.browser_tool import _cdp_endpoint_reachable
+    except Exception:
+        _cdp_endpoint_reachable = lambda _url: False
+
+    cfg = _load_cfg()
+    browser_cfg = cfg.get("browser", {}) if isinstance(cfg, dict) else {}
+    config_url = str(browser_cfg.get("cdp_url", "") or "").strip() if isinstance(browser_cfg, dict) else ""
+    env_url = os.environ.get("BROWSER_CDP_URL", "").strip()
+    effective_url = env_url or config_url
+    source = "env" if env_url else "config" if config_url else ""
+
     if action == "status":
-        url = os.environ.get("BROWSER_CDP_URL", "")
-        return _ok(rid, {"connected": bool(url), "url": url})
+        return _ok(rid, {
+            "connected": bool(effective_url),
+            "url": effective_url,
+            "source": source,
+            "reachable": _cdp_endpoint_reachable(effective_url) if effective_url else False,
+        })
     if action == "connect":
         url = params.get("url", "http://localhost:9222")
         try:
@@ -2817,12 +2833,21 @@ def _(rid, params: dict) -> dict:
             return _err(rid, 5031, str(e))
         return _ok(rid, {"connected": True, "url": url})
     if action == "disconnect":
+        had_env_override = bool(env_url)
         os.environ.pop("BROWSER_CDP_URL", None)
         try:
             from tools.browser_tool import cleanup_all_browsers
             cleanup_all_browsers()
         except Exception:
             pass
+        if config_url:
+            return _ok(rid, {
+                "connected": True,
+                "url": config_url,
+                "source": "config",
+                "reachable": _cdp_endpoint_reachable(config_url),
+                "message": "session override cleared; persistent browser.cdp_url remains active" if had_env_override else "browser.cdp_url remains active in config.yaml",
+            })
         return _ok(rid, {"connected": False})
     return _err(rid, 4015, f"unknown action: {action}")
 

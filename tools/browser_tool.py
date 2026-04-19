@@ -259,6 +259,80 @@ def _resolve_cdp_override(cdp_url: str) -> str:
     return raw
 
 
+def _read_config_browser_cdp_url() -> str:
+    """Return ``browser.cdp_url`` from config.yaml, or empty string."""
+    try:
+        from hermes_cli.config import read_raw_config
+
+        cfg = read_raw_config()
+        browser_cfg = cfg.get("browser", {})
+        if isinstance(browser_cfg, dict):
+            return str(browser_cfg.get("cdp_url", "") or "").strip()
+    except Exception as e:
+        logger.debug("Could not read browser.cdp_url from config: %s", e)
+    return ""
+
+
+def _get_raw_cdp_override() -> str:
+    """Return the raw configured CDP override before websocket normalization.
+
+    Precedence is:
+    1. ``BROWSER_CDP_URL`` env var (live override from ``/browser connect``)
+    2. ``browser.cdp_url`` in config.yaml (persistent config)
+    """
+    env_override = os.environ.get("BROWSER_CDP_URL", "").strip()
+    if env_override:
+        return env_override
+    return _read_config_browser_cdp_url()
+
+
+def _cdp_endpoint_reachable(cdp_url: str, timeout: float = 2.0) -> bool:
+    """Best-effort reachability probe for a CDP endpoint.
+
+    - HTTP/HTTPS discovery URLs are probed via ``/json/version``.
+    - Bare WS/WSS host:port URLs are converted to HTTP(S) discovery URLs.
+    - Full websocket debugger URLs are probed with a real websocket handshake.
+    """
+    from urllib.parse import urlparse
+
+    raw = (cdp_url or "").strip()
+    if not raw:
+        return False
+
+    parsed = urlparse(raw if "://" in raw else f"http://{raw}")
+    scheme = (parsed.scheme or "http").lower()
+    host = parsed.hostname
+    if not host:
+        return False
+
+    if scheme in {"http", "https"}:
+        version_url = raw if raw.lower().endswith("/json/version") else raw.rstrip("/") + "/json/version"
+        try:
+            response = requests.get(version_url, timeout=timeout)
+            response.raise_for_status()
+            return True
+        except Exception:
+            return False
+
+    if scheme in {"ws", "wss"} and "/devtools/browser/" not in (parsed.path or ""):
+        probe_scheme = "https" if scheme == "wss" else "http"
+        version_url = f"{probe_scheme}://{parsed.netloc.rstrip('/')}/json/version"
+        try:
+            response = requests.get(version_url, timeout=timeout)
+            response.raise_for_status()
+            return True
+        except Exception:
+            return False
+
+    try:
+        from websockets.sync.client import connect as ws_connect
+
+        with ws_connect(raw, open_timeout=timeout, close_timeout=timeout):
+            return True
+    except Exception:
+        return False
+
+
 def _get_cdp_override() -> str:
     """Return a normalized CDP URL override, or empty string.
 
@@ -270,21 +344,7 @@ def _get_cdp_override() -> str:
     launcher and connect directly to the supplied Chrome DevTools Protocol
     endpoint.
     """
-    env_override = os.environ.get("BROWSER_CDP_URL", "").strip()
-    if env_override:
-        return _resolve_cdp_override(env_override)
-
-    try:
-        from hermes_cli.config import read_raw_config
-
-        cfg = read_raw_config()
-        browser_cfg = cfg.get("browser", {})
-        if isinstance(browser_cfg, dict):
-            return _resolve_cdp_override(str(browser_cfg.get("cdp_url", "") or ""))
-    except Exception as e:
-        logger.debug("Could not read browser.cdp_url from config: %s", e)
-
-    return ""
+    return _resolve_cdp_override(_get_raw_cdp_override())
 
 
 # ============================================================================

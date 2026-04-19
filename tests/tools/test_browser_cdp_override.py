@@ -116,3 +116,44 @@ class TestGetCdpOverride:
 
         assert resolved == WS_URL
         mock_get.assert_called_once_with(VERSION_URL, timeout=10)
+
+    def test_raw_override_prefers_env_over_config(self, monkeypatch):
+        import tools.browser_tool as browser_tool
+
+        monkeypatch.setenv("BROWSER_CDP_URL", HTTP_URL)
+        with patch("hermes_cli.config.read_raw_config", return_value={"browser": {"cdp_url": "http://config-host:9222"}}):
+            assert browser_tool._get_raw_cdp_override() == HTTP_URL
+
+    def test_raw_override_reads_config_when_env_missing(self, monkeypatch):
+        import tools.browser_tool as browser_tool
+
+        monkeypatch.delenv("BROWSER_CDP_URL", raising=False)
+        with patch("hermes_cli.config.read_raw_config", return_value={"browser": {"cdp_url": HTTP_URL}}):
+            assert browser_tool._get_raw_cdp_override() == HTTP_URL
+
+
+class TestCdpEndpointReachable:
+    def test_http_endpoint_uses_actual_host(self):
+        from tools.browser_tool import _cdp_endpoint_reachable
+
+        response = Mock()
+        response.raise_for_status.return_value = None
+        with patch("tools.browser_tool.requests.get", return_value=response) as mock_get:
+            assert _cdp_endpoint_reachable(HTTP_URL) is True
+        mock_get.assert_called_once_with(VERSION_URL, timeout=2.0)
+
+    def test_http_endpoint_returns_false_when_actual_host_unreachable(self):
+        from tools.browser_tool import _cdp_endpoint_reachable
+
+        with patch("tools.browser_tool.requests.get", side_effect=RuntimeError("boom")):
+            assert _cdp_endpoint_reachable("http://unreachable.invalid:9333") is False
+
+    def test_full_websocket_endpoint_uses_real_websocket_handshake(self):
+        from tools.browser_tool import _cdp_endpoint_reachable
+
+        fake_conn = Mock()
+        fake_conn.__enter__ = Mock(return_value=fake_conn)
+        fake_conn.__exit__ = Mock(return_value=False)
+        with patch("websockets.sync.client.connect", return_value=fake_conn) as mock_conn:
+            assert _cdp_endpoint_reachable(WS_URL) is True
+        mock_conn.assert_called_once_with(WS_URL, open_timeout=2.0, close_timeout=2.0)

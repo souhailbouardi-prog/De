@@ -1,4 +1,5 @@
 import json
+import os
 import sys
 import threading
 import time
@@ -135,6 +136,50 @@ def test_setup_status_reports_provider_config(monkeypatch):
     resp = server.handle_request({"id": "1", "method": "setup.status", "params": {}})
 
     assert resp["result"]["provider_configured"] is False
+
+
+def test_browser_manage_status_uses_effective_cdp_url(tmp_path, monkeypatch):
+    monkeypatch.setattr(server, "_hermes_home", tmp_path)
+    server._cfg_cache = None
+    server._cfg_mtime = None
+    (tmp_path / "config.yaml").write_text("browser:\n  cdp_url: http://127.0.0.1:9222\n")
+    monkeypatch.delenv("BROWSER_CDP_URL", raising=False)
+    with patch("tools.browser_tool._cdp_endpoint_reachable", return_value=True):
+        resp = server.handle_request({"id": "1", "method": "browser.manage", "params": {"action": "status"}})
+
+    assert resp["result"]["connected"] is True
+    assert resp["result"]["url"] == "http://127.0.0.1:9222"
+    assert resp["result"]["source"] == "config"
+    assert resp["result"]["reachable"] is True
+
+
+def test_browser_manage_disconnect_reports_persistent_config(tmp_path, monkeypatch):
+    monkeypatch.setattr(server, "_hermes_home", tmp_path)
+    (tmp_path / "config.yaml").write_text("browser:\n  cdp_url: http://127.0.0.1:9222\n")
+    monkeypatch.delenv("BROWSER_CDP_URL", raising=False)
+    with patch("tools.browser_tool.cleanup_all_browsers"), \
+         patch("tools.browser_tool._cdp_endpoint_reachable", return_value=True):
+        resp = server.handle_request({"id": "1", "method": "browser.manage", "params": {"action": "disconnect"}})
+
+    assert resp["result"]["connected"] is True
+    assert resp["result"]["url"] == "http://127.0.0.1:9222"
+    assert resp["result"]["source"] == "config"
+    assert "remains active" in resp["result"]["message"]
+    assert "http://127.0.0.1:9222" in (tmp_path / "config.yaml").read_text()
+
+
+def test_browser_manage_disconnect_clears_env_but_preserves_config(tmp_path, monkeypatch):
+    monkeypatch.setattr(server, "_hermes_home", tmp_path)
+    (tmp_path / "config.yaml").write_text("browser:\n  cdp_url: http://127.0.0.1:9222\n")
+    monkeypatch.setenv("BROWSER_CDP_URL", "http://127.0.0.1:9333")
+    with patch("tools.browser_tool.cleanup_all_browsers"), \
+         patch("tools.browser_tool._cdp_endpoint_reachable", return_value=True):
+        resp = server.handle_request({"id": "1", "method": "browser.manage", "params": {"action": "disconnect"}})
+
+    assert resp["result"]["connected"] is True
+    assert resp["result"]["url"] == "http://127.0.0.1:9222"
+    assert os.environ.get("BROWSER_CDP_URL", "") == ""
+    assert "http://127.0.0.1:9222" in (tmp_path / "config.yaml").read_text()
 
 
 def test_config_set_reasoning_updates_live_session_and_agent(tmp_path, monkeypatch):
