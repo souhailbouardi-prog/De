@@ -276,19 +276,65 @@ def _openai_error(message: str, err_type: str = "invalid_request_error", param: 
     }
 
 
+def _parse_positive_int(value: Any, default: int) -> int:
+    """Parse a positive integer config/env value with safe fallback."""
+    try:
+        parsed = int(str(value).strip())
+    except (TypeError, ValueError):
+        return default
+    return parsed if parsed > 0 else default
+
+
+def _request_body_too_large_message(limit_bytes: int, actual_bytes: Optional[int] = None) -> str:
+    """Consistent 413 diagnostics with the effective request-size limit."""
+    base = f"Request body too large. Limit is {limit_bytes} bytes"
+    if actual_bytes is not None and actual_bytes >= 0:
+        return (
+            f"{base}; received {actual_bytes} bytes. "
+            "For larger multi-turn conversations, prefer /v1/responses with previous_response_id or conversation chaining."
+        )
+    return (
+        f"{base}. For larger multi-turn conversations, prefer /v1/responses with previous_response_id or conversation chaining."
+    )
+
+
 if AIOHTTP_AVAILABLE:
     @web.middleware
     async def body_limit_middleware(request, handler):
         """Reject overly large request bodies early based on Content-Length."""
+        adapter = request.app.get("api_server_adapter")
+        max_request_bytes = getattr(adapter, "_max_request_bytes", MAX_REQUEST_BYTES)
         if request.method in ("POST", "PUT", "PATCH"):
             cl = request.headers.get("Content-Length")
             if cl is not None:
                 try:
-                    if int(cl) > MAX_REQUEST_BYTES:
-                        return web.json_response(_openai_error("Request body too large.", code="body_too_large"), status=413)
+                    actual_bytes = int(cl)
+                    if actual_bytes > max_request_bytes:
+                        return _apply_security_headers(
+                            web.json_response(
+                                _openai_error(
+                                    _request_body_too_large_message(max_request_bytes, actual_bytes),
+                                    code="body_too_large",
+                                ),
+                                status=413,
+                            )
+                        )
                 except ValueError:
-                    return web.json_response(_openai_error("Invalid Content-Length header.", code="invalid_content_length"), status=400)
-        return await handler(request)
+                    return _apply_security_headers(
+                        web.json_response(
+                            _openai_error("Invalid Content-Length header.", code="invalid_content_length"),
+                            status=400,
+                        )
+                    )
+        try:
+            return await handler(request)
+        except web.HTTPRequestEntityTooLarge:
+            return _apply_security_headers(
+                web.json_response(
+                    _openai_error(_request_body_too_large_message(max_request_bytes), code="body_too_large"),
+                    status=413,
+                )
+            )
 else:
     body_limit_middleware = None  # type: ignore[assignment]
 
@@ -298,14 +344,19 @@ _SECURITY_HEADERS = {
 }
 
 
+def _apply_security_headers(response: "web.StreamResponse") -> "web.StreamResponse":
+    """Add standard security headers to an aiohttp response in-place."""
+    for k, v in _SECURITY_HEADERS.items():
+        response.headers.setdefault(k, v)
+    return response
+
+
 if AIOHTTP_AVAILABLE:
     @web.middleware
     async def security_headers_middleware(request, handler):
         """Add security headers to all responses (including errors)."""
         response = await handler(request)
-        for k, v in _SECURITY_HEADERS.items():
-            response.headers.setdefault(k, v)
-        return response
+        return _apply_security_headers(response)
 else:
     security_headers_middleware = None  # type: ignore[assignment]
 
@@ -380,6 +431,10 @@ class APIServerAdapter(BasePlatformAdapter):
         self._host: str = extra.get("host", os.getenv("API_SERVER_HOST", DEFAULT_HOST))
         self._port: int = int(extra.get("port", os.getenv("API_SERVER_PORT", str(DEFAULT_PORT))))
         self._api_key: str = extra.get("key", os.getenv("API_SERVER_KEY", ""))
+        self._max_request_bytes: int = _parse_positive_int(
+            extra.get("max_request_bytes", os.getenv("API_SERVER_MAX_REQUEST_BYTES", MAX_REQUEST_BYTES)),
+            MAX_REQUEST_BYTES,
+        )
         self._cors_origins: tuple[str, ...] = self._parse_cors_origins(
             extra.get("cors_origins", os.getenv("API_SERVER_CORS_ORIGINS", "")),
         )
@@ -2311,7 +2366,7 @@ class APIServerAdapter(BasePlatformAdapter):
 
         try:
             mws = [mw for mw in (cors_middleware, body_limit_middleware, security_headers_middleware) if mw is not None]
-            self._app = web.Application(middlewares=mws)
+            self._app = web.Application(middlewares=mws, client_max_size=self._max_request_bytes)
             self._app["api_server_adapter"] = self
             self._app.router.add_get("/health", self._handle_health)
             self._app.router.add_get("/health/detailed", self._handle_health_detailed)
