@@ -514,3 +514,86 @@ class TestSymlinkPrefixConfusionRegression:
         new_escapes = not resolved.is_relative_to(skill_dir_resolved)
         assert old_escapes is False
         assert new_escapes is False
+
+
+# ---------------------------------------------------------------------------
+# AST-level scanner (#7072)
+# ---------------------------------------------------------------------------
+
+
+class TestAstScanPython:
+    """AST-level scanner detects dynamic import and access patterns (#7072)."""
+
+    def test_importlib_import_module_detected(self, tmp_path):
+        """importlib.import_module() calls are flagged."""
+        f = tmp_path / "evil.py"
+        f.write_text("import importlib\nm = importlib.import_module('os')\n")
+        findings = scan_file(f, "evil.py")
+        pids = [f.pattern_id for f in findings]
+        assert "ast_dynamic_import" in pids
+        assert "ast_importlib_import" in pids
+
+    def test_dunder_import_with_computed_arg_detected(self, tmp_path):
+        """__import__ with non-literal argument is flagged."""
+        f = tmp_path / "evil.py"
+        f.write_text("name = 'os'\nm = __import__(name)\n")
+        findings = scan_file(f, "evil.py")
+        pids = [f.pattern_id for f in findings]
+        assert "ast_dynamic_import_computed" in pids
+
+    def test_dunder_dict_computed_key_detected(self, tmp_path):
+        """__dict__[<computed>] access is flagged."""
+        f = tmp_path / "evil.py"
+        f.write_text("key = 'environ'\nval = obj.__dict__[key]\n")
+        findings = scan_file(f, "evil.py")
+        pids = [f.pattern_id for f in findings]
+        assert "ast_dict_access" in pids
+
+    def test_getattr_with_computed_name_detected(self, tmp_path):
+        """getattr(obj, computed_name) is flagged."""
+        f = tmp_path / "evil.py"
+        f.write_text("name = 'system'\nfn = getattr(os, name)\n")
+        findings = scan_file(f, "evil.py")
+        pids = [f.pattern_id for f in findings]
+        assert "ast_dynamic_getattr" in pids
+
+    def test_syntax_error_handled_gracefully(self, tmp_path):
+        """Files with syntax errors should not crash the scanner."""
+        f = tmp_path / "bad.py"
+        f.write_text("def broken(\n")
+        findings = scan_file(f, "bad.py")
+        # Should return findings list (possibly empty), not raise
+        assert isinstance(findings, list)
+
+    def test_literal_dunder_import_not_flagged_by_ast(self, tmp_path):
+        """__import__('os') with literal string is NOT flagged by AST (regex handles it)."""
+        f = tmp_path / "ok.py"
+        f.write_text("m = __import__('os')\n")
+        findings = scan_file(f, "ok.py")
+        pids = [f.pattern_id for f in findings]
+        # ast_dynamic_import_computed should NOT be present (literal arg)
+        assert "ast_dynamic_import_computed" not in pids
+
+    def test_full_bypass_payload_now_detected(self, tmp_path):
+        """The exact bypass payload from #7072 should now be caught."""
+        payload = '''
+import importlib
+parts = ['o', 's']
+m = importlib.import_module(''.join(parts))
+e = m.__dict__[''.join(['e','n','v','i','r','o','n'])]
+'''
+        f = tmp_path / "exfil.py"
+        f.write_text(payload)
+        findings = scan_file(f, "exfil.py")
+        pids = [f.pattern_id for f in findings]
+        assert "ast_dynamic_import" in pids
+        assert "ast_dict_access" in pids
+        assert "ast_importlib_import" in pids
+
+    def test_non_python_files_skip_ast(self, tmp_path):
+        """AST scan only runs on .py files."""
+        f = tmp_path / "script.sh"
+        f.write_text("import importlib\nimportlib.import_module('os')\n")
+        findings = scan_file(f, "script.sh")
+        pids = [f.pattern_id for f in findings]
+        assert "ast_dynamic_import" not in pids

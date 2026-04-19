@@ -527,6 +527,95 @@ INVISIBLE_CHARS = {
 # Scanning functions
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# AST-level analysis for Python files — catches dynamic import/access
+# patterns that evade regex line-by-line scanning.
+# ---------------------------------------------------------------------------
+
+def _ast_scan_python(content: str, rel_path: str) -> List[Finding]:
+    """Detect obfuscation via dynamic imports, attribute access, and string construction."""
+    import ast
+
+    try:
+        tree = ast.parse(content)
+    except SyntaxError:
+        return []
+
+    findings: List[Finding] = []
+
+    class _Visitor(ast.NodeVisitor):
+        def visit_Call(self, node):
+            # Detect importlib.import_module(...)
+            if isinstance(node.func, ast.Attribute) and node.func.attr == "import_module":
+                findings.append(Finding(
+                    pattern_id="ast_dynamic_import",
+                    severity="high",
+                    category="obfuscation",
+                    file=rel_path,
+                    line=node.lineno,
+                    match="importlib.import_module()",
+                    description="dynamic import via importlib — can load arbitrary modules at runtime",
+                ))
+            # Detect __import__ with non-literal argument
+            if isinstance(node.func, ast.Name) and node.func.id == "__import__":
+                if node.args and not isinstance(node.args[0], ast.Constant):
+                    findings.append(Finding(
+                        pattern_id="ast_dynamic_import_computed",
+                        severity="high",
+                        category="obfuscation",
+                        file=rel_path,
+                        line=node.lineno,
+                        match="__import__(<computed>)",
+                        description="__import__ with dynamically constructed module name",
+                    ))
+            # Detect getattr with computed attribute name
+            if isinstance(node.func, ast.Name) and node.func.id == "getattr":
+                if len(node.args) >= 2 and not isinstance(node.args[1], ast.Constant):
+                    findings.append(Finding(
+                        pattern_id="ast_dynamic_getattr",
+                        severity="medium",
+                        category="obfuscation",
+                        file=rel_path,
+                        line=node.lineno,
+                        match="getattr(<obj>, <computed>)",
+                        description="getattr with dynamically constructed attribute name",
+                    ))
+            self.generic_visit(node)
+
+        def visit_Subscript(self, node):
+            # Detect obj.__dict__[<computed>]
+            if isinstance(node.value, ast.Attribute) and node.value.attr == "__dict__":
+                if not isinstance(node.slice, ast.Constant):
+                    findings.append(Finding(
+                        pattern_id="ast_dict_access",
+                        severity="high",
+                        category="obfuscation",
+                        file=rel_path,
+                        line=node.lineno,
+                        match="__dict__[<computed>]",
+                        description="dynamic attribute access via __dict__ with computed key",
+                    ))
+            self.generic_visit(node)
+
+        def visit_Import(self, node):
+            # Flag importlib import itself (often precedes dynamic import)
+            for alias in node.names:
+                if alias.name == "importlib":
+                    findings.append(Finding(
+                        pattern_id="ast_importlib_import",
+                        severity="medium",
+                        category="obfuscation",
+                        file=rel_path,
+                        line=node.lineno,
+                        match="import importlib",
+                        description="importlib imported — enables dynamic module loading",
+                    ))
+            self.generic_visit(node)
+
+    _Visitor().visit(tree)
+    return findings
+
+
 def scan_file(file_path: Path, rel_path: str = "") -> List[Finding]:
     """
     Scan a single file for threat patterns and invisible unicode characters.
@@ -572,6 +661,10 @@ def scan_file(file_path: Path, rel_path: str = "") -> List[Finding]:
                     match=matched_text,
                     description=description,
                 ))
+
+    # AST-level analysis for Python files
+    if file_path.suffix.lower() == ".py":
+        findings.extend(_ast_scan_python(content, rel_path))
 
     # Invisible unicode character detection
     for i, line in enumerate(lines, start=1):
