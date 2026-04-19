@@ -8423,7 +8423,12 @@ class AIAgent:
             else:
                 logger.info("tool %s completed (%.2fs, %d chars)", function_name, tool_duration, len(function_result))
 
-            if self.tool_progress_callback:
+            # Blocked tools skip lifecycle callbacks so consumers never see
+            # a `tool.completed` event for a tool that never fired
+            # `tool.started`. See the matching start-side guards above at
+            # `if _block_msg is None and self.tool_progress_callback:` /
+            # `if _block_msg is None and self.tool_start_callback:`.
+            if _block_msg is None and self.tool_progress_callback:
                 try:
                     self.tool_progress_callback(
                         "tool.completed", function_name, None, None,
@@ -8432,14 +8437,20 @@ class AIAgent:
                 except Exception as cb_err:
                     logging.debug(f"Tool progress callback error: {cb_err}")
 
-            self._current_tool = None
-            self._touch_activity(f"tool completed: {function_name} ({tool_duration:.1f}s)")
+            if _block_msg is None:
+                self._current_tool = None
+                self._touch_activity(f"tool completed: {function_name} ({tool_duration:.1f}s)")
+            else:
+                # Still refresh activity so a batch of blocked tools doesn't
+                # look idle to the gateway's inactivity monitor, but use a
+                # distinct message that reflects what actually happened.
+                self._touch_activity(f"tool blocked by plugin: {function_name}")
 
             if self.verbose_logging:
                 logging.debug(f"Tool {function_name} completed in {tool_duration:.2f}s")
                 logging.debug(f"Tool result ({len(function_result)} chars): {function_result}")
 
-            if self.tool_complete_callback:
+            if _block_msg is None and self.tool_complete_callback:
                 try:
                     self.tool_complete_callback(tool_call.id, function_name, function_args, function_result)
                 except Exception as cb_err:
@@ -8452,10 +8463,13 @@ class AIAgent:
                 env=get_active_env(effective_task_id),
             )
 
-            # Discover subdirectory context files from tool arguments
-            subdir_hints = self._subdirectory_hints.check_tool_call(function_name, function_args)
-            if subdir_hints:
-                function_result += subdir_hints
+            # Discover subdirectory context files from tool arguments — skip
+            # for blocked tools since the tool never ran, so treating its
+            # args as "used" would leak context the agent shouldn't have.
+            if _block_msg is None:
+                subdir_hints = self._subdirectory_hints.check_tool_call(function_name, function_args)
+                if subdir_hints:
+                    function_result += subdir_hints
 
             tool_msg = {
                 "role": "tool",

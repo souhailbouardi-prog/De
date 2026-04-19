@@ -1697,6 +1697,56 @@ class TestConcurrentToolExecution:
         assert messages[0]["role"] == "tool"
         assert json.loads(messages[0]["content"]) == {"error": "Blocked by policy"}
 
+    def test_sequential_blocked_tool_skips_complete_callbacks(self, agent, monkeypatch):
+        """Sequential path: blocked tool must also skip completion callbacks.
+
+        Regression for the gap where the introduction of pre_tool_call
+        blocking guarded the start-side callbacks (`tool_start_callback`,
+        `tool_progress_callback('tool.started', ...)`) but left the
+        completion-side callbacks (`tool_complete_callback`,
+        `tool_progress_callback('tool.completed', ...)`) unguarded.
+
+        Consumers that track the `(started, completed)` lifecycle would
+        see a `completed` event for a tool that never fired `started`,
+        breaking state machines on the gateway / session recorder side.
+        """
+        tool_call = _mock_tool_call(
+            name="web_search", arguments='{"q":"test"}', call_id="c1"
+        )
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tool_call])
+        messages = []
+
+        monkeypatch.setattr(
+            "hermes_cli.plugins.get_pre_tool_call_block_message",
+            lambda *args, **kwargs: "Blocked by policy",
+        )
+
+        starts: list = []
+        completes: list = []
+        progress_events: list = []
+
+        agent.tool_start_callback = lambda *a: starts.append(a)
+        agent.tool_complete_callback = lambda *a: completes.append(a)
+        agent.tool_progress_callback = lambda event, *a, **kw: progress_events.append(event)
+
+        with patch(
+            "run_agent.handle_function_call",
+            side_effect=AssertionError("should not run"),
+        ):
+            agent._execute_tool_calls_sequential(mock_msg, messages, "task-1")
+
+        # Neither side of the lifecycle should fire for a blocked tool.
+        assert starts == []
+        assert completes == []
+        assert "tool.started" not in progress_events
+        assert "tool.completed" not in progress_events
+
+        # But the error result MUST still land in the message history
+        # so the model can see the block reason and adjust.
+        assert len(messages) == 1
+        assert messages[0]["role"] == "tool"
+        assert json.loads(messages[0]["content"]) == {"error": "Blocked by policy"}
+
     def test_blocked_memory_tool_does_not_reset_counter(self, agent, monkeypatch):
         """Blocked memory tool should not reset the nudge counter."""
         agent._turns_since_memory = 5
