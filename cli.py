@@ -2852,7 +2852,10 @@ class HermesCLI:
         # the configured model (e.g. "qwen3.6-plus"), causing 400 errors.
         runtime_model = runtime.get("model")
         if runtime_model and isinstance(runtime_model, str):
-            self.model = runtime_model
+            requested = runtime.get("requested_provider", "")
+            requested_name = requested.split(":", 1)[1] if ":" in requested else requested
+            if not self.model or self.model == requested or self.model == requested_name:
+                self.model = runtime_model
 
         # If model is still empty (e.g. user ran `hermes auth add openai-codex`
         # without `hermes model`), fall back to the provider's first catalog
