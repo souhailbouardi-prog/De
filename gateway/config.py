@@ -176,6 +176,26 @@ class PlatformConfig:
         home_channel = None
         if "home_channel" in data:
             home_channel = HomeChannel.from_dict(data["home_channel"])
+
+        known_keys = {
+            "enabled",
+            "token",
+            "api_key",
+            "home_channel",
+            "reply_to_mode",
+            "extra",
+        }
+        extra = {
+            key: value for key, value in data.items() if key not in known_keys
+        }
+        raw_extra = data.get("extra", {})
+        if isinstance(raw_extra, dict):
+            extra.update(raw_extra)
+        elif "extra" in data:
+            logger.warning(
+                "Ignoring invalid platform config 'extra' value of type %s; expected a mapping",
+                type(raw_extra).__name__,
+            )
         
         return cls(
             enabled=data.get("enabled", False),
@@ -183,7 +203,7 @@ class PlatformConfig:
             api_key=data.get("api_key"),
             home_channel=home_channel,
             reply_to_mode=data.get("reply_to_mode", "first"),
-            extra=data.get("extra", {}),
+            extra=extra,
         )
 
 
