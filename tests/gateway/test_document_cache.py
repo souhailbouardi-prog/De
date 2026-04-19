@@ -98,6 +98,20 @@ class TestCacheDocumentFromBytes:
         path = cache_document_from_bytes(b"data", None)
         assert "document" in os.path.basename(path)
 
+    def test_windows_reserved_filename_chars_are_sanitized(self):
+        path = cache_document_from_bytes(b"data", 'report:final*?.pdf')
+        basename = os.path.basename(path)
+        assert "report_final__.pdf" in basename
+        for ch in ':*?"<>|':
+            assert ch not in basename
+
+    def test_windows_path_components_are_stripped_cross_platform(self):
+        path = cache_document_from_bytes(b"data", r"..\..\secret\report.pdf")
+        basename = os.path.basename(path)
+        assert "report.pdf" in basename
+        assert "\\" not in basename
+        assert ".." not in basename
+
 
 # ---------------------------------------------------------------------------
 # TestCleanupDocumentCache

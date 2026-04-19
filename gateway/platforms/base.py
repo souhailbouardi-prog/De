@@ -233,7 +233,7 @@ def proxy_kwargs_for_aiohttp(proxy_url: str | None) -> tuple[dict, dict]:
 
 from dataclasses import dataclass, field
 from datetime import datetime
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Dict, List, Optional, Any, Callable, Awaitable, Tuple
 from enum import Enum
 
@@ -597,9 +597,13 @@ def cache_document_from_bytes(data: bytes, filename: str) -> str:
         ValueError: If the sanitized path escapes the cache directory.
     """
     cache_dir = get_document_cache_dir()
-    # Sanitize: strip directory components, null bytes, and control characters
-    safe_name = Path(filename).name if filename else "document"
-    safe_name = safe_name.replace("\x00", "").strip()
+    # Strip both POSIX and Windows path components before filename sanitization.
+    raw_name = str(filename) if filename else "document"
+    safe_name = PureWindowsPath(PurePosixPath(raw_name).name).name
+    # Remove control chars and Windows-reserved filename characters. This keeps
+    # returned cache paths stable across platforms and avoids NTFS ADS/truncation.
+    safe_name = "".join(ch for ch in safe_name if ch >= " " and ch != "\x7f")
+    safe_name = re.sub(r'[<>:"/\\|?*]', "_", safe_name).strip().rstrip(" .")
     if not safe_name or safe_name in (".", ".."):
         safe_name = "document"
     cached_name = f"doc_{uuid.uuid4().hex[:12]}_{safe_name}"
