@@ -386,3 +386,42 @@ async def test_forum_post_file_creation_failure():
 
     assert result.success is False
     assert "missing perms" in (result.error or "")
+
+
+@pytest.mark.asyncio
+async def test_send_document_routes_attachment_to_metadata_thread(tmp_path):
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+
+    file_path = tmp_path / "report.txt"
+    file_path.write_text("hello", encoding="utf-8")
+
+    parent_channel = SimpleNamespace(
+        id=67890,
+        send=AsyncMock(return_value=SimpleNamespace(id=111)),
+    )
+    thread_channel = SimpleNamespace(
+        id=123,
+        send=AsyncMock(return_value=SimpleNamespace(id=222)),
+    )
+
+    def get_channel(channel_id):
+        return {
+            67890: parent_channel,
+            123: thread_channel,
+        }.get(channel_id)
+
+    adapter._client = SimpleNamespace(
+        get_channel=get_channel,
+        fetch_channel=AsyncMock(),
+    )
+
+    result = await adapter.send_document(
+        chat_id="67890",
+        file_path=str(file_path),
+        metadata={"thread_id": "123"},
+    )
+
+    assert result.success is True
+    assert result.message_id == "222"
+    parent_channel.send.assert_not_awaited()
+    thread_channel.send.assert_awaited_once()
