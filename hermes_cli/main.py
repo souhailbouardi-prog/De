@@ -7996,6 +7996,12 @@ Examples:
     insights_parser.add_argument(
         "--source", help="Filter by platform (cli, telegram, discord, etc.)"
     )
+    insights_parser.add_argument(
+        "--friction",
+        action="store_true",
+        default=False,
+        help="Include session friction analysis — detects recurring error patterns and suggests rules",
+    )
 
     def cmd_insights(args):
         try:
@@ -8006,6 +8012,18 @@ Examples:
             engine = InsightsEngine(db)
             report = engine.generate(days=args.days, source=args.source)
             print(engine.format_terminal(report))
+
+            if getattr(args, "friction", False):
+                print()
+                try:
+                    from agent.friction_analyzer import FrictionAnalyzer
+
+                    friction = FrictionAnalyzer(db=db._conn if hasattr(db, "_conn") else None)
+                    friction_report = friction.analyze(days=args.days)
+                    print(friction.format_report(friction_report))
+                except Exception as fe:
+                    print(f"Friction analysis unavailable: {fe}")
+
             db.close()
         except Exception as e:
             print(f"Error generating insights: {e}")
