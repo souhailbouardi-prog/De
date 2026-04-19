@@ -3390,7 +3390,25 @@ class GatewayRunner:
 
         if canonical == "provider":
             return await self._handle_provider_command(event)
-        
+
+        if canonical == "balance":
+            return await self._handle_balance_command(event)
+
+        if canonical == "topup":
+            return await self._handle_topup_command(event)
+
+        if canonical == "nodes":
+            return await self._handle_nodes_command(event)
+
+        if canonical == "wallet":
+            return await self._handle_wallet_command(event)
+
+        if canonical == "withdraw":
+            return await self._handle_withdraw_command(event)
+
+        if canonical == "receive":
+            return await self._handle_receive_command(event)
+
         if canonical == "personality":
             return await self._handle_personality_command(event)
 
@@ -5596,7 +5614,786 @@ class GatewayRunner:
         lines.append("Switch: `/model provider:model-name`")
         lines.append("Setup: `hermes setup`")
         return "\n".join(lines)
-    
+
+    def _get_active_provider(self) -> str:
+        """Read active provider from config.yaml."""
+        import yaml
+        config_path = _hermes_home / "config.yaml"
+        try:
+            if config_path.exists():
+                with open(config_path, encoding="utf-8") as f:
+                    cfg = yaml.safe_load(f) or {}
+                model_cfg = cfg.get("model", {})
+                if isinstance(model_cfg, dict):
+                    return model_cfg.get("provider", "openrouter")
+        except Exception:
+            pass
+        return "openrouter"
+
+    async def _handle_balance_command(self, event: MessageEvent) -> str:
+        """Handle /balance — dispatch to active provider (PPQ or Routstr)."""
+        provider = self._get_active_provider()
+        if provider == "routstr":
+            return await self._handle_routstr_balance(event)
+        # Default to PPQ-style balance
+        from hermes_cli.config import get_env_value
+        api_key = get_env_value("PPQ_API_KEY") or os.getenv("PPQ_API_KEY", "")
+        if not api_key:
+            return "No PPQ or Routstr key configured. Set up a provider with `hermes model`."
+        try:
+            import httpx
+            async with httpx.AsyncClient() as client:
+                resp = await client.post(
+                    "https://api.ppq.ai/credits/balance",
+                    headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                    json={}, timeout=5.0,
+                )
+            if resp.status_code == 200:
+                balance = resp.json().get("balance")
+                if balance is not None:
+                    return f"💰 **PPQ Balance:** ${float(balance):.2f}\n\nTop up: `/topup [amount]`"
+            return "Failed to fetch balance."
+        except Exception as e:
+            return f"Failed to fetch balance: {e}"
+
+    async def _handle_routstr_balance(self, event: MessageEvent) -> str:
+        """Show Routstr node balance + wallet balance."""
+        from hermes_cli.config import get_env_value
+        api_key = get_env_value("ROUTSTR_API_KEY") or os.getenv("ROUTSTR_API_KEY", "")
+        node_url = get_env_value("ROUTSTR_NODE_URL") or os.getenv("ROUTSTR_NODE_URL", "")
+
+        lines = []
+        if api_key and node_url:
+            try:
+                from hermes_cli.routstr.node_api import get_balance
+                bal = await get_balance(node_url, api_key)
+                lines.append(f"⚡ **Routstr Node Balance:** {bal['sats']} sats")
+                lines.append(f"Requests: {bal['total_requests']} | Node: {node_url}")
+            except Exception as e:
+                lines.append(f"Node balance: error ({e})")
+        else:
+            lines.append("No Routstr key configured. Use `/topup [sats]` to create a wallet and fund it.")
+
+        # Check local wallet
+        try:
+            from hermes_cli.routstr.wallet import CashuWallet
+            wallet = CashuWallet()
+            if wallet.load():
+                wb = wallet.get_balance()
+                if wb > 0:
+                    lines.append(f"🏦 **Wallet:** {wb} sats (local)")
+        except Exception:
+            pass
+
+        lines.append("\nTop up: `/topup [sats]`")
+        return "\n".join(lines)
+
+    async def _handle_topup_command(self, event: MessageEvent) -> str:
+        """Handle /topup — dispatch to active provider."""
+        provider = self._get_active_provider()
+        if provider == "routstr":
+            return await self._handle_routstr_topup(event)
+        # Default: treat as PPQ (kept for backwards compat even if no active provider set)
+        return await self._handle_ppq_topup(event)
+
+    async def _handle_ppq_topup(self, event: MessageEvent) -> str:
+        """PPQ topup — placeholder, actual implementation in PPQ PR."""
+        return "PPQ topup is available when the PPQ provider PR is merged. For now, top up at ppq.ai."
+
+    async def _handle_routstr_topup(self, event: MessageEvent) -> str:
+        """Routstr topup — fund wallet via Lightning, mint tokens, deposit to node."""
+        raw_args = event.get_command_args().strip()
+        logger.debug("routstr topup raw_args: %r (len=%d)", raw_args[:100], len(raw_args))
+        if not raw_args or raw_args.lower() == "help":
+            return (
+                "⚡ **Routstr Top-Up**\n\n"
+                "**Usage:**\n"
+                "`/topup 1000` — fund 1,000 sats via Lightning\n"
+                "`/topup 5000` — fund 5,000 sats\n"
+                "`/topup cashuA...` — fund with a Cashu token\n\n"
+                "Lightning flow: invoice → Cashu mint → deposit to node\n"
+                "`/balance` — check balance\n"
+                "`/nodes` — discover nodes\n"
+                "`/wallet` — wallet info"
+            )
+
+        # Check if arg contains a Cashu token (may be in Discord message.txt attachment)
+        from hermes_cli.routstr.token import extract_token as _extract_cashu
+        found_token = _extract_cashu(raw_args)
+        first_arg = raw_args.split()[0] if raw_args else ""
+        if found_token:
+            # Cashu token topup — receive into wallet, auto-deposit to node
+            try:
+                from hermes_cli.routstr.wallet import CashuWallet
+                wallet = CashuWallet()
+                is_new = not wallet.load()
+                if is_new:
+                    await wallet.load_mint()
+                    if not wallet.seed:
+                        mnemonic = wallet.generate_mnemonic()
+                        wallet.set_seed_from_mnemonic(mnemonic)
+                        wallet.save()
+                        adapter = self.adapters.get(event.source.platform)
+                        if adapter:
+                            await adapter.send(
+                                chat_id=event.source.chat_id,
+                                content=(
+                                    "🔑 **New Cashu wallet created!**\n\n"
+                                    "**Recovery seed (12 words):**\n"
+                                    f"||`{mnemonic}`||\n\n"
+                                    "⚠️ **Save this now.**\n"
+                                    "`/wallet restore <12 words>` to recover."
+                                ),
+                            )
+                imported = wallet.import_token(found_token)
+                amount = sum(p.get("amount", 0) for p in imported)
+
+                # Auto-deposit to node if connected
+                from hermes_cli.config import get_env_value
+                api_key = get_env_value("ROUTSTR_API_KEY") or os.getenv("ROUTSTR_API_KEY", "")
+                node_url = get_env_value("ROUTSTR_NODE_URL") or os.getenv("ROUTSTR_NODE_URL", "")
+                if api_key and node_url:
+                    try:
+                        from hermes_cli.routstr.token import encode_token
+                        from hermes_cli.routstr.node_api import topup_cashu, get_balance
+                        token = encode_token(wallet.mint_url, wallet.proofs)
+                        wallet.proofs = []
+                        wallet.save()
+                        await topup_cashu(node_url, api_key, token)
+                        bal = await get_balance(node_url, api_key)
+                        return f"✅ **Received {amount} sats** via Cashu token → deposited to node.\n\n⚡ Node balance: {bal['sats']} sats"
+                    except Exception as e:
+                        wallet.import_token(token)
+                        return f"✅ Received {amount} sats to wallet (node deposit failed: {e}).\n\nWallet: {wallet.get_balance()} sats | Use `/nodes connect` to deposit."
+
+                return f"✅ **Received {amount} sats** to wallet.\n\nWallet: {wallet.get_balance()} sats | Use `/nodes connect` to deposit to a node."
+            except Exception as e:
+                return f"Failed to receive token: {e}"
+
+        try:
+            amount_sats = int(first_arg)
+        except ValueError:
+            return f"Invalid amount: `{raw_args}`. Usage: `/topup [sats]` or `/topup cashuA...`"
+
+        if amount_sats < 100:
+            return "Minimum is 100 sats."
+
+        from hermes_cli.config import get_env_value, save_env_value
+
+        # Ensure wallet exists
+        try:
+            from hermes_cli.routstr.wallet import CashuWallet
+            wallet = CashuWallet()
+            is_new = not wallet.load()
+            if is_new:
+                await wallet.load_mint()
+                # Generate seed for new wallet
+                if not wallet.seed:
+                    mnemonic = wallet.generate_mnemonic()
+                    wallet.set_seed_from_mnemonic(mnemonic)
+                    wallet.save()
+                    # Send seed to user BEFORE proceeding
+                    adapter = self.adapters.get(event.source.platform)
+                    if adapter:
+                        await adapter.send(
+                            chat_id=event.source.chat_id,
+                            content=(
+                                "🔑 **New Cashu wallet created!**\n\n"
+                                "**Recovery seed (12 words):**\n"
+                                f"||`{mnemonic}`||\n\n"
+                                "⚠️ **Save this now** — it's the only way to recover your funds "
+                                "if wallet data is lost.\n"
+                                "`/wallet restore <12 words>` to recover."
+                            ),
+                        )
+        except Exception as e:
+            return f"Failed to initialize wallet: {e}"
+
+        if not wallet.active_keyset_id:
+            try:
+                await wallet.load_mint()
+            except Exception as e:
+                return f"Failed to load mint: {e}"
+
+        # Create funding invoice
+        try:
+            quote = await wallet.create_funding_invoice(amount_sats)
+            bolt11 = quote.get("request", "")
+            quote_id = quote.get("quote", "")
+        except Exception as e:
+            return f"Failed to create invoice: {e}"
+
+        # Send QR + invoice
+        if bolt11:
+            try:
+                import segno
+                import tempfile
+                qr = segno.make(bolt11)
+                with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
+                    qr.save(f, scale=8, border=2)
+                    qr_path = f.name
+                adapter = self.adapters.get(event.source.platform)
+                if adapter:
+                    await adapter.send_image_file(
+                        event.source.chat_id, qr_path,
+                        caption=f"⚡ Routstr Top-Up: {amount_sats} sats",
+                    )
+                    os.unlink(qr_path)
+            except Exception as qr_err:
+                logger.warning("QR generation failed: %s", qr_err)
+
+        lines = [
+            f"⚡ **Routstr Top-Up: {amount_sats} sats**",
+            "",
+            f"📋 **Lightning invoice:**",
+            f"`{bolt11}`",
+            "",
+        ]
+
+        # Start background polling
+        if quote_id:
+            asyncio.ensure_future(self._routstr_poll_and_deposit(
+                wallet, amount_sats, quote_id,
+                event.source.platform, event.source.chat_id,
+            ))
+
+        return "\n".join(lines)
+
+    async def _routstr_poll_and_deposit(
+        self, wallet, amount_sats: int, quote_id: str,
+        platform, chat_id: str,
+    ):
+        """Poll for Lightning payment, mint tokens, auto-deposit to node."""
+        from hermes_cli.config import get_env_value, save_env_value
+
+        for _ in range(90):  # 3 minutes
+            await asyncio.sleep(2)
+            try:
+                status = await wallet.check_funding_status(quote_id)
+                state = status.get("state", "").upper()
+                if state in ("PAID", "ISSUED"):
+                    # Mint tokens
+                    proofs = await wallet.mint_tokens(amount_sats, quote_id)
+                    balance = wallet.get_balance()
+
+                    # Auto-deposit to node if key exists
+                    api_key = get_env_value("ROUTSTR_API_KEY") or os.getenv("ROUTSTR_API_KEY", "")
+                    node_url = get_env_value("ROUTSTR_NODE_URL") or os.getenv("ROUTSTR_NODE_URL", "")
+
+                    msg = f"✅ **Payment received!** Minted {balance} sats."
+                    if api_key and node_url:
+                        try:
+                            from hermes_cli.routstr.token import encode_token
+                            from hermes_cli.routstr.node_api import topup_cashu
+                            token = encode_token(wallet.mint_url, wallet.proofs)
+                            wallet.proofs = []
+                            wallet.save()
+                            await topup_cashu(node_url, api_key, token)
+                            from hermes_cli.routstr.node_api import get_balance
+                            bal = await get_balance(node_url, api_key)
+                            msg += f"\n⚡ Deposited to node. Balance: {bal['sats']} sats."
+                        except Exception as e:
+                            wallet.import_token(token)
+                            msg += f"\n⚠️ Deposit failed ({e}). Tokens safe in wallet."
+                    else:
+                        msg += "\nUse `/nodes` to discover a node and deposit."
+
+                    adapter = self.adapters.get(platform)
+                    if adapter:
+                        await adapter.send(chat_id=chat_id, content=msg)
+                    return
+
+                elif state == "EXPIRED":
+                    adapter = self.adapters.get(platform)
+                    if adapter:
+                        await adapter.send(
+                            chat_id=chat_id,
+                            content=f"⏰ Invoice expired. Try `/topup {amount_sats}` again.",
+                        )
+                    return
+            except Exception:
+                pass
+        # Timeout — notify user
+        adapter = self.adapters.get(platform)
+        if adapter:
+            await adapter.send(
+                chat_id=chat_id,
+                content=f"⏰ Payment not detected after 3 minutes. Check `/balance` — if you paid, it may still arrive.",
+            )
+
+    async def _handle_nodes_command(self, event: MessageEvent) -> str:
+        """Handle /nodes — discover, list, and connect to Routstr nodes.
+
+        Usage:
+            /nodes              — list online nodes
+            /nodes refresh      — re-scan Nostr relays
+            /nodes connect <n>  — connect to node #n and deposit wallet funds
+        """
+        args = event.get_command_args().strip()
+
+        # /nodes connect <number> — select node + deposit
+        if args.startswith("connect"):
+            return await self._handle_nodes_connect(args)
+
+        try:
+            from hermes_cli.routstr.nostr_discovery import discover_nodes
+            nodes = await discover_nodes(force_refresh=(args == "refresh"))
+        except Exception as e:
+            return f"Failed to discover nodes: {e}"
+
+        from hermes_cli.config import get_env_value
+        current_node = get_env_value("ROUTSTR_NODE_URL") or os.getenv("ROUTSTR_NODE_URL", "")
+
+        online = [n for n in nodes if n.get("online")]
+        offline = [n for n in nodes if not n.get("online")]
+
+        lines = ["🌐 **Routstr Nodes**", ""]
+        if online:
+            for i, n in enumerate(online):
+                url = n["urls"][0] if n["urls"] else "?"
+                marker = " ← active" if current_node and current_node.rstrip("/") == url.rstrip("/") else ""
+                lines.append(f"**{i + 1}.** ✅ `{n['name']}` ({url}) — {n.get('model_count', '?')} models{marker}")
+        if offline:
+            for n in offline[:3]:
+                lines.append(f"❌ `{n['name']}` — offline")
+
+        if not online and not offline:
+            lines.append("No nodes found. Try `/nodes refresh`.")
+
+        lines.append("")
+        lines.append("`/nodes connect 1` — connect + deposit to node")
+        lines.append("`/nodes refresh` — re-scan relays")
+        return "\n".join(lines)
+
+    async def _handle_nodes_connect(self, args: str) -> str:
+        """Connect to a node: check mint compat, deposit wallet funds, save key.
+
+        Usage:
+            /nodes connect 1        — deposit ALL wallet sats to node #1
+            /nodes connect 1 500    — deposit 500 sats to node #1
+        """
+        from hermes_cli.config import get_env_value, save_env_value
+
+        # Parse node number and optional amount
+        parts = args.split()
+        if len(parts) < 2:
+            return "Usage: `/nodes connect <number> [sats]` (e.g. `/nodes connect 1 500`)"
+        try:
+            idx = int(parts[1]) - 1
+        except ValueError:
+            return f"Invalid node number: `{parts[1]}`"
+
+        deposit_amount = None  # None = all
+        if len(parts) >= 3:
+            try:
+                deposit_amount = int(parts[2])
+            except ValueError:
+                return f"Invalid amount: `{parts[2]}`"
+
+        # Get cached nodes
+        try:
+            from hermes_cli.routstr.nostr_discovery import discover_nodes
+            nodes = await discover_nodes()
+            online = [n for n in nodes if n.get("online")]
+        except Exception as e:
+            return f"Failed to discover nodes: {e}"
+
+        if idx < 0 or idx >= len(online):
+            return f"Node {idx + 1} not found. Run `/nodes` to see available nodes."
+
+        node = online[idx]
+        node_url = node["urls"][0] if node["urls"] else ""
+        if not node_url:
+            return f"Node `{node['name']}` has no reachable URL."
+
+        # Load wallet
+        try:
+            from hermes_cli.routstr.wallet import CashuWallet
+            wallet = CashuWallet()
+            if not wallet.load():
+                return f"No wallet found. Use `/topup [sats]` to create and fund one first."
+            if not wallet.active_keyset_id:
+                await wallet.load_mint()
+        except Exception as e:
+            return f"Failed to load wallet: {e}"
+
+        balance = wallet.get_balance()
+        if balance == 0:
+            return f"Wallet is empty. Use `/topup [sats]` to fund it first."
+
+        if deposit_amount is not None and deposit_amount > balance:
+            return f"Insufficient balance: wallet has {balance} sats, requested {deposit_amount}."
+        if deposit_amount is not None and deposit_amount < 1:
+            return "Deposit amount must be at least 1 sat."
+
+        # Check mint compatibility
+        try:
+            from hermes_cli.routstr.node_api import get_accepted_mints
+            accepted = await get_accepted_mints(node_url)
+            if accepted and wallet.mint_url not in accepted:
+                mint_list = "\n".join(f"  `{m}`" for m in accepted)
+                return (
+                    f"⚠️ Node `{node['name']}` doesn't accept mint `{wallet.mint_url}`\n\n"
+                    f"**Accepted mints:**\n{mint_list}\n\n"
+                    f"Switch mint first: `/wallet mint {accepted[0]}`\n"
+                    f"Then fund: `/topup [sats]`\n"
+                    f"Then connect: `/nodes connect {idx + 1}`"
+                )
+        except Exception:
+            pass  # Can't check — try anyway
+
+        # Deposit — full or partial amount
+        actual_deposit = deposit_amount or balance
+        token = None
+        try:
+            from hermes_cli.routstr.token import encode_token
+            from hermes_cli.routstr.node_api import create_account, topup_cashu, get_balance
+
+            if deposit_amount and deposit_amount < balance:
+                # Partial deposit — split proofs
+                keep, send = await wallet.send(deposit_amount)
+                token = encode_token(wallet.mint_url, send)
+            else:
+                # Full deposit
+                token = encode_token(wallet.mint_url, wallet.proofs)
+                wallet.proofs = []
+                wallet.save()
+
+            existing_key = get_env_value("ROUTSTR_API_KEY") or os.getenv("ROUTSTR_API_KEY", "")
+            if existing_key:
+                result = await topup_cashu(node_url, existing_key, token)
+            else:
+                result = await create_account(node_url, token)
+                existing_key = result.get("api_key", "")
+
+            if existing_key:
+                save_env_value("ROUTSTR_API_KEY", existing_key)
+            save_env_value("ROUTSTR_NODE_URL", node_url)
+
+            bal = await get_balance(node_url, existing_key)
+            wallet_remaining = wallet.get_balance()
+
+            lines = [
+                f"✅ **Connected to {node['name']}!**",
+                "",
+                f"Deposited {actual_deposit} sats",
+                f"**Node balance:** {bal['sats']} sats",
+            ]
+            if wallet_remaining > 0:
+                lines.append(f"**Wallet remaining:** {wallet_remaining} sats")
+            if not get_env_value("ROUTSTR_API_KEY"):
+                lines.append(f"**API Key:** `{existing_key}`")
+            lines.append(f"**Models:** {node.get('model_count', '?')}")
+            lines.append("")
+            lines.append("`/balance` — check balance | `/withdraw` — withdraw from node")
+            return "\n".join(lines)
+
+        except Exception as e:
+            if token:
+                try:
+                    wallet.import_token(token)
+                    return f"❌ Deposit failed: {e}\n\nTokens recovered to wallet ({wallet.get_balance()} sats)."
+                except Exception:
+                    return f"❌ Deposit failed: {e}\n\n⚠️ Recovery token: `{token[:60]}...`"
+            return f"❌ Deposit failed: {e}"
+
+    async def _handle_wallet_command(self, event: MessageEvent) -> str:
+        """Handle /wallet — show Cashu wallet info or change mint.
+
+        Usage:
+            /wallet         — show wallet info
+            /wallet mint    — show current mint + node's accepted mints
+            /wallet mint <url> — switch to a different mint
+        """
+        args = event.get_command_args().strip()
+        try:
+            from hermes_cli.routstr.wallet import CashuWallet
+            wallet = CashuWallet()
+            wallet.load()
+
+            # /wallet restore <mnemonic> — recover wallet from seed
+            if args.startswith("restore "):
+                mnemonic = args[8:].strip()
+                try:
+                    wallet.set_seed_from_mnemonic(mnemonic)
+                    if not wallet.active_keyset_id:
+                        await wallet.load_mint()
+                    wallet.proofs = []  # clear existing proofs before restore
+                    restored = await wallet.restore()
+                    wallet.save()
+                    return (
+                        f"✅ **Wallet restored!**\n\n"
+                        f"Recovered: {restored} sats\n"
+                        f"Balance: {wallet.get_balance()} sats\n"
+                        f"Mint: `{wallet.mint_url}`"
+                    )
+                except Exception as e:
+                    return f"❌ Restore failed: {e}"
+
+            if args == "restore":
+                return (
+                    "🔑 **Wallet Recovery**\n\n"
+                    "Restore from your 12-word seed phrase:\n"
+                    "`/wallet restore word1 word2 word3 ... word12`\n\n"
+                    "This will query the mint for previously-minted proofs."
+                )
+
+            # /wallet receive <token> — redeem incoming Cashu token
+            if args.startswith("receive"):
+                raw_receive = args[7:].strip()
+                if not raw_receive:
+                    return "Usage: `/wallet receive cashuA...` or `/receive cashuA...`"
+                try:
+                    from hermes_cli.routstr.token import extract_token
+                    token_str = extract_token(raw_receive)
+                    if not token_str:
+                        return "No valid Cashu token found. Must contain `cashuA...` or `cashuB...`"
+                    imported = wallet.import_token(token_str)
+                    amount = sum(p.get("amount", 0) for p in imported)
+                    return (
+                        f"✅ **Received {amount} sats!**\n\n"
+                        f"Wallet balance: {wallet.get_balance()} sats"
+                    )
+                except Exception as e:
+                    return f"Failed to import token: {e}"
+
+            # /wallet send <sats> [v3|v4] [cashu:] — export as Cashu token
+            if args.startswith("send"):
+                parts = args.split()
+                if len(parts) < 2:
+                    return (
+                        "Usage: `/wallet send <sats> [v3|v4] [uri]`\n\n"
+                        "**Examples:**\n"
+                        "`/wallet send 500` — cashuB token (V4, default)\n"
+                        "`/wallet send 500 v3` — cashuA token (V3, legacy)\n"
+                        "`/wallet send 500 uri` — cashu:cashuB... with URI prefix\n"
+                        "`/wallet send 500 v3 uri` — cashu:cashuA... with URI prefix"
+                    )
+                try:
+                    send_amount = int(parts[1])
+                except ValueError:
+                    return f"Invalid amount: `{parts[1]}`"
+                version = "v3" if "v3" in parts[2:] else "v4"
+                uri_prefix = "uri" in parts[2:] or "cashu:" in parts[2:]
+                balance = wallet.get_balance()
+                if send_amount > balance:
+                    return f"Insufficient balance: {balance} sats"
+                if send_amount < 1:
+                    return "Amount must be at least 1 sat."
+                try:
+                    keep, send = await wallet.send(send_amount)
+                    from hermes_cli.routstr.token import encode_token
+                    token = encode_token(wallet.mint_url, send, version=version, uri_prefix=uri_prefix)
+                    fmt = "cashuB" if version == "v4" else "cashuA"
+                    prefix_note = " (with cashu: prefix)" if uri_prefix else ""
+                    return (
+                        f"📤 **Cashu Token ({send_amount} sats, {fmt}{prefix_note})**\n\n"
+                        f"`{token}`\n\n"
+                        f"Send this to anyone — they can redeem it in any Cashu wallet.\n"
+                        f"Wallet remaining: {wallet.get_balance()} sats"
+                    )
+                except Exception as e:
+                    return f"Failed to create token: {e}"
+
+            # /wallet pay <bolt11 or amount address> — pay Lightning invoice
+            if args.startswith("pay"):
+                parts = args.split(None, 2)
+                if len(parts) < 2:
+                    return (
+                        "Usage:\n"
+                        "`/wallet pay lnbc...` — pay a Lightning invoice\n"
+                        "`/wallet pay 1000 user@domain` — pay a Lightning address"
+                    )
+                bolt11 = ""
+                if parts[1].startswith("lnbc"):
+                    bolt11 = parts[1]
+                elif len(parts) >= 3:
+                    # /wallet pay <amount> <address> — resolve LNURL
+                    try:
+                        pay_amount = int(parts[1])
+                        ln_address = parts[2]
+                    except ValueError:
+                        return f"Invalid amount: `{parts[1]}`"
+                    # Resolve Lightning address to bolt11
+                    try:
+                        import httpx
+                        # Strip common prefixes (₿, ⚡, lightning:, etc.)
+                        ln_address = ln_address.lstrip("₿⚡").removeprefix("lightning:")
+                        user, domain = ln_address.split("@")
+                        async with httpx.AsyncClient() as client:
+                            resp = await client.get(
+                                f"https://{domain}/.well-known/lnurlp/{user}",
+                                timeout=10.0,
+                            )
+                            resp.raise_for_status()
+                            lnurl_data = resp.json()
+                            callback = lnurl_data["callback"]
+                            resp2 = await client.get(
+                                callback, params={"amount": pay_amount * 1000},  # msats
+                                timeout=10.0,
+                            )
+                            resp2.raise_for_status()
+                            bolt11 = resp2.json().get("pr", "")
+                    except Exception as e:
+                        return f"Failed to resolve Lightning address `{ln_address}` (https://{domain}/.well-known/lnurlp/{user}): {e}"
+                else:
+                    return "Provide a Lightning invoice (`lnbc...`) or `<amount> <address>`"
+
+                if not bolt11:
+                    return "Could not get Lightning invoice."
+
+                balance = wallet.get_balance()
+                try:
+                    quote = await wallet.create_melt_quote(bolt11)
+                    needed = quote.get("amount", 0) + quote.get("fee_reserve", 0)
+                    if needed > balance:
+                        return f"Insufficient balance: need {needed} sats (incl. {quote.get('fee_reserve', 0)} fee), have {balance}"
+
+                    keep, send = await wallet.send(needed)
+                    result = await wallet.melt_tokens(quote["quote"], send)
+
+                    state = result.get("state", "").upper()
+                    # Handle change proofs (fee refund)
+                    change = result.get("change", [])
+                    if change:
+                        wallet.proofs.extend(change)
+                        wallet.save()
+
+                    if state in ("PAID", "PENDING"):
+                        return (
+                            f"⚡ **Payment sent!**\n\n"
+                            f"Amount: {quote.get('amount', '?')} sats + {quote.get('fee_reserve', 0)} fee\n"
+                            f"Wallet remaining: {wallet.get_balance()} sats"
+                        )
+                    return f"Payment state: {state}"
+                except Exception as e:
+                    return f"Payment failed: {e}"
+
+            # /wallet mint <url> — change mint
+            if args.startswith("mint "):
+                new_mint = args[5:].strip().rstrip("/")
+                if not new_mint.startswith("https://"):
+                    return "Mint URL must start with `https://`"
+                try:
+                    await wallet.set_mint(new_mint)
+                    return f"✅ Mint changed to `{new_mint}`\n\n⚠️ Existing proofs stay tied to their original mint. New funding will use the new mint."
+                except Exception as e:
+                    return f"Failed to set mint: {e}"
+
+            # /wallet mint — show mint info + node's accepted mints
+            if args == "mint":
+                lines = [f"🏦 **Current mint:** `{wallet.mint_url}`", ""]
+                from hermes_cli.config import get_env_value
+                node_url = get_env_value("ROUTSTR_NODE_URL") or os.getenv("ROUTSTR_NODE_URL", "")
+                if node_url:
+                    try:
+                        from hermes_cli.routstr.node_api import get_accepted_mints
+                        accepted = await get_accepted_mints(node_url)
+                        if accepted:
+                            lines.append("**Node accepts:**")
+                            for m in accepted:
+                                marker = " ✅" if m == wallet.mint_url else ""
+                                lines.append(f"  `{m}`{marker}")
+                        else:
+                            lines.append("Node doesn't advertise accepted mints (any mint may work).")
+                    except Exception:
+                        lines.append("Could not fetch node mint info.")
+                lines.append("")
+                lines.append("Switch: `/wallet mint https://mint.example.com`")
+                return "\n".join(lines)
+
+            # /wallet — show info
+            if not wallet._loaded:
+                return "No Cashu wallet found. Use `/topup [sats]` to create one."
+
+            lines = [
+                "🏦 **Cashu Wallet**",
+                "",
+                f"**Balance:** {wallet.get_balance()} sats",
+                f"**Mint:** `{wallet.mint_url}`",
+                f"**Proofs:** {len(wallet.proofs)}",
+                f"**Backup:** `~/.hermes/routstr/wallet.json`",
+                "",
+                f"**Seed:** {'✅ set (recoverable)' if wallet.seed else '❌ not set'}",
+                "",
+                "`/wallet send <sats>` — export as Cashu token",
+                "`/wallet receive <token>` — redeem a Cashu token",
+                "`/wallet pay <invoice>` — pay Lightning invoice",
+                "`/wallet pay <sats> <user@domain>` — pay Lightning address",
+                "`/wallet mint` — show/change mint",
+                "`/wallet restore <12 words>` — recover from seed",
+                "`/topup [sats]` — add funds | `/balance` — node balance",
+            ]
+            return "\n".join(lines)
+        except Exception as e:
+            return f"Failed to load wallet: {e}"
+
+    async def _handle_withdraw_command(self, event: MessageEvent) -> str:
+        """Handle /withdraw — pull funds from Routstr node back to Cashu wallet."""
+        from hermes_cli.config import get_env_value, save_env_value
+
+        api_key = get_env_value("ROUTSTR_API_KEY") or os.getenv("ROUTSTR_API_KEY", "")
+        node_url = get_env_value("ROUTSTR_NODE_URL") or os.getenv("ROUTSTR_NODE_URL", "")
+
+        if not api_key or not node_url:
+            return "No active Routstr node session. Use `/nodes connect <n>` first."
+
+        # Check current node balance
+        try:
+            from hermes_cli.routstr.node_api import get_balance
+            bal = await get_balance(node_url, api_key)
+            if bal["sats"] == 0:
+                return "Node balance is 0 sats — nothing to withdraw."
+        except Exception:
+            pass  # Try withdraw anyway
+
+        try:
+            from hermes_cli.routstr.node_api import withdraw
+            from hermes_cli.routstr.wallet import CashuWallet
+
+            token = await withdraw(node_url, api_key)
+
+            wallet = CashuWallet()
+            wallet.load()
+            imported = wallet.import_token(token)
+            imported_amount = sum(p.get("amount", 0) for p in imported)
+
+            # Clear node session
+            save_env_value("ROUTSTR_API_KEY", "")
+
+            return (
+                f"✅ **Withdrawn {imported_amount} sats** from `{node_url}`\n\n"
+                f"🏦 Wallet balance: {wallet.get_balance()} sats\n\n"
+                f"To deposit to a different node: `/nodes` → `/nodes connect <n>`"
+            )
+        except Exception as e:
+            return f"❌ Withdraw failed: {e}"
+
+    async def _handle_receive_command(self, event: MessageEvent) -> str:
+        """Handle /receive <token> — redeem a Cashu token into wallet."""
+        raw = event.get_command_args().strip()
+        if not raw:
+            return "Usage: `/receive cashuA...` or `/receive cashu:cashuB...`"
+
+        try:
+            from hermes_cli.routstr.token import extract_token
+            from hermes_cli.routstr.wallet import CashuWallet
+
+            token_str = extract_token(raw)
+            if not token_str:
+                return "No valid Cashu token found. Must contain `cashuA...` or `cashuB...`"
+
+            wallet = CashuWallet()
+            wallet.load()
+            imported = wallet.import_token(token_str)
+            amount = sum(p.get("amount", 0) for p in imported)
+            return (
+                f"✅ **Received {amount} sats!**\n\n"
+                f"Wallet balance: {wallet.get_balance()} sats"
+            )
+        except Exception as e:
+            return f"Failed to import token: {e}"
+
     async def _handle_personality_command(self, event: MessageEvent) -> str:
         """Handle /personality command - list or set a personality."""
         import yaml
