@@ -560,6 +560,95 @@ class _AsyncCodexChatShim:
 class AsyncCodexAuxiliaryClient:
     """Async-compatible wrapper matching AsyncOpenAI.chat.completions.create()."""
 
+
+# ---------------------------------------------------------------------------
+# AWS Bedrock Converse API → OpenAI-compatible wrapper for auxiliary tasks
+# ---------------------------------------------------------------------------
+
+
+class _BedrockCompletionsAdapter:
+    """Translate ``chat.completions.create()`` kwargs to Bedrock Converse API.
+
+    Uses :func:`agent.bedrock_adapter.call_converse` which already handles
+    message/tool format conversion and returns OpenAI-compatible objects.
+    """
+
+    def __init__(self, region: str, default_model: str):
+        self._region = region
+        self._default_model = default_model
+
+    def create(self, **kwargs) -> Any:
+        from agent.bedrock_adapter import call_converse
+
+        model = kwargs.get("model") or self._default_model
+        messages = kwargs.get("messages", [])
+        max_tokens = (kwargs.get("max_tokens")
+                      or kwargs.get("max_completion_tokens")
+                      or 4096)
+        temperature = kwargs.get("temperature")
+        return call_converse(
+            region=self._region,
+            model=model,
+            messages=messages,
+            max_tokens=max_tokens,
+            temperature=temperature,
+        )
+
+
+class _BedrockChatShim:
+    """Namespace shim so ``client.chat.completions`` resolves."""
+
+    def __init__(self, adapter: _BedrockCompletionsAdapter):
+        self.completions = adapter
+
+
+class BedrockAuxiliaryClient:
+    """OpenAI-client-compatible wrapper that routes through Bedrock Converse API.
+
+    Consumers can call ``client.chat.completions.create(**kwargs)`` as normal.
+    Also exposes ``.api_key`` and ``.base_url`` for introspection by async
+    wrappers and logging code.
+    """
+
+    def __init__(self, region: str, default_model: str):
+        adapter = _BedrockCompletionsAdapter(region, default_model)
+        self.chat = _BedrockChatShim(adapter)
+        self.api_key = "aws-sdk"
+        self.base_url = f"https://bedrock-runtime.{region}.amazonaws.com"
+
+    def close(self):
+        pass
+
+
+class _AsyncBedrockCompletionsAdapter:
+    """Async version — wraps the sync adapter via :func:`asyncio.to_thread`."""
+
+    def __init__(self, sync_adapter: _BedrockCompletionsAdapter):
+        self._sync = sync_adapter
+
+    async def create(self, **kwargs) -> Any:
+        import asyncio
+        return await asyncio.to_thread(self._sync.create, **kwargs)
+
+
+class _AsyncBedrockChatShim:
+    """Namespace shim for the async variant."""
+
+    def __init__(self, adapter: _AsyncBedrockCompletionsAdapter):
+        self.completions = adapter
+
+
+class AsyncBedrockAuxiliaryClient:
+    """Async-compatible wrapper matching ``AsyncOpenAI.chat.completions.create()``."""
+
+    def __init__(self, sync_wrapper: "BedrockAuxiliaryClient"):
+        sync_adapter = sync_wrapper.chat.completions
+        async_adapter = _AsyncBedrockCompletionsAdapter(sync_adapter)
+        self.chat = _AsyncBedrockChatShim(async_adapter)
+        self.api_key = sync_wrapper.api_key
+        self.base_url = sync_wrapper.base_url
+
+
     def __init__(self, sync_wrapper: "CodexAuxiliaryClient"):
         sync_adapter = sync_wrapper.chat.completions
         async_adapter = _AsyncCodexCompletionsAdapter(sync_adapter)
@@ -1391,6 +1480,8 @@ def _to_async_client(sync_client, model: str):
         return AsyncCodexAuxiliaryClient(sync_client), model
     if isinstance(sync_client, AnthropicAuxiliaryClient):
         return AsyncAnthropicAuxiliaryClient(sync_client), model
+    if isinstance(sync_client, BedrockAuxiliaryClient):
+        return AsyncBedrockAuxiliaryClient(sync_client), model
     try:
         from agent.copilot_acp_client import CopilotACPClient
         if isinstance(sync_client, CopilotACPClient):
@@ -1768,6 +1859,45 @@ def resolve_provider_client(
         logger.warning("resolve_provider_client: OAuth provider %s not "
                        "directly supported, try 'auto'", provider)
         return None, None
+
+    if pconfig.auth_type == "aws_sdk":
+        # AWS Bedrock — wrap the Converse API in an OpenAI-compatible client.
+        try:
+            from agent.bedrock_adapter import has_aws_credentials
+
+            if not has_aws_credentials():
+                logger.debug(
+                    "resolve_provider_client: bedrock requested but no AWS "
+                    "credentials available"
+                )
+                return None, None
+
+            # Region priority: env var > explicit base_url > hardcoded default.
+            _region = (
+                os.getenv("AWS_DEFAULT_REGION")
+                or os.getenv("AWS_REGION")
+                or "us-east-1"
+            )
+            import re as _re
+            _base = str(explicit_base_url or "")
+            _match = _re.search(r"bedrock-runtime\.([a-z0-9-]+)\.", _base)
+            if _match:
+                _region = _match.group(1)
+
+            _default_model = model or "apac.anthropic.claude-sonnet-4-20250514-v1:0"
+            _client = BedrockAuxiliaryClient(_region, _default_model)
+            logger.debug(
+                "resolve_provider_client: bedrock (%s, %s)", _region, _default_model
+            )
+            if async_mode:
+                return AsyncBedrockAuxiliaryClient(_client), _default_model
+            return _client, _default_model
+        except Exception:
+            logger.warning(
+                "resolve_provider_client: bedrock aws_sdk init failed",
+                exc_info=True,
+            )
+            return None, None
 
     logger.warning("resolve_provider_client: unhandled auth_type %s for %s",
                    pconfig.auth_type, provider)
