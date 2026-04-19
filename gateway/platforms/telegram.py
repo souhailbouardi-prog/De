@@ -2605,6 +2605,48 @@ class TelegramAdapter(BasePlatformAdapter):
             except Exception as e:
                 logger.warning("[Telegram] Failed to cache audio: %s", e, exc_info=True)
 
+        # Download video files to cache so the agent can process and forward them.
+        # Telegram compresses videos to ≤20 MB (Bot API download limit); larger
+        # clips must be shared via URL or sent with "Send as File" in Telegram.
+        elif msg.video:
+            video = msg.video
+            MAX_VIDEO_BYTES = 20 * 1024 * 1024
+            if video.file_size and video.file_size > MAX_VIDEO_BYTES:
+                event.text = (
+                    f"The video is too large to download "
+                    f"({video.file_size // (1024 * 1024)} MB). "
+                    "Maximum is 20 MB (Telegram Bot API limit). "
+                    "Use 'Send as File' for smaller clips, or share a URL instead."
+                )
+                logger.info("[Telegram] Video too large: %s bytes", video.file_size)
+                await self.handle_message(event)
+                return
+            try:
+                _VIDEO_MIME_TO_EXT = {
+                    "video/mp4": ".mp4",
+                    "video/quicktime": ".mov",
+                    "video/x-msvideo": ".avi",
+                    "video/x-matroska": ".mkv",
+                    "video/webm": ".webm",
+                    "video/3gpp": ".3gp",
+                }
+                ext = ".mp4"
+                if video.file_name:
+                    _, file_ext = os.path.splitext(video.file_name)
+                    if file_ext.lower() in _VIDEO_MIME_TO_EXT.values():
+                        ext = file_ext.lower()
+                elif video.mime_type:
+                    ext = _VIDEO_MIME_TO_EXT.get(video.mime_type, ".mp4")
+                file_obj = await video.get_file()
+                video_bytes = await file_obj.download_as_bytearray()
+                filename = video.file_name or f"video{ext}"
+                cached_path = cache_document_from_bytes(bytes(video_bytes), filename)
+                event.media_urls = [cached_path]
+                event.media_types = [video.mime_type or f"video/{ext.lstrip('.')}"]
+                logger.info("[Telegram] Cached user video at %s", cached_path)
+            except Exception as e:
+                logger.warning("[Telegram] Failed to cache video: %s", e, exc_info=True)
+
         # Download document files to cache for agent processing
         elif msg.document:
             doc = msg.document
