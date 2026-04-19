@@ -24,7 +24,7 @@ from agent.skill_utils import (
     parse_frontmatter,
     skill_matches_platform,
 )
-from utils import atomic_json_write
+from utils import atomic_json_write, find_unsafe_invisibles
 
 logger = logging.getLogger(__name__)
 
@@ -56,10 +56,11 @@ def _scan_context_content(content: str, filename: str) -> str:
     """Scan context file content for injection. Returns sanitized content."""
     findings = []
 
-    # Check invisible unicode
-    for char in _CONTEXT_INVISIBLE_CHARS:
-        if char in content:
-            findings.append(f"invisible unicode U+{ord(char):04X}")
+    # Check invisible unicode. ZWJ inside an emoji grapheme cluster (🧙‍♂️) is
+    # allowed; ZWJ between non-pictographic chars and all other invisibles
+    # are flagged. See utils.find_unsafe_invisibles.
+    for char in find_unsafe_invisibles(content, _CONTEXT_INVISIBLE_CHARS):
+        findings.append(f"invisible unicode U+{ord(char):04X}")
 
     # Check threat patterns
     for pattern, pid in _CONTEXT_THREAT_PATTERNS:
