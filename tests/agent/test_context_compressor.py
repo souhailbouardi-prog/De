@@ -65,9 +65,11 @@ class TestCompress:
         assert result == msgs
 
     def test_truncation_fallback_no_client(self, compressor):
-        # compressor has client=None, so should use truncation fallback
+        # Mock summary generation so the test does not depend on external
+        # provider auto-detection being configured in the environment.
         msgs = [{"role": "system", "content": "System prompt"}] + self._make_messages(10)
-        result = compressor.compress(msgs)
+        with patch.object(compressor, "_generate_summary", return_value="summary"):
+            result = compressor.compress(msgs)
         assert len(result) < len(msgs)
         # Should keep system message and last N
         assert result[0]["role"] == "system"
@@ -75,9 +77,10 @@ class TestCompress:
 
     def test_compression_increments_count(self, compressor):
         msgs = self._make_messages(10)
-        compressor.compress(msgs)
-        assert compressor.compression_count == 1
-        compressor.compress(msgs)
+        with patch.object(compressor, "_generate_summary", return_value="summary"):
+            compressor.compress(msgs)
+            assert compressor.compression_count == 1
+            compressor.compress(msgs)
         assert compressor.compression_count == 2
 
     def test_protects_first_and_last(self, compressor):
@@ -91,6 +94,45 @@ class TestCompress:
         # (head=assistant, tail=user in this fixture).  Verify the
         # original content is present in either case.
         assert msgs[-2]["content"] in result[-2]["content"]
+
+
+class TestSummaryFailurePreservesMessages:
+    def test_preserves_all_messages_when_generate_summary_returns_none(self, compressor):
+        msgs = [{"role": "system", "content": "System prompt"}] + [
+            {"role": "user" if i % 2 == 0 else "assistant", "content": f"msg {i}"}
+            for i in range(10)
+        ]
+
+        with patch.object(compressor, "_generate_summary", return_value=None):
+            result = compressor.compress(msgs)
+
+        assert result == msgs
+        assert result[0]["content"] == "System prompt"
+        assert all(not (m.get("content") or "").startswith(SUMMARY_PREFIX) for m in result)
+        assert compressor.compression_count == 0
+
+    def test_summary_failure_restores_pre_prune_messages(self, compressor):
+        msgs = [
+            {"role": "system", "content": "System prompt"},
+            {"role": "user", "content": "msg 0"},
+            {"role": "assistant", "content": "msg 1"},
+            {"role": "tool", "content": "full tool output"},
+            {"role": "user", "content": "msg 2"},
+            {"role": "assistant", "content": "msg 3"},
+            {"role": "user", "content": "msg 4"},
+        ]
+        pruned_msgs = [m.copy() for m in msgs]
+        pruned_msgs[3]["content"] = "[pruned tool output]"
+
+        with (
+            patch.object(compressor, "_prune_old_tool_results", return_value=(pruned_msgs, 1)),
+            patch.object(compressor, "_generate_summary", return_value=None),
+        ):
+            result = compressor.compress(msgs)
+
+        assert result == msgs
+        assert result[3]["content"] == "full tool output"
+        assert compressor.compression_count == 0
 
 
 class TestGenerateSummaryNoneContent:
@@ -128,7 +170,8 @@ class TestGenerateSummaryNoneContent:
             {"role": "user" if i % 2 == 0 else "assistant", "content": f"msg {i}"}
             for i in range(10)
         ]
-        result = c.compress(msgs)
+        with patch.object(c, "_generate_summary", return_value="summary"):
+            result = c.compress(msgs)
         assert len(result) < len(msgs)
 
 
