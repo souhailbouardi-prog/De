@@ -78,6 +78,7 @@ class ContextEngine(ABC):
         self,
         messages: List[Dict[str, Any]],
         current_tokens: int = None,
+        focus_topic: str = None,
     ) -> List[Dict[str, Any]]:
         """Compact the message list and return the new message list.
 
@@ -85,7 +86,9 @@ class ContextEngine(ABC):
         list and returns a (possibly shorter) list that fits within the
         context budget. The implementation is free to summarize, build a
         DAG, or do anything else — as long as the returned list is a valid
-        OpenAI-format message sequence.
+        OpenAI-format message sequence. ``focus_topic`` is an optional hint
+        from manual/targeted compression flows to preserve information
+        related to a specific topic.
         """
 
     # -- Optional: pre-flight check ----------------------------------------

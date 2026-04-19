@@ -34,7 +34,12 @@ class StubEngine(ContextEngine):
         tokens = prompt_tokens if prompt_tokens is not None else self.last_prompt_tokens
         return tokens >= self.threshold_tokens
 
-    def compress(self, messages: List[Dict[str, Any]], current_tokens: int = None) -> List[Dict[str, Any]]:
+    def compress(
+        self,
+        messages: List[Dict[str, Any]],
+        current_tokens: int = None,
+        focus_topic: str = None,
+    ) -> List[Dict[str, Any]]:
         self._compress_called = True
         self.compression_count += 1
         # Trivial: just return as-is
@@ -144,6 +149,13 @@ class TestStubEngine:
         assert result == msgs
         assert engine._compress_called
         assert engine.compression_count == 1
+
+    def test_compress_accepts_focus_topic(self):
+        engine = StubEngine()
+        msgs = [{"role": "user", "content": "hello"}]
+        result = engine.compress(msgs, focus_topic="auth flow")
+        assert result == msgs
+        assert engine._compress_called
 
     def test_tool_schemas(self):
         engine = StubEngine()
