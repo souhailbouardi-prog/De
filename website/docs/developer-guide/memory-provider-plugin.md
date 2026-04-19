@@ -12,6 +12,10 @@ Memory provider plugins give Hermes Agent persistent, cross-session knowledge be
 Memory providers are one of two **provider plugin** types. The other is [Context Engine Plugins](/docs/developer-guide/context-engine-plugin), which replace the built-in context compressor. Both follow the same pattern: single-select, config-driven, managed via `hermes plugins`.
 :::
 
+## Bundled `vector_hybrid` provider
+
+Hermes ships `plugins/memory/vector_hybrid/`, which combines optional Qdrant or Pinecone vectors with an in-process keyword cache (pseudo-FTS), OpenAI-compatible embeddings, and an optional Honcho dialectic bridge (`memory.vector_hybrid.honcho_bridge`). Only **one** external memory provider may be configured at a time — choose either standalone Honcho **or** `vector_hybrid` (which may compose Honcho internally). When embeddings fail or rate-limit, the provider falls back to keyword recall only.
+
 ## Directory Structure
 
 Each memory provider lives in `plugins/memory/<name>/`:

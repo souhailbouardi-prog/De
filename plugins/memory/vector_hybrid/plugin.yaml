@@ -1,0 +1,6 @@
+name: vector_hybrid
+description: >-
+  Hybrid vector (Qdrant/Pinecone) + keyword-cache recall with optional Honcho dialectic bridge.
+version: "1.0.0"
+author: Hermes Agent contributors
+license: Apache-2.0

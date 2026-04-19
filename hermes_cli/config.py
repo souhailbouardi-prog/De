@@ -663,9 +663,32 @@ DEFAULT_CONFIG = {
         "user_char_limit": 1375,     # ~500 tokens at 2.75 chars/token
         # External memory provider plugin (empty = built-in only).
         # Set to a provider name to activate: "openviking", "mem0",
-        # "hindsight", "holographic", "retaindb", "byterover".
+        # "hindsight", "holographic", "retaindb", "byterover", "vector_hybrid".
         # Only ONE external provider is allowed at a time.
         "provider": "",
+        # vector_hybrid: pluggable Qdrant/Pinecone + keyword cache + optional Honcho bridge
+        "vector_hybrid": {
+            "backend": "",  # none|qdrant|pinecone -> use env from * _env keys
+            "collection": "hermes_memory",
+            "qdrant_url_env": "QDRANT_URL",
+            "qdrant_api_key_env": "QDRANT_API_KEY",
+            "pinecone_api_key_env": "PINECONE_API_KEY",
+            "pinecone_index_env": "PINECONE_INDEX",
+            "pinecone_namespace": "",
+            "embedding_model": "text-embedding-3-small",
+            "embedding_dimensions": 1536,
+            "embedding_api_base_env": "OPENAI_API_BASE",
+            "embedding_api_key_env": "OPENAI_API_KEY",
+            "fts_scope": "keyword_cache",  # none|keyword_cache
+            "hybrid_alpha": 0.65,
+            "rate_limit_rps": 4.0,
+            "fallback_fts_seconds": 90.0,
+            "max_index_bytes": 52428800,
+            "eviction_policy": "fifo",  # fifo|ttl|honcho_priority
+            "priority_ttl_days": 30,
+            "honcho_bridge": False,
+            "prefetch_char_cap": 3500,
+        },
     },
 
     # Subagent delegation — override the provider:model used by delegate_task
