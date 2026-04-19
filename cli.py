@@ -1628,7 +1628,7 @@ def save_config_value(key_path: str, value: any) -> bool:
         
         # Load existing config
         if config_path.exists():
-            with open(config_path, 'r') as f:
+            with open(config_path, 'r', encoding="utf-8") as f:
                 config = yaml.safe_load(f) or {}
         else:
             config = {}
