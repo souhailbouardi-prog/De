@@ -1292,6 +1292,9 @@ class AIAgent:
                     self._memory_store = MemoryStore(
                         memory_char_limit=mem_config.get("memory_char_limit", 2200),
                         user_char_limit=mem_config.get("user_char_limit", 1375),
+                        memory_path=mem_config.get("memory_path") or None,
+                        user_path=mem_config.get("user_path") or None,
+                        file_format=mem_config.get("file_format", "delimiter"),
                     )
                     self._memory_store.load_from_disk()
             except Exception:

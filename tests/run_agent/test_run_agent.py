@@ -910,6 +910,45 @@ class TestInvalidateSystemPrompt:
         mock_store.load_from_disk.assert_called_once()
 
 
+class TestMemoryConfigWiring:
+    def test_memory_store_receives_path_overrides(self):
+        config = {
+            "memory": {
+                "memory_enabled": True,
+                "user_profile_enabled": True,
+                "memory_char_limit": 2200,
+                "user_char_limit": 1375,
+                "file_format": "markdown_front_door",
+                "memory_path": "/tmp/vault-memory.md",
+                "user_path": "/tmp/vault-user.md",
+            }
+        }
+        store_instance = MagicMock()
+
+        with (
+            patch("run_agent.get_tool_definitions", return_value=[]),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+            patch("hermes_cli.config.load_config", return_value=config),
+            patch("tools.memory_tool.MemoryStore", return_value=store_instance) as mock_store_cls,
+        ):
+            AIAgent(
+                api_key="test-key-1234567890",
+                quiet_mode=True,
+                skip_context_files=True,
+                enabled_toolsets=[],
+            )
+
+        mock_store_cls.assert_called_once_with(
+            memory_char_limit=2200,
+            user_char_limit=1375,
+            memory_path="/tmp/vault-memory.md",
+            user_path="/tmp/vault-user.md",
+            file_format="markdown_front_door",
+        )
+        store_instance.load_from_disk.assert_called_once()
+
+
 class TestBuildApiKwargs:
     def test_basic_kwargs(self, agent):
         messages = [{"role": "user", "content": "hi"}]

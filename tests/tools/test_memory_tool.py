@@ -226,6 +226,65 @@ class TestMemoryStoreSnapshot:
         assert store.format_for_system_prompt("memory") is None
 
 
+class TestMemoryStoreMarkdownFrontDoor:
+    def test_loads_markdown_front_door_without_corrupting_front_matter(self, tmp_path):
+        memory_path = tmp_path / "memory.md"
+        user_path = tmp_path / "user.md"
+        memory_path.write_text(
+            "---\nsource_agent: manual\nstatus: active\n---\n\n# Memory\n\n## Current priorities\n- Shared canonical memory\n",
+            encoding="utf-8",
+        )
+        user_path.write_text(
+            "---\nsource_agent: manual\nstatus: active\n---\n\n# User\n\n## Core defaults\n- Speak in English\n",
+            encoding="utf-8",
+        )
+
+        store = MemoryStore(
+            memory_path=memory_path,
+            user_path=user_path,
+            file_format="markdown_front_door",
+        )
+        store.load_from_disk()
+
+        assert len(store.memory_entries) == 1
+        assert "source_agent:" not in store.memory_entries[0]
+        assert "# Memory" in store.memory_entries[0]
+        assert "Shared canonical memory" in store.memory_entries[0]
+        assert len(store.user_entries) == 1
+        assert "# User" in store.user_entries[0]
+
+    def test_add_writes_managed_section_and_preserves_existing_markdown(self, tmp_path):
+        memory_path = tmp_path / "memory.md"
+        user_path = tmp_path / "user.md"
+        original = "---\nsource_agent: manual\nstatus: active\n---\n\n# Memory\n\n## Current priorities\n- Shared canonical memory\n"
+        memory_path.write_text(original, encoding="utf-8")
+        user_path.write_text("# User\n", encoding="utf-8")
+
+        store = MemoryStore(
+            memory_path=memory_path,
+            user_path=user_path,
+            file_format="markdown_front_door",
+        )
+        store.load_from_disk()
+        result = store.add("memory", "Hermes-specific durable note")
+
+        assert result["success"] is True
+        raw = memory_path.read_text(encoding="utf-8")
+        assert "source_agent: manual" in raw
+        assert "## Current priorities" in raw
+        assert "Hermes-specific durable note" in raw
+        assert "HERMES_MANAGED_MEMORY_START" in raw
+        assert "HERMES_MANAGED_MEMORY_END" in raw
+
+        reloaded = MemoryStore(
+            memory_path=memory_path,
+            user_path=user_path,
+            file_format="markdown_front_door",
+        )
+        reloaded.load_from_disk()
+        assert any("Hermes-specific durable note" in e for e in reloaded.memory_entries)
+
+
 # =========================================================================
 # memory_tool() dispatcher
 # =========================================================================

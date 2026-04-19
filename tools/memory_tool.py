@@ -55,6 +55,20 @@ def get_memory_dir() -> Path:
     return get_hermes_home() / "memories"
 
 ENTRY_DELIMITER = "\n§\n"
+MARKDOWN_FRONT_DOOR_FORMAT = "markdown_front_door"
+MANAGED_ENTRY_DELIMITER = "\n\n---\n\n"
+_MANAGED_SECTION_META = {
+    "memory": {
+        "heading": "## Hermes managed memory",
+        "start": "<!-- HERMES_MANAGED_MEMORY_START -->",
+        "end": "<!-- HERMES_MANAGED_MEMORY_END -->",
+    },
+    "user": {
+        "heading": "## Hermes managed user context",
+        "start": "<!-- HERMES_MANAGED_USER_START -->",
+        "end": "<!-- HERMES_MANAGED_USER_END -->",
+    },
+}
 
 
 # ---------------------------------------------------------------------------
@@ -113,25 +127,34 @@ class MemoryStore:
         Tool responses always reflect this live state.
     """
 
-    def __init__(self, memory_char_limit: int = 2200, user_char_limit: int = 1375):
+    def __init__(
+        self,
+        memory_char_limit: int = 2200,
+        user_char_limit: int = 1375,
+        memory_path: Optional[Path] = None,
+        user_path: Optional[Path] = None,
+        file_format: str = "delimiter",
+    ):
         self.memory_entries: List[str] = []
         self.user_entries: List[str] = []
         self.memory_char_limit = memory_char_limit
         self.user_char_limit = user_char_limit
+        self.memory_path = Path(memory_path) if memory_path else None
+        self.user_path = Path(user_path) if user_path else None
+        self.file_format = file_format or "delimiter"
+        self._base_entries: Dict[str, str] = {"memory": "", "user": ""}
+        self._base_documents: Dict[str, str] = {"memory": "", "user": ""}
         # Frozen snapshot for system prompt -- set once at load_from_disk()
         self._system_prompt_snapshot: Dict[str, str] = {"memory": "", "user": ""}
 
     def load_from_disk(self):
-        """Load entries from MEMORY.md and USER.md, capture system prompt snapshot."""
-        mem_dir = get_memory_dir()
-        mem_dir.mkdir(parents=True, exist_ok=True)
-
-        self.memory_entries = self._read_file(mem_dir / "MEMORY.md")
-        self.user_entries = self._read_file(mem_dir / "USER.md")
-
-        # Deduplicate entries (preserves order, keeps first occurrence)
-        self.memory_entries = list(dict.fromkeys(self.memory_entries))
-        self.user_entries = list(dict.fromkeys(self.user_entries))
+        """Load entries from disk, capture system prompt snapshot."""
+        for target in ("memory", "user"):
+            path = self._path_for(target)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            entries = self._load_entries_for_target(target)
+            entries = list(dict.fromkeys(entries))
+            self._set_entries(target, entries)
 
         # Capture frozen snapshot for system prompt injection
         self._system_prompt_snapshot = {
@@ -176,8 +199,11 @@ class MemoryStore:
                     pass
             fd.close()
 
-    @staticmethod
-    def _path_for(target: str) -> Path:
+    def _path_for(self, target: str) -> Path:
+        if target == "user" and self.user_path is not None:
+            return self.user_path
+        if target == "memory" and self.memory_path is not None:
+            return self.memory_path
         mem_dir = get_memory_dir()
         if target == "user":
             return mem_dir / "USER.md"
@@ -188,14 +214,23 @@ class MemoryStore:
 
         Called under file lock to get the latest state before mutating.
         """
-        fresh = self._read_file(self._path_for(target))
+        fresh = self._load_entries_for_target(target)
         fresh = list(dict.fromkeys(fresh))  # deduplicate
         self._set_entries(target, fresh)
 
     def save_to_disk(self, target: str):
         """Persist entries to the appropriate file. Called after every mutation."""
-        get_memory_dir().mkdir(parents=True, exist_ok=True)
-        self._write_file(self._path_for(target), self._entries_for(target))
+        path = self._path_for(target)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if self.file_format == MARKDOWN_FRONT_DOOR_FORMAT:
+            base_entry = self._base_entries.get(target, "")
+            entries = self._entries_for(target)
+            managed_entries = entries
+            if base_entry and managed_entries and managed_entries[0] == base_entry:
+                managed_entries = managed_entries[1:]
+            self._write_markdown_front_door(path, target, managed_entries)
+            return
+        self._write_file(path, self._entries_for(target))
 
     def _entries_for(self, target: str) -> List[str]:
         if target == "user":
@@ -207,6 +242,24 @@ class MemoryStore:
             self.user_entries = entries
         else:
             self.memory_entries = entries
+
+    def _mutable_entries_with_offset(self, target: str):
+        entries = self._entries_for(target)
+        base_entry = self._base_entries.get(target, "")
+        if self.file_format == MARKDOWN_FRONT_DOOR_FORMAT and base_entry and entries and entries[0] == base_entry:
+            return entries[1:], 1
+        return entries, 0
+
+    def _load_entries_for_target(self, target: str) -> List[str]:
+        path = self._path_for(target)
+        if self.file_format == MARKDOWN_FRONT_DOOR_FORMAT:
+            entries, base_entry, base_document = self._read_markdown_front_door(path, target)
+            self._base_entries[target] = base_entry
+            self._base_documents[target] = base_document
+            return entries
+        self._base_entries[target] = ""
+        self._base_documents[target] = ""
+        return self._read_file(path)
 
     def _char_count(self, target: str) -> int:
         entries = self._entries_for(target)
@@ -282,7 +335,8 @@ class MemoryStore:
             self._reload_target(target)
 
             entries = self._entries_for(target)
-            matches = [(i, e) for i, e in enumerate(entries) if old_text in e]
+            mutable_entries, offset = self._mutable_entries_with_offset(target)
+            matches = [(i + offset, e) for i, e in enumerate(mutable_entries) if old_text in e]
 
             if not matches:
                 return {"success": False, "error": f"No entry matched '{old_text}'."}
@@ -332,7 +386,8 @@ class MemoryStore:
             self._reload_target(target)
 
             entries = self._entries_for(target)
-            matches = [(i, e) for i, e in enumerate(entries) if old_text in e]
+            mutable_entries, offset = self._mutable_entries_with_offset(target)
+            matches = [(i + offset, e) for i, e in enumerate(mutable_entries) if old_text in e]
 
             if not matches:
                 return {"success": False, "error": f"No entry matched '{old_text}'."}
@@ -407,6 +462,71 @@ class MemoryStore:
         return f"{separator}\n{header}\n{separator}\n{content}"
 
     @staticmethod
+    def _strip_front_matter(raw: str) -> str:
+        if raw.startswith("---\n"):
+            parts = raw.split("\n---\n", 1)
+            if len(parts) == 2:
+                return parts[1]
+        return raw
+
+    @staticmethod
+    def _managed_section_regex(target: str):
+        meta = _MANAGED_SECTION_META[target]
+        return re.compile(
+            rf"(?:\n{{2}})?{re.escape(meta['heading'])}\n{re.escape(meta['start'])}\n(?P<content>.*?)(?:\n{re.escape(meta['end'])})(?:\n)?",
+            re.DOTALL,
+        )
+
+    @classmethod
+    def _read_markdown_front_door(cls, path: Path, target: str):
+        if not path.exists():
+            return [], "", ""
+        try:
+            raw = path.read_text(encoding="utf-8")
+        except (OSError, IOError):
+            return [], "", ""
+
+        if not raw.strip():
+            return [], "", ""
+
+        managed_entries: List[str] = []
+        base_document = raw.rstrip()
+        match = cls._managed_section_regex(target).search(raw)
+        if match:
+            managed_raw = match.group("content").strip()
+            if managed_raw:
+                managed_entries = [e.strip() for e in managed_raw.split(MANAGED_ENTRY_DELIMITER) if e.strip()]
+            base_document = (raw[:match.start()] + raw[match.end():]).rstrip()
+
+        base_entry = cls._strip_front_matter(base_document).strip()
+        entries: List[str] = []
+        if base_entry:
+            entries.append(base_entry)
+        entries.extend(managed_entries)
+        return entries, base_entry, base_document
+
+    def _write_markdown_front_door(self, path: Path, target: str, managed_entries: List[str]):
+        base_document = self._base_documents.get(target, "").rstrip()
+        content = base_document
+        if managed_entries:
+            meta = _MANAGED_SECTION_META[target]
+            managed_body = MANAGED_ENTRY_DELIMITER.join(e.strip() for e in managed_entries if e.strip())
+            managed_block = (
+                f"{meta['heading']}\n"
+                f"{meta['start']}\n"
+                f"{managed_body}\n"
+                f"{meta['end']}"
+            )
+            if content:
+                content = f"{content}\n\n{managed_block}"
+            else:
+                content = managed_block
+        if content:
+            content = f"{content}\n"
+        self._base_documents[target] = base_document
+        self._write_raw_file(path, content)
+
+    @staticmethod
     def _read_file(path: Path) -> List[str]:
         """Read a memory file and split into entries.
 
@@ -429,6 +549,27 @@ class MemoryStore:
         return [e for e in entries if e]
 
     @staticmethod
+    def _write_raw_file(path: Path, content: str):
+        try:
+            fd, tmp_path = tempfile.mkstemp(
+                dir=str(path.parent), suffix=".tmp", prefix=".mem_"
+            )
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    f.write(content)
+                    f.flush()
+                    os.fsync(f.fileno())
+                os.replace(tmp_path, str(path))
+            except BaseException:
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+                raise
+        except (OSError, IOError) as e:
+            raise RuntimeError(f"Failed to write memory file {path}: {e}")
+
+    @staticmethod
     def _write_file(path: Path, entries: List[str]):
         """Write entries to a memory file using atomic temp-file + rename.
 
@@ -438,26 +579,7 @@ class MemoryStore:
         readers always see either the old complete file or the new one.
         """
         content = ENTRY_DELIMITER.join(entries) if entries else ""
-        try:
-            # Write to temp file in same directory (same filesystem for atomic rename)
-            fd, tmp_path = tempfile.mkstemp(
-                dir=str(path.parent), suffix=".tmp", prefix=".mem_"
-            )
-            try:
-                with os.fdopen(fd, "w", encoding="utf-8") as f:
-                    f.write(content)
-                    f.flush()
-                    os.fsync(f.fileno())
-                os.replace(tmp_path, str(path))  # Atomic on same filesystem
-            except BaseException:
-                # Clean up temp file on any failure
-                try:
-                    os.unlink(tmp_path)
-                except OSError:
-                    pass
-                raise
-        except (OSError, IOError) as e:
-            raise RuntimeError(f"Failed to write memory file {path}: {e}")
+        MemoryStore._write_raw_file(path, content)
 
 
 def memory_tool(
