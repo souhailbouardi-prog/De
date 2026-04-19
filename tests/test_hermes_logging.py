@@ -44,7 +44,9 @@ def _reset_logging_state():
             root.removeHandler(h)
             h.close()
     hermes_logging._logging_initialized = False
-    hermes_logging.clear_session_context()
+    # Drain any stacked session IDs (tests may push more than once).
+    while getattr(hermes_logging._session_context, "stack", None):
+        hermes_logging.clear_session_context()
 
 
 @pytest.fixture
@@ -373,6 +375,23 @@ class TestSessionContext:
         agent_log = hermes_home / "logs" / "agent.log"
         content = agent_log.read_text()
         assert "[xyz789]" not in content
+
+    def test_nested_session_context_restores_parent(self, hermes_home):
+        """Inner conversation pops so outer session tag applies again."""
+        hermes_logging.setup_logging(hermes_home=hermes_home)
+        hermes_logging.set_session_context("parent_sess")
+
+        factory = logging.getLogRecordFactory()
+        assert factory("t", logging.INFO, "", 0, "outer", (), None).session_tag == " [parent_sess]"
+
+        hermes_logging.set_session_context("child_sess")
+        assert factory("t", logging.INFO, "", 0, "inner", (), None).session_tag == " [child_sess]"
+
+        hermes_logging.clear_session_context()
+        assert factory("t", logging.INFO, "", 0, "after_child", (), None).session_tag == " [parent_sess]"
+
+        hermes_logging.clear_session_context()
+        assert factory("t", logging.INFO, "", 0, "done", (), None).session_tag == ""
 
     def test_session_context_thread_isolated(self, hermes_home):
         """Session context is per-thread — one thread's context doesn't leak."""

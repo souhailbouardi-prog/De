@@ -19,8 +19,11 @@ Component separation:
 
 Session context:
     Call ``set_session_context(session_id)`` at the start of a conversation
-    and ``clear_session_context()`` when done.  All log lines emitted on
-    that thread will include ``[session_id]`` for filtering/correlation.
+    and ``clear_session_context()`` when done.  Values are kept on a
+    per-thread **stack** so a nested ``run_conversation`` (e.g. delegate
+    subagent on the same thread) can restore the parent session tag after
+    the inner turn ends.  Log lines use the innermost active session for
+    ``[session_id]`` filtering/correlation.
 """
 
 import logging
@@ -28,7 +31,7 @@ import os
 import threading
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
-from typing import Optional, Sequence
+from typing import List, Optional, Sequence
 
 from hermes_constants import get_config_path, get_hermes_home
 
@@ -69,18 +72,36 @@ _NOISY_LOGGERS = (
 # Public session context API
 # ---------------------------------------------------------------------------
 
-def set_session_context(session_id: str) -> None:
-    """Set the session ID for the current thread.
+def _session_stack() -> List[str]:
+    stack = getattr(_session_context, "stack", None)
+    if stack is None:
+        stack = []
+        _session_context.stack = stack
+    return stack
 
-    All subsequent log records on this thread will include ``[session_id]``
-    in the formatted output.  Call at the start of ``run_conversation()``.
+
+def _effective_session_id() -> Optional[str]:
+    stack = getattr(_session_context, "stack", None)
+    if not stack:
+        return None
+    return stack[-1]
+
+
+def set_session_context(session_id: str) -> None:
+    """Push a session ID for the current thread.
+
+    Nested calls (subagent ``run_conversation`` on the same thread) push a
+    second ID; the log record factory always tags with the innermost ID.
+    Pair every ``set_session_context`` with ``clear_session_context``.
     """
-    _session_context.session_id = session_id
+    _session_stack().append(session_id)
 
 
 def clear_session_context() -> None:
-    """Clear the session ID for the current thread."""
-    _session_context.session_id = None
+    """Pop the innermost session ID for the current thread (no-op if empty)."""
+    stack = getattr(_session_context, "stack", None)
+    if stack:
+        stack.pop()
 
 
 # ---------------------------------------------------------------------------
@@ -106,7 +127,7 @@ def _install_session_record_factory() -> None:
 
     def _session_record_factory(*args, **kwargs):
         record = current_factory(*args, **kwargs)
-        sid = getattr(_session_context, "session_id", None)
+        sid = _effective_session_id()
         record.session_tag = f" [{sid}]" if sid else ""  # type: ignore[attr-defined]
         return record
 

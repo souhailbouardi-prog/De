@@ -8699,8 +8699,33 @@ class AIAgent:
 
         # Tag all log records on this thread with the session ID so
         # ``hermes logs --session <id>`` can filter a single conversation.
-        from hermes_logging import set_session_context
+        # Always clear in ``finally`` so pooled / gateway worker threads cannot
+        # leak one session's tag into another turn (log correlation / audit).
+        from hermes_logging import clear_session_context, set_session_context
+
         set_session_context(self.session_id)
+        try:
+            return self._run_conversation_impl(
+                user_message,
+                system_message,
+                conversation_history,
+                task_id,
+                stream_callback,
+                persist_user_message,
+            )
+        finally:
+            clear_session_context()
+
+    def _run_conversation_impl(
+        self,
+        user_message: str,
+        system_message: str = None,
+        conversation_history: List[Dict[str, Any]] = None,
+        task_id: str = None,
+        stream_callback: Optional[callable] = None,
+        persist_user_message: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Body for ``run_conversation`` (session context is owned by the wrapper)."""
 
         # If the previous turn activated fallback, restore the primary
         # runtime so this turn gets a fresh attempt with the preferred model.
