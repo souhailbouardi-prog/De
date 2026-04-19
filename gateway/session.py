@@ -1131,35 +1131,47 @@ class SessionStore:
     
     def rewrite_transcript(self, session_id: str, messages: List[Dict[str, Any]]) -> None:
         """Replace the entire transcript for a session with new messages.
-        
+
         Used by /retry, /undo, and /compress to persist modified conversation history.
         Rewrites both SQLite and legacy JSONL storage.
+
+        Both paths are atomic:
+        - SQLite: clear + reinsert happens in a single transaction via
+          ``SessionDB.rewrite_messages()``, so a crash mid-way rolls back
+          and preserves the original messages.
+        - JSONL: written to a temporary file first, then atomically swapped
+          via ``os.replace()``, so a crash leaves either the old or the new
+          file intact.
         """
-        # SQLite: clear old messages and re-insert
+        # SQLite: atomic clear-and-reinsert in one transaction
         if self._db:
             try:
-                self._db.clear_messages(session_id)
-                for msg in messages:
-                    role = msg.get("role", "unknown")
-                    self._db.append_message(
-                        session_id=session_id,
-                        role=role,
-                        content=msg.get("content"),
-                        tool_name=msg.get("tool_name"),
-                        tool_calls=msg.get("tool_calls"),
-                        tool_call_id=msg.get("tool_call_id"),
-                        reasoning=msg.get("reasoning") if role == "assistant" else None,
-                        reasoning_details=msg.get("reasoning_details") if role == "assistant" else None,
-                        codex_reasoning_items=msg.get("codex_reasoning_items") if role == "assistant" else None,
-                    )
+                self._db.rewrite_messages(session_id, messages)
             except Exception as e:
                 logger.debug("Failed to rewrite transcript in DB: %s", e)
-        
-        # JSONL: overwrite the file
+
+        # JSONL: write to temp file, then atomic rename
+        import tempfile
         transcript_path = self.get_transcript_path(session_id)
-        with open(transcript_path, "w", encoding="utf-8") as f:
-            for msg in messages:
-                f.write(json.dumps(msg, ensure_ascii=False) + "\n")
+        transcript_path.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp_path = tempfile.mkstemp(
+            dir=str(transcript_path.parent),
+            suffix=".tmp",
+            prefix=".transcript_",
+        )
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                for msg in messages:
+                    f.write(json.dumps(msg, ensure_ascii=False) + "\n")
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp_path, transcript_path)
+        except BaseException:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
 
     def load_transcript(self, session_id: str) -> List[Dict[str, Any]]:
         """Load all messages from a session's transcript."""

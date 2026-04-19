@@ -1062,3 +1062,226 @@ class TestRewriteTranscriptPreservesReasoning:
         assert after[0].get("reasoning") == "I need to think step by step."
         assert after[0].get("reasoning_details") == [{"type": "summary", "text": "step by step"}]
         assert after[0].get("codex_reasoning_items") == [{"id": "r1", "type": "reasoning"}]
+
+
+class TestRewriteTranscriptAtomicity:
+    """Issue #8029: rewrite_transcript must be atomic so a crash mid-rewrite
+    does not lose the entire conversation history."""
+
+    @pytest.fixture()
+    def store_with_db(self, tmp_path):
+        """SessionStore with both SQLite and JSONL active."""
+        from hermes_state import SessionDB
+
+        config = GatewayConfig()
+        with patch("gateway.session.SessionStore._ensure_loaded"):
+            s = SessionStore(sessions_dir=tmp_path, config=config)
+        s._db = SessionDB(db_path=tmp_path / "state.db")
+        s._loaded = True
+        return s
+
+    @pytest.fixture()
+    def store_jsonl_only(self, tmp_path):
+        """SessionStore with no SQLite (JSONL-only mode)."""
+        config = GatewayConfig()
+        with patch("gateway.session.SessionStore._ensure_loaded"):
+            s = SessionStore(sessions_dir=tmp_path, config=config)
+        s._db = None
+        s._loaded = True
+        return s
+
+    # -- SQLite atomicity tests --
+
+    def test_sqlite_rewrite_is_single_transaction(self, store_with_db):
+        """rewrite_messages does clear + insert in one transaction."""
+        sid = "atomic_sqlite_test"
+        store_with_db._db.create_session(session_id=sid, source="test")
+
+        original = [
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "hi there"},
+            {"role": "user", "content": "how are you"},
+            {"role": "assistant", "content": "fine"},
+        ]
+        for msg in original:
+            store_with_db._db.append_message(
+                session_id=sid, role=msg["role"], content=msg["content"],
+            )
+
+        new_msgs = [
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "hi there"},
+        ]
+        store_with_db._db.rewrite_messages(sid, new_msgs)
+        after = store_with_db._db.get_messages_as_conversation(sid)
+        assert len(after) == 2
+        assert after[0]["content"] == "hello"
+        assert after[1]["content"] == "hi there"
+
+    def test_sqlite_rewrite_rolls_back_on_error(self, store_with_db):
+        """If the transaction fails mid-way, original messages are preserved."""
+        sid = "rollback_test"
+        store_with_db._db.create_session(session_id=sid, source="test")
+
+        original = [
+            {"role": "user", "content": "original question"},
+            {"role": "assistant", "content": "original answer"},
+        ]
+        for msg in original:
+            store_with_db._db.append_message(
+                session_id=sid, role=msg["role"], content=msg["content"],
+            )
+
+        real_execute_write = store_with_db._db._execute_write
+
+        class _ConnProxy:
+            def __init__(self, real_conn):
+                self._real = real_conn
+            def execute(self, *a, **kw):
+                return self._real.execute(*a, **kw)
+            def executemany(self, *a, **kw):
+                raise RuntimeError("Simulated crash during INSERT")
+            def __getattr__(self, name):
+                return getattr(self._real, name)
+
+        def failing_execute_write(fn):
+            def crashing_fn(conn):
+                return fn(_ConnProxy(conn))
+            return real_execute_write(crashing_fn)
+
+        store_with_db._db._execute_write = failing_execute_write
+
+        new_msgs = [{"role": "user", "content": "new question"}]
+        with pytest.raises(RuntimeError, match="Simulated crash"):
+            store_with_db._db.rewrite_messages(sid, new_msgs)
+
+        store_with_db._db._execute_write = real_execute_write
+
+        after = store_with_db._db.get_messages_as_conversation(sid)
+        assert len(after) == 2
+        assert after[0]["content"] == "original question"
+        assert after[1]["content"] == "original answer"
+
+    def test_sqlite_rewrite_updates_counters(self, store_with_db):
+        """rewrite_messages should update message_count and tool_call_count."""
+        sid = "counter_test"
+        store_with_db._db.create_session(session_id=sid, source="test")
+
+        for i in range(4):
+            role = "user" if i % 2 == 0 else "assistant"
+            store_with_db._db.append_message(
+                session_id=sid, role=role, content=f"msg-{i}",
+            )
+
+        session = store_with_db._db.get_session(sid)
+        assert session["message_count"] == 4
+
+        store_with_db._db.rewrite_messages(sid, [
+            {"role": "user", "content": "q"},
+            {"role": "assistant", "content": "a"},
+        ])
+
+        session = store_with_db._db.get_session(sid)
+        assert session["message_count"] == 2
+        assert session["tool_call_count"] == 0
+
+    # -- JSONL atomicity tests --
+
+    def test_jsonl_rewrite_is_atomic(self, store_jsonl_only, tmp_path):
+        """JSONL rewrite uses temp-file + os.replace for atomicity."""
+        sid = "atomic_jsonl_test"
+
+        original = [
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "world"},
+        ]
+        for msg in original:
+            store_jsonl_only.append_to_transcript(sid, msg)
+
+        new_msgs = [{"role": "user", "content": "only this"}]
+        store_jsonl_only.rewrite_transcript(sid, new_msgs)
+
+        reloaded = store_jsonl_only.load_transcript(sid)
+        assert len(reloaded) == 1
+        assert reloaded[0]["content"] == "only this"
+
+    def test_jsonl_no_temp_files_left_on_success(self, store_jsonl_only, tmp_path):
+        """After a successful rewrite, no .tmp files should remain."""
+        sid = "no_leftovers"
+        store_jsonl_only.append_to_transcript(sid, {"role": "user", "content": "hi"})
+        store_jsonl_only.rewrite_transcript(sid, [{"role": "user", "content": "bye"}])
+
+        tmp_files = list(tmp_path.glob(".transcript_*.tmp"))
+        assert tmp_files == []
+
+    def test_jsonl_preserves_original_on_write_error(self, store_jsonl_only, tmp_path):
+        """If the temp file write fails, original JSONL should be intact."""
+        sid = "write_error_test"
+
+        original = [
+            {"role": "user", "content": "keep me"},
+            {"role": "assistant", "content": "keep me too"},
+        ]
+        for msg in original:
+            store_jsonl_only.append_to_transcript(sid, msg)
+
+        import os as _os
+
+        def failing_fdopen(fd, *args, **kwargs):
+            _os.close(fd)
+            raise IOError("Simulated disk full")
+
+        with patch.object(_os, "fdopen", side_effect=failing_fdopen):
+            with pytest.raises(IOError, match="Simulated disk full"):
+                store_jsonl_only.rewrite_transcript(
+                    sid, [{"role": "user", "content": "bad data"}],
+                )
+
+        reloaded = store_jsonl_only.load_transcript(sid)
+        assert len(reloaded) == 2
+        assert reloaded[0]["content"] == "keep me"
+        assert reloaded[1]["content"] == "keep me too"
+
+    # -- Integration: both paths together --
+
+    def test_full_rewrite_atomic_both_paths(self, store_with_db):
+        """End-to-end: rewrite_transcript updates both SQLite and JSONL atomically."""
+        sid = "both_paths_test"
+        store_with_db._db.create_session(session_id=sid, source="test")
+
+        original = [
+            {"role": "user", "content": "q1"},
+            {"role": "assistant", "content": "a1"},
+            {"role": "user", "content": "q2"},
+            {"role": "assistant", "content": "a2"},
+        ]
+        for msg in original:
+            store_with_db.append_to_transcript(sid, msg)
+
+        truncated = original[:2]
+        store_with_db.rewrite_transcript(sid, truncated)
+
+        db_msgs = store_with_db._db.get_messages_as_conversation(sid)
+        jsonl_msgs = store_with_db.load_transcript(sid)
+
+        assert len(db_msgs) == 2
+        assert len(jsonl_msgs) == 2
+        assert db_msgs[0]["content"] == "q1"
+        assert db_msgs[1]["content"] == "a1"
+
+    def test_rewrite_empty_list_atomic(self, store_with_db):
+        """Rewriting with empty list should atomically clear both stores."""
+        sid = "empty_rewrite_test"
+        store_with_db._db.create_session(session_id=sid, source="test")
+
+        store_with_db.append_to_transcript(
+            sid, {"role": "user", "content": "hello"},
+        )
+
+        store_with_db.rewrite_transcript(sid, [])
+
+        db_msgs = store_with_db._db.get_messages_as_conversation(sid)
+        jsonl_msgs = store_with_db.load_transcript(sid)
+
+        assert len(db_msgs) == 0
+        assert len(jsonl_msgs) == 0

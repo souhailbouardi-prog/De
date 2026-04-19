@@ -1227,6 +1227,76 @@ class SessionDB:
             )
         self._execute_write(_do)
 
+    def rewrite_messages(
+        self,
+        session_id: str,
+        messages: List[Dict[str, Any]],
+    ) -> None:
+        """Atomically replace all messages for a session.
+
+        Deletes existing messages and inserts *messages* within a single
+        ``_execute_write()`` transaction so the operation is all-or-nothing.
+        If the process crashes mid-way, SQLite rolls back and the original
+        messages are preserved.
+
+        Used by ``rewrite_transcript()`` to fix the data-loss bug where
+        ``clear_messages()`` + N ``append_message()`` calls each committed
+        independently (#8029).
+        """
+        # Pre-serialize structured fields outside the transaction
+        prepared: List[tuple] = []
+        total_tool_calls = 0
+        for msg in messages:
+            role = msg.get("role", "unknown")
+            tool_calls = msg.get("tool_calls")
+            tool_calls_json = json.dumps(tool_calls) if tool_calls else None
+
+            if tool_calls is not None:
+                total_tool_calls += (
+                    len(tool_calls) if isinstance(tool_calls, list) else 1
+                )
+
+            reasoning_details = msg.get("reasoning_details") if role == "assistant" else None
+            codex_reasoning_items = msg.get("codex_reasoning_items") if role == "assistant" else None
+
+            prepared.append((
+                session_id,
+                role,
+                msg.get("content"),
+                msg.get("tool_call_id"),
+                tool_calls_json,
+                msg.get("tool_name"),
+                time.time(),
+                None,  # token_count
+                None,  # finish_reason
+                msg.get("reasoning") if role == "assistant" else None,
+                json.dumps(reasoning_details) if reasoning_details else None,
+                json.dumps(codex_reasoning_items) if codex_reasoning_items else None,
+            ))
+
+        msg_count = len(messages)
+
+        def _do(conn: sqlite3.Connection) -> None:
+            # Clear existing messages
+            conn.execute(
+                "DELETE FROM messages WHERE session_id = ?", (session_id,)
+            )
+            # Insert all new messages
+            conn.executemany(
+                """INSERT INTO messages (session_id, role, content, tool_call_id,
+                   tool_calls, tool_name, timestamp, token_count, finish_reason,
+                   reasoning, reasoning_details, codex_reasoning_items)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                prepared,
+            )
+            # Update counters
+            conn.execute(
+                "UPDATE sessions SET message_count = ?, tool_call_count = ? WHERE id = ?",
+                (msg_count, total_tool_calls, session_id),
+            )
+
+        self._execute_write(_do)
+
     def delete_session(self, session_id: str) -> bool:
         """Delete a session and all its messages.
 
