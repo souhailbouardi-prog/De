@@ -100,6 +100,33 @@ class TestReasoningCommand:
         assert runner._show_reasoning is True
 
     @pytest.mark.asyncio
+    async def test_reasoning_command_status_uses_platform_show_reasoning_override(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "agent:\n"
+            "  reasoning_effort: medium\n"
+            "display:\n"
+            "  show_reasoning: false\n"
+            "  platforms:\n"
+            "    telegram:\n"
+            "      show_reasoning: true\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setattr(gateway_run, "_hermes_home", hermes_home)
+
+        runner = _make_runner()
+        runner._reasoning_config = {"enabled": True, "effort": "medium"}
+        runner._show_reasoning = False
+
+        result = await runner._handle_reasoning_command(_make_event("/reasoning", platform=Platform.TELEGRAM))
+
+        assert "**Display:** on ✓" in result
+        assert runner._show_reasoning is True
+
+    @pytest.mark.asyncio
     async def test_handle_reasoning_command_updates_config_and_cache(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / "hermes"
         hermes_home.mkdir()

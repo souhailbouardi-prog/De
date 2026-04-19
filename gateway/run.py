@@ -6585,10 +6585,21 @@ class GatewayRunner:
         """
         import yaml
 
+        from gateway.display_config import resolve_display_setting
+
         args = event.get_command_args().strip().lower()
         config_path = _hermes_home / "config.yaml"
         self._reasoning_config = self._load_reasoning_config()
-        self._show_reasoning = self._load_show_reasoning()
+        platform_key = _platform_config_key(event.source.platform)
+        user_config = _load_gateway_config()
+        self._show_reasoning = bool(
+            resolve_display_setting(
+                user_config,
+                platform_key,
+                "show_reasoning",
+                getattr(self, "_show_reasoning", False),
+            )
+        )
 
         def _save_config_key(key_path: str, value):
             """Save a dot-separated key to config.yaml."""
