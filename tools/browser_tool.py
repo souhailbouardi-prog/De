@@ -4,9 +4,9 @@ Browser Tool Module
 
 This module provides browser automation tools using agent-browser CLI.  It
 supports multiple backends — **Browser Use** (cloud, default for Nous
-subscribers), **Browserbase** (cloud, direct credentials), and **local
-Chromium** — with identical agent-facing behaviour.  The backend is
-auto-detected from config and available credentials.
+subscribers), **Browserbase** (cloud, direct credentials), **Hyperbrowser**
+(cloud, direct API key), and **local Chromium** — with identical agent-facing
+behaviour.  The backend is auto-detected from config and available credentials.
 
 The tool uses agent-browser's accessibility tree (ariaSnapshot) for text-based
 page representation, making it ideal for LLM agents without vision capabilities.
@@ -17,7 +17,7 @@ Features:
   ``agent-browser install`` (downloads Chromium) or
   ``agent-browser install --with-deps`` (also installs system libraries for
   Debian/Ubuntu/Docker).
-- **Cloud mode**: Browserbase or Browser Use cloud execution when configured.
+- **Cloud mode**: Browserbase, Browser Use, Firecrawl, or Hyperbrowser cloud execution when configured.
 - Session isolation per task ID
 - Text-based page snapshots using accessibility tree
 - Element interaction via ref selectors (@e1, @e2, etc.)
@@ -28,6 +28,7 @@ Environment Variables:
 - BROWSERBASE_API_KEY: API key for direct Browserbase cloud mode
 - BROWSERBASE_PROJECT_ID: Project ID for direct Browserbase cloud mode
 - BROWSER_USE_API_KEY: API key for direct Browser Use cloud mode
+- HYPERBROWSER_API_KEY: API key for direct Hyperbrowser cloud mode
 - BROWSERBASE_PROXIES: Enable/disable residential proxies (default: "true")
 - BROWSERBASE_ADVANCED_STEALTH: Enable advanced stealth mode with custom Chromium,
   requires Scale Plan (default: "false")
@@ -81,6 +82,7 @@ from tools.browser_providers.base import CloudBrowserProvider
 from tools.browser_providers.browserbase import BrowserbaseProvider
 from tools.browser_providers.browser_use import BrowserUseProvider
 from tools.browser_providers.firecrawl import FirecrawlProvider
+from tools.browser_providers.hyperbrowser import HyperbrowserProvider
 from tools.tool_backend_helpers import normalize_browser_cloud_provider
 
 # Camofox local anti-detection browser backend (optional).
@@ -295,6 +297,7 @@ _PROVIDER_REGISTRY: Dict[str, type] = {
     "browserbase": BrowserbaseProvider,
     "browser-use": BrowserUseProvider,
     "firecrawl": FirecrawlProvider,
+    "hyperbrowser": HyperbrowserProvider,
 }
 
 _cached_cloud_provider: Optional[CloudBrowserProvider] = None
@@ -337,7 +340,7 @@ def _get_cloud_provider() -> Optional[CloudBrowserProvider]:
 
     if _cached_cloud_provider is None:
         # Prefer Browser Use (managed Nous gateway or direct API key),
-        # fall back to Browserbase (direct credentials only).
+        # fall back to Browserbase (direct credentials only), then Hyperbrowser.
         fallback_provider = BrowserUseProvider()
         if fallback_provider.is_configured():
             _cached_cloud_provider = fallback_provider
@@ -345,6 +348,10 @@ def _get_cloud_provider() -> Optional[CloudBrowserProvider]:
             fallback_provider = BrowserbaseProvider()
             if fallback_provider.is_configured():
                 _cached_cloud_provider = fallback_provider
+            else:
+                fallback_provider = HyperbrowserProvider()
+                if fallback_provider.is_configured():
+                    _cached_cloud_provider = fallback_provider
 
     return _cached_cloud_provider
 
@@ -2338,7 +2345,7 @@ def check_browser_requirements() -> bool:
     In **local mode** (no cloud provider configured): only the
     ``agent-browser`` CLI must be findable.
 
-    In **cloud mode** (Browserbase, Browser Use, or Firecrawl): the CLI
+    In **cloud mode** (Browserbase, Browser Use, Firecrawl, or Hyperbrowser): the CLI
     *and* the provider's required credentials must be present.
 
     Returns:

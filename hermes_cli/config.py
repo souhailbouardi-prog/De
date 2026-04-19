@@ -1268,6 +1268,14 @@ OPTIONAL_ENV_VARS = {
         "password": True,
         "category": "tool",
     },
+    "HYPERBROWSER_API_KEY": {
+        "description": "Hyperbrowser API key for cloud browser (optional — local browser works without this)",
+        "prompt": "Hyperbrowser API key",
+        "url": "https://hyperbrowser.ai/",
+        "tools": ["browser_navigate", "browser_click"],
+        "password": True,
+        "category": "tool",
+    },
     "FIRECRAWL_BROWSER_TTL": {
         "description": "Firecrawl browser session TTL in seconds (optional, default 300)",
         "prompt": "Browser session TTL (seconds)",
@@ -3366,6 +3374,7 @@ def show_config():
         ("TAVILY_API_KEY", "Tavily"),
         ("BROWSERBASE_API_KEY", "Browserbase"),
         ("BROWSER_USE_API_KEY", "Browser Use"),
+        ("HYPERBROWSER_API_KEY", "Hyperbrowser"),
         ("FAL_KEY", "FAL"),
     ]
     
@@ -3543,6 +3552,7 @@ def set_config_value(key: str, value: str):
         'FIRECRAWL_GATEWAY_URL', 'TOOL_GATEWAY_DOMAIN', 'TOOL_GATEWAY_SCHEME',
         'TOOL_GATEWAY_USER_TOKEN', 'TAVILY_API_KEY',
         'BROWSERBASE_API_KEY', 'BROWSERBASE_PROJECT_ID', 'BROWSER_USE_API_KEY',
+        'HYPERBROWSER_API_KEY',
         'FAL_KEY', 'TELEGRAM_BOT_TOKEN', 'DISCORD_BOT_TOKEN',
         'TERMINAL_SSH_HOST', 'TERMINAL_SSH_USER', 'TERMINAL_SSH_KEY',
         'SUDO_PASSWORD', 'SLACK_BOT_TOKEN', 'SLACK_APP_TOKEN',

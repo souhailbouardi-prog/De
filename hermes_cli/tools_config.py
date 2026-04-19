@@ -326,6 +326,14 @@ TOOL_CATEGORIES = {
                 "post_setup": "agent_browser",
             },
             {
+                "name": "Hyperbrowser [paid] — Cloud browser with stealth and CAPTCHA solving",
+                "env_vars": [
+                    {"key": "HYPERBROWSER_API_KEY", "prompt": "Hyperbrowser API key", "url": "https://hyperbrowser.ai"},
+                ],
+                "browser_provider": "hyperbrowser",
+                "post_setup": "agent_browser",
+            },
+            {
                 "name": "Camofox",
                 "badge": "free · local",
                 "tag": "Anti-detection browser (Firefox/Camoufox)",
