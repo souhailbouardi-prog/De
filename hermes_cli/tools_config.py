@@ -236,6 +236,28 @@ TOOL_CATEGORIES = {
                 ],
             },
             {
+                "name": "fastCRW Cloud",
+                "tag": "Cloud API with search, extract, and crawl",
+                "web_backend": "crw",
+                "env_vars": [
+                    {"key": "CRW_API_KEY", "prompt": "fastCRW API key", "url": "https://fastcrw.com"},
+                ],
+            },
+            {
+                "name": "fastCRW Local",
+                "tag": "Free - runs locally, no API key needed (pip install crw)",
+                "web_backend": "crw",
+                "env_vars": [],
+            },
+            {
+                "name": "fastCRW Self-Hosted",
+                "tag": "Point to your own CRW server instance",
+                "web_backend": "crw",
+                "env_vars": [
+                    {"key": "CRW_API_URL", "prompt": "Your CRW instance URL (e.g., http://localhost:3000)"},
+                ],
+            },
+            {
                 "name": "Firecrawl Self-Hosted",
                 "badge": "free · self-hosted",
                 "tag": "Run your own Firecrawl instance (Docker)",

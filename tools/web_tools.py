@@ -13,6 +13,7 @@ Available tools:
 - web_crawl_tool: Crawl websites with specific instructions
 
 Backend compatibility:
+- CRW/fastCRW: https://fastcrw.com (search, extract, crawl; cloud or self-hosted single binary)
 - Exa: https://exa.ai (search, extract)
 - Firecrawl: https://docs.firecrawl.dev/introduction (search, extract, crawl; direct or derived firecrawl-gateway.<domain> for Nous Subscribers)
 - Parallel: https://docs.parallel.ai (search, extract)
@@ -88,7 +89,7 @@ def _get_backend() -> str:
     keys manually without running setup.
     """
     configured = (_load_web_config().get("backend") or "").lower().strip()
-    if configured in ("parallel", "firecrawl", "tavily", "exa"):
+    if configured in ("parallel", "firecrawl", "tavily", "exa", "crw"):
         return configured
 
     # Fallback for manual / legacy config — pick the highest-priority
@@ -96,6 +97,7 @@ def _get_backend() -> str:
     # tool gateway is configured for Nous subscribers.
     backend_candidates = (
         ("firecrawl", _has_env("FIRECRAWL_API_KEY") or _has_env("FIRECRAWL_API_URL") or _is_tool_gateway_ready()),
+        ("crw", _is_crw_available()),
         ("parallel", _has_env("PARALLEL_API_KEY")),
         ("tavily", _has_env("TAVILY_API_KEY")),
         ("exa", _has_env("EXA_API_KEY")),
@@ -117,6 +119,8 @@ def _is_backend_available(backend: str) -> bool:
         return check_firecrawl_api_key()
     if backend == "tavily":
         return _has_env("TAVILY_API_KEY")
+    if backend == "crw":
+        return _is_crw_available()
     return False
 
 # ─── Firecrawl Client ────────────────────────────────────────────────────────
@@ -189,6 +193,8 @@ def _web_requires_env() -> list[str]:
         "TAVILY_API_KEY",
         "FIRECRAWL_API_KEY",
         "FIRECRAWL_API_URL",
+        "CRW_API_KEY",
+        "CRW_API_URL",
     ]
     if managed_nous_tools_enabled():
         requires.extend(
@@ -360,6 +366,57 @@ def _normalize_tavily_documents(response: dict, fallback_url: str = "") -> List[
             "metadata": {"sourceURL": url_str},
         })
     return documents
+
+
+# ─── fastCRW Client (via crw Python SDK) ─────────────────────────────────────
+
+_CRW_DEFAULT_URL = "https://fastcrw.com/api"
+_crw_client: Any = None
+
+
+def _get_crw_client():
+    """Return a singleton ``CrwClient``.
+
+    Mode selection:
+    - ``CRW_API_URL`` set → HTTP mode to that URL.
+    - ``CRW_API_KEY`` set (no URL) → HTTP mode to cloud (fastcrw.com/api).
+    - Neither set → subprocess mode (auto-downloads crw-mcp binary).
+    """
+    global _crw_client
+    if _crw_client is not None:
+        return _crw_client
+
+    from crw import CrwClient
+
+    api_url = os.getenv("CRW_API_URL", "").strip().rstrip("/")
+    api_key = os.getenv("CRW_API_KEY", "").strip()
+
+    if api_url:
+        _crw_client = CrwClient(api_url=api_url, api_key=api_key or None)
+    elif api_key:
+        _crw_client = CrwClient(api_url=_CRW_DEFAULT_URL, api_key=api_key)
+    else:
+        # Subprocess mode — no server needed, binary auto-downloaded
+        _crw_client = CrwClient()
+
+    return _crw_client
+
+
+def _is_crw_available() -> bool:
+    """Return True if the CRW backend can be used.
+
+    Available when an API key or URL is configured, or when the crw-mcp
+    binary is reachable (subprocess mode works without any env vars).
+    """
+    if _has_env("CRW_API_KEY") or _has_env("CRW_API_URL"):
+        return True
+    # Check if crw-mcp binary is available for subprocess mode
+    try:
+        from crw._binary import ensure_binary
+        ensure_binary()
+        return True
+    except Exception:
+        return False
 
 
 def _to_plain_object(value: Any) -> Any:
@@ -1118,6 +1175,28 @@ def web_search_tool(query: str, limit: int = 5) -> str:
             _debug.save()
             return result_json
 
+        if backend == "crw":
+            logger.info("fastCRW search: '%s' (limit: %d)", query, limit)
+            client = _get_crw_client()
+            raw_results = client.search(query, limit=min(limit, 100))
+            # Normalize to standard format
+            items = raw_results if isinstance(raw_results, list) else raw_results.get("data") or []
+            web_results = []
+            for i, r in enumerate(items):
+                web_results.append({
+                    "title": r.get("title", ""),
+                    "url": r.get("url", ""),
+                    "description": r.get("description", ""),
+                    "position": i + 1,
+                })
+            response_data = {"success": True, "data": {"web": web_results}}
+            debug_call_data["results_count"] = len(web_results)
+            result_json = json.dumps(response_data, indent=2, ensure_ascii=False)
+            debug_call_data["final_response_size"] = len(result_json)
+            _debug.log_call("web_search_tool", debug_call_data)
+            _debug.save()
+            return result_json
+
         logger.info("Searching the web for: '%s' (limit: %d)", query, limit)
 
         response = _get_firecrawl_client().search(
@@ -1252,6 +1331,77 @@ async def web_extract_tool(
                     "include_images": False,
                 })
                 results = _normalize_tavily_documents(raw, fallback_url=safe_urls[0] if safe_urls else "")
+            elif backend == "crw":
+                # ── fastCRW extraction (via crw SDK) ──
+                results: List[Dict[str, Any]] = []
+                from tools.interrupt import is_interrupted as _is_interrupted
+                client = _get_crw_client()
+                for url in safe_urls:
+                    if _is_interrupted():
+                        results.append({"url": url, "error": "Interrupted", "title": ""})
+                        continue
+
+                    # Website policy check — block before fetching
+                    blocked = check_website_access(url)
+                    if blocked:
+                        logger.info("Blocked web_extract for %s by rule %s", blocked["host"], blocked["rule"])
+                        results.append({
+                            "url": url, "title": "", "content": "",
+                            "error": blocked["message"],
+                            "blocked_by_policy": {"host": blocked["host"], "rule": blocked["rule"], "source": blocked["source"]},
+                        })
+                        continue
+
+                    try:
+                        logger.info("fastCRW scraping: %s", url)
+                        try:
+                            scrape_data = await asyncio.wait_for(
+                                asyncio.to_thread(
+                                    client.scrape, url, formats=["markdown", "html"],
+                                ),
+                                timeout=60,
+                            )
+                        except asyncio.TimeoutError:
+                            logger.warning("fastCRW scrape timed out for %s", url)
+                            results.append({
+                                "url": url, "title": "", "content": "",
+                                "error": "Scrape timed out after 60s — page may be too large or unresponsive. Try browser_navigate instead.",
+                            })
+                            continue
+
+                        # Normalize SDK response
+                        metadata = scrape_data.get("metadata") or {}
+                        if not isinstance(metadata, dict):
+                            metadata = {}
+                        content = scrape_data.get("markdown", "") or scrape_data.get("html", "") or ""
+                        doc = {
+                            "url": metadata.get("sourceURL", url),
+                            "title": metadata.get("title", ""),
+                            "content": content,
+                            "raw_content": content,
+                            "metadata": metadata,
+                        }
+
+                        # Re-check final URL after redirect
+                        final_url = doc.get("url", url)
+                        final_blocked = check_website_access(final_url)
+                        if final_blocked:
+                            logger.info("Blocked redirected web_extract for %s by rule %s", final_blocked["host"], final_blocked["rule"])
+                            results.append({
+                                "url": final_url, "title": doc.get("title", ""), "content": "", "raw_content": "",
+                                "error": final_blocked["message"],
+                                "blocked_by_policy": {"host": final_blocked["host"], "rule": final_blocked["rule"], "source": final_blocked["source"]},
+                            })
+                            continue
+
+                        results.append(doc)
+
+                    except Exception as scrape_err:
+                        logger.debug("fastCRW scrape failed for %s: %s", url, scrape_err)
+                        results.append({
+                            "url": url, "title": "", "content": "", "raw_content": "",
+                            "error": str(scrape_err),
+                        })
             else:
                 # ── Firecrawl extraction ──
                 # Determine requested formats for Firecrawl v2
@@ -1627,6 +1777,98 @@ async def web_crawl_tool(
             _debug.save()
             return cleaned_result
 
+        # ── fastCRW crawl ──
+        if backend == "crw":
+            if not url.startswith(('http://', 'https://')):
+                url = f'https://{url}'
+
+            if not is_safe_url(url):
+                return json.dumps({"results": [{"url": url, "title": "", "content": "",
+                    "error": "Blocked: URL targets a private or internal network address"}]}, ensure_ascii=False)
+
+            blocked = check_website_access(url)
+            if blocked:
+                logger.info("Blocked web_crawl for %s by rule %s", blocked["host"], blocked["rule"])
+                return json.dumps({"results": [{"url": url, "title": "", "content": "", "error": blocked["message"],
+                    "blocked_by_policy": {"host": blocked["host"], "rule": blocked["rule"], "source": blocked["source"]}}]}, ensure_ascii=False)
+
+            from tools.interrupt import is_interrupted as _is_int
+            if _is_int():
+                return tool_error("Interrupted", success=False)
+
+            logger.info("fastCRW crawl: %s (depth=%s)", url, depth)
+            client = _get_crw_client()
+            max_depth = 2 if depth == "basic" else 5
+            max_pages = 5 if depth == "basic" else 20
+
+            crawl_pages = await asyncio.to_thread(
+                client.crawl, url, max_depth=max_depth, max_pages=max_pages,
+                poll_interval=5.0, timeout=300.0,
+            )
+
+            # Normalize crawl results
+            results = []
+            for page in crawl_pages:
+                page_content = page.get("markdown", "") or page.get("html", "")
+                page_meta = page.get("metadata") or {}
+                if not isinstance(page_meta, dict):
+                    page_meta = {}
+                results.append({
+                    "url": page_meta.get("sourceURL", url),
+                    "title": page_meta.get("title", ""),
+                    "content": page_content,
+                    "raw_content": page_content,
+                })
+
+            response = {"results": results}
+            pages_crawled = len(results)
+            logger.info("Crawled %d pages", pages_crawled)
+            debug_call_data["pages_crawled"] = pages_crawled
+            debug_call_data["original_response_size"] = len(json.dumps(response))
+
+            # Process each result with LLM if enabled
+            if use_llm_processing and auxiliary_available:
+                logger.info("Processing crawled content with LLM (parallel)...")
+                debug_call_data["processing_applied"].append("llm_processing")
+
+                async def _process_crw_crawl(result):
+                    page_url = result.get('url', 'Unknown URL')
+                    title = result.get('title', '')
+                    content = result.get('content', '')
+                    if not content:
+                        return result, None, "no_content"
+                    original_size = len(content)
+                    processed = await process_content_with_llm(content, page_url, title, effective_model, min_length)
+                    if processed:
+                        result['raw_content'] = content
+                        result['content'] = processed
+                        metrics = {"url": page_url, "original_size": original_size, "processed_size": len(processed),
+                                   "compression_ratio": len(processed) / original_size if original_size else 1.0, "model_used": effective_model}
+                        return result, metrics, "processed"
+                    metrics = {"url": page_url, "original_size": original_size, "processed_size": original_size,
+                               "compression_ratio": 1.0, "model_used": None, "reason": "content_too_short"}
+                    return result, metrics, "too_short"
+
+                tasks = [_process_crw_crawl(r) for r in response.get('results', [])]
+                processed_results = await asyncio.gather(*tasks)
+                for result, metrics, status in processed_results:
+                    if status == "processed":
+                        debug_call_data["compression_metrics"].append(metrics)
+                        debug_call_data["pages_processed_with_llm"] += 1
+
+            if use_llm_processing and not auxiliary_available:
+                logger.warning("LLM processing requested but no auxiliary model available, returning raw content")
+                debug_call_data["processing_applied"].append("llm_processing_unavailable")
+
+            trimmed_results = [{"url": r.get("url", ""), "title": r.get("title", ""), "content": r.get("content", ""), "error": r.get("error"),
+                **({  "blocked_by_policy": r["blocked_by_policy"]} if "blocked_by_policy" in r else {})} for r in response.get("results", [])]
+            result_json = json.dumps({"results": trimmed_results}, indent=2, ensure_ascii=False)
+            cleaned_result = clean_base64_images(result_json)
+            debug_call_data["final_response_size"] = len(cleaned_result)
+            _debug.log_call("web_crawl_tool", debug_call_data)
+            _debug.save()
+            return cleaned_result
+
         # web_crawl requires Firecrawl or the Firecrawl tool-gateway — Parallel has no crawl API
         if not check_firecrawl_api_key():
             return json.dumps({
@@ -1922,9 +2164,9 @@ def check_firecrawl_api_key() -> bool:
 def check_web_api_key() -> bool:
     """Check whether the configured web backend is available."""
     configured = _load_web_config().get("backend", "").lower().strip()
-    if configured in ("exa", "parallel", "firecrawl", "tavily"):
+    if configured in ("exa", "parallel", "firecrawl", "tavily", "crw"):
         return _is_backend_available(configured)
-    return any(_is_backend_available(backend) for backend in ("exa", "parallel", "firecrawl", "tavily"))
+    return any(_is_backend_available(backend) for backend in ("exa", "parallel", "firecrawl", "tavily", "crw"))
 
 
 def check_auxiliary_model() -> bool:
@@ -1959,6 +2201,15 @@ if __name__ == "__main__":
             print("   Using Parallel API (https://parallel.ai)")
         elif backend == "tavily":
             print("   Using Tavily API (https://tavily.com)")
+        elif backend == "crw":
+            crw_url = os.getenv("CRW_API_URL", "").strip().rstrip("/")
+            crw_key = os.getenv("CRW_API_KEY", "").strip()
+            if crw_url:
+                print(f"   Using fastCRW HTTP mode: {crw_url}")
+            elif crw_key:
+                print("   Using fastCRW cloud API (fastcrw.com)")
+            else:
+                print("   Using fastCRW subprocess mode (crw-mcp binary)")
         else:
             if firecrawl_url_available:
                 print(f"   Using self-hosted Firecrawl: {os.getenv('FIRECRAWL_API_URL').strip().rstrip('/')}")
@@ -1971,7 +2222,7 @@ if __name__ == "__main__":
     else:
         print("❌ No web search backend configured")
         print(
-            "Set EXA_API_KEY, PARALLEL_API_KEY, TAVILY_API_KEY, FIRECRAWL_API_KEY, FIRECRAWL_API_URL"
+            "Set EXA_API_KEY, PARALLEL_API_KEY, TAVILY_API_KEY, CRW_API_KEY, CRW_API_URL, FIRECRAWL_API_KEY, FIRECRAWL_API_URL"
             f"{_firecrawl_backend_help_suffix()}"
         )
 

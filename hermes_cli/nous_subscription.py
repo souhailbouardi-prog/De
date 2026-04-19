@@ -271,6 +271,11 @@ def get_nous_subscription_features(
     direct_firecrawl = bool(get_env_value("FIRECRAWL_API_KEY") or get_env_value("FIRECRAWL_API_URL"))
     direct_parallel = bool(get_env_value("PARALLEL_API_KEY"))
     direct_tavily = bool(get_env_value("TAVILY_API_KEY"))
+    try:
+        from tools.web_tools import _is_crw_available
+        direct_crw = _is_crw_available()
+    except Exception:
+        direct_crw = bool(get_env_value("CRW_API_KEY") or get_env_value("CRW_API_URL"))
     direct_fal = bool(get_env_value("FAL_KEY"))
     direct_openai_tts = bool(resolve_openai_audio_api_key())
     direct_elevenlabs = bool(get_env_value("ELEVENLABS_API_KEY"))
@@ -314,10 +319,11 @@ def get_nous_subscription_features(
             or (web_backend == "firecrawl" and direct_firecrawl)
             or (web_backend == "parallel" and direct_parallel)
             or (web_backend == "tavily" and direct_tavily)
+            or (web_backend == "crw" and direct_crw)
         )
     )
     web_available = bool(
-        managed_web_available or direct_exa or direct_firecrawl or direct_parallel or direct_tavily
+        managed_web_available or direct_exa or direct_firecrawl or direct_parallel or direct_tavily or direct_crw
     )
 
     image_managed = image_tool_enabled and managed_image_available and not direct_fal
