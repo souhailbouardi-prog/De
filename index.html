@@ -1,0 +1,920 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BRD Services — Factures Pro Forma</title>
+    <style>
+        /* ===== VARIABLES ===== */
+        :root {
+            --navy: #0d1b4b;
+            --navy2: #1a2e7a;
+            --gold: #c9a84c;
+            --gold-light: #f0d48a;
+            --bg: #f0f2f7;
+            --card-bg: #ffffff;
+            --text: #111827;
+            --muted: #6b7280;
+            --border: #d1d5db;
+            --success: #15803d;
+            --danger: #b91c1c;
+            --input-focus: #1a2e7a;
+        }
+
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+
+        body {
+            font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            min-height: 100vh;
+        }
+
+        /* ===== HEADER ===== */
+        .app-header {
+            background: linear-gradient(135deg, var(--navy) 0%, var(--navy2) 100%);
+            padding: 0 40px;
+            height: 72px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            box-shadow: 0 4px 16px rgba(13,27,75,0.35);
+        }
+
+        .header-brand {
+            display: flex;
+            align-items: center;
+            gap: 14px;
+        }
+
+        .header-logo {
+            width: 44px;
+            height: 44px;
+            background: var(--gold);
+            border-radius: 10px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 1.4rem;
+            font-weight: 900;
+            color: var(--navy);
+            letter-spacing: -1px;
+        }
+
+        .header-title {
+            color: white;
+            font-size: 1.25rem;
+            font-weight: 700;
+            letter-spacing: 0.02em;
+        }
+
+        .header-sub {
+            color: rgba(255,255,255,0.55);
+            font-size: 0.75rem;
+            margin-top: 1px;
+        }
+
+        .header-badge {
+            background: rgba(201,168,76,0.2);
+            border: 1px solid var(--gold);
+            color: var(--gold-light);
+            font-size: 0.7rem;
+            font-weight: 600;
+            padding: 4px 12px;
+            border-radius: 20px;
+            letter-spacing: 0.05em;
+        }
+
+        /* ===== MAIN CONTAINER ===== */
+        .container {
+            max-width: 680px;
+            margin: 44px auto;
+            padding: 0 20px 60px;
+        }
+
+        /* ===== CARD ===== */
+        .card {
+            background: var(--card-bg);
+            border-radius: 16px;
+            padding: 40px 44px;
+            box-shadow: 0 8px 32px rgba(13,27,75,0.10);
+        }
+
+        .card-title {
+            font-size: 1.05rem;
+            font-weight: 700;
+            color: var(--navy);
+            margin-bottom: 28px;
+            padding-bottom: 14px;
+            border-bottom: 2px solid var(--gold);
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .section-divider {
+            font-size: 0.7rem;
+            text-transform: uppercase;
+            letter-spacing: 0.12em;
+            color: var(--muted);
+            font-weight: 600;
+            margin: 26px 0 14px;
+            padding-bottom: 6px;
+            border-bottom: 1px solid var(--border);
+        }
+
+        /* ===== FORM ===== */
+        .form-row {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 16px;
+        }
+
+        .form-group {
+            margin-bottom: 18px;
+        }
+
+        .form-group label {
+            display: block;
+            font-size: 0.78rem;
+            font-weight: 700;
+            color: var(--muted);
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+            margin-bottom: 7px;
+        }
+
+        .form-group input,
+        .form-group textarea,
+        .form-group select {
+            width: 100%;
+            padding: 11px 14px;
+            border: 2px solid var(--border);
+            border-radius: 9px;
+            font-size: 0.97rem;
+            font-family: inherit;
+            color: var(--text);
+            background: #fafbfd;
+            transition: border-color 0.18s, box-shadow 0.18s;
+            outline: none;
+        }
+
+        .form-group input:focus,
+        .form-group textarea:focus,
+        .form-group select:focus {
+            border-color: var(--input-focus);
+            box-shadow: 0 0 0 3px rgba(26,46,122,0.10);
+            background: white;
+        }
+
+        .form-group textarea {
+            resize: vertical;
+            min-height: 88px;
+            line-height: 1.55;
+        }
+
+        .form-group input[type="number"] {
+            appearance: textfield;
+        }
+
+        /* ===== BUTTON ===== */
+        .btn-generate {
+            width: 100%;
+            padding: 15px 20px;
+            background: linear-gradient(135deg, var(--navy) 0%, var(--navy2) 100%);
+            color: white;
+            border: none;
+            border-radius: 10px;
+            font-size: 1rem;
+            font-weight: 700;
+            cursor: pointer;
+            margin-top: 6px;
+            letter-spacing: 0.06em;
+            text-transform: uppercase;
+            transition: opacity 0.15s, transform 0.1s, box-shadow 0.15s;
+            box-shadow: 0 4px 14px rgba(13,27,75,0.30);
+        }
+
+        .btn-generate:hover {
+            opacity: 0.93;
+            box-shadow: 0 6px 20px rgba(13,27,75,0.38);
+        }
+
+        .btn-generate:active { transform: scale(0.99); }
+
+        /* ===== INVOICE SECTION ===== */
+        #invoice-section {
+            display: none;
+            background: var(--bg);
+            min-height: 100vh;
+            padding-bottom: 60px;
+        }
+
+        .invoice-toolbar {
+            background: var(--navy);
+            padding: 12px 20px;
+            display: flex;
+            gap: 10px;
+            justify-content: flex-end;
+            position: sticky;
+            top: 0;
+            z-index: 10;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+        }
+
+        .btn-pdf {
+            padding: 10px 22px;
+            background: var(--success);
+            color: white;
+            border: none;
+            border-radius: 8px;
+            font-size: 0.88rem;
+            font-weight: 700;
+            cursor: pointer;
+            letter-spacing: 0.04em;
+            -webkit-tap-highlight-color: transparent;
+        }
+
+        .btn-close {
+            padding: 10px 22px;
+            background: var(--danger);
+            color: white;
+            border: none;
+            border-radius: 8px;
+            font-size: 0.88rem;
+            font-weight: 700;
+            cursor: pointer;
+            letter-spacing: 0.04em;
+            -webkit-tap-highlight-color: transparent;
+        }
+
+        .invoice-doc-wrap {
+            max-width: 820px;
+            margin: 24px auto;
+            padding: 0 12px;
+        }
+
+        /* ===== INVOICE DOCUMENT ===== */
+        #invoice-doc {
+            max-width: 820px;
+            margin: 0 auto;
+            background: white;
+            padding: 52px 60px 44px;
+            font-family: 'Georgia', 'Times New Roman', serif;
+            color: #111;
+            font-size: 0.88rem;
+            line-height: 1.55;
+            position: relative;
+            overflow: hidden;
+        }
+
+        /* Watermark */
+        #invoice-doc::before {
+            content: "PRO FORMA";
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%) rotate(-35deg);
+            font-size: 6.5rem;
+            font-weight: 900;
+            color: rgba(201,168,76,0.07);
+            letter-spacing: 0.2em;
+            white-space: nowrap;
+            pointer-events: none;
+            font-family: 'Segoe UI', sans-serif;
+            z-index: 0;
+        }
+
+        #invoice-doc > * { position: relative; z-index: 1; }
+
+        /* Header */
+        .inv-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            margin-bottom: 34px;
+            padding-bottom: 24px;
+            border-bottom: 3px solid var(--navy);
+        }
+
+        .inv-brand-name {
+            font-size: 2.1rem;
+            font-weight: 700;
+            color: var(--navy);
+            font-family: 'Segoe UI', sans-serif;
+            letter-spacing: 0.01em;
+            line-height: 1;
+        }
+
+        .inv-brand-tag {
+            font-size: 0.72rem;
+            color: var(--gold);
+            font-family: 'Segoe UI', sans-serif;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.12em;
+            margin-top: 5px;
+        }
+
+        .inv-brand-info {
+            font-size: 0.7rem;
+            color: #666;
+            font-family: 'Segoe UI', sans-serif;
+            margin-top: 10px;
+            line-height: 1.7;
+        }
+
+        .inv-title-block {
+            text-align: right;
+        }
+
+        .inv-proforma-label {
+            display: inline-block;
+            background: var(--gold);
+            color: var(--navy);
+            font-size: 0.63rem;
+            font-weight: 800;
+            letter-spacing: 0.2em;
+            text-transform: uppercase;
+            padding: 3px 10px;
+            border-radius: 3px;
+            font-family: 'Segoe UI', sans-serif;
+            margin-bottom: 7px;
+        }
+
+        .inv-doc-title {
+            font-size: 1.7rem;
+            font-weight: 700;
+            color: var(--navy);
+            font-family: 'Segoe UI', sans-serif;
+            letter-spacing: 0.05em;
+            line-height: 1.1;
+        }
+
+        .inv-meta {
+            margin-top: 8px;
+            font-size: 0.78rem;
+            color: #555;
+            font-family: 'Segoe UI', sans-serif;
+            line-height: 1.8;
+        }
+
+        .inv-meta strong { color: #222; }
+
+        /* Parties */
+        .inv-parties {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 28px;
+            margin-bottom: 32px;
+        }
+
+        .inv-party {
+            padding: 16px 18px;
+            border-radius: 6px;
+        }
+
+        .inv-party.emetteur {
+            background: #f0f3f9;
+            border-left: 3px solid var(--navy);
+        }
+
+        .inv-party.client {
+            background: #fefaf2;
+            border-left: 3px solid var(--gold);
+        }
+
+        .inv-party-label {
+            font-size: 0.62rem;
+            text-transform: uppercase;
+            letter-spacing: 0.15em;
+            color: #888;
+            font-weight: 700;
+            font-family: 'Segoe UI', sans-serif;
+            margin-bottom: 8px;
+        }
+
+        .inv-party-name {
+            font-size: 0.98rem;
+            font-weight: 700;
+            color: #111;
+            font-family: 'Segoe UI', sans-serif;
+            margin-bottom: 4px;
+        }
+
+        .inv-party-detail {
+            font-size: 0.76rem;
+            color: #555;
+            font-family: 'Segoe UI', sans-serif;
+            line-height: 1.7;
+        }
+
+        /* Table */
+        .inv-table-wrap {
+            margin-bottom: 20px;
+        }
+
+        .inv-table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+
+        .inv-table thead th {
+            background: var(--navy);
+            color: white;
+            padding: 9px 13px;
+            text-align: left;
+            font-size: 0.68rem;
+            text-transform: uppercase;
+            letter-spacing: 0.1em;
+            font-family: 'Segoe UI', sans-serif;
+            font-weight: 600;
+        }
+
+        .inv-table thead th:last-child,
+        .inv-table thead th:nth-last-child(2),
+        .inv-table thead th:nth-last-child(3) {
+            text-align: right;
+        }
+
+        .inv-table tbody td {
+            padding: 14px 13px;
+            vertical-align: top;
+            font-size: 0.84rem;
+            border-bottom: 1px solid #e8eaf0;
+        }
+
+        .inv-table tbody td:last-child,
+        .inv-table tbody td:nth-last-child(2),
+        .inv-table tbody td:nth-last-child(3) {
+            text-align: right;
+            font-family: 'Segoe UI', sans-serif;
+        }
+
+        .inv-table tbody td:last-child {
+            font-weight: 700;
+        }
+
+        .svc-title {
+            font-weight: 700;
+            color: #111;
+            font-family: 'Segoe UI', sans-serif;
+            margin-bottom: 4px;
+        }
+
+        .svc-itinerary {
+            font-size: 0.78rem;
+            color: #555;
+            font-family: 'Segoe UI', sans-serif;
+            line-height: 1.6;
+        }
+
+        /* Totals */
+        .inv-totals-wrap {
+            display: flex;
+            justify-content: flex-end;
+            margin-bottom: 28px;
+        }
+
+        .inv-totals {
+            width: 270px;
+            font-family: 'Segoe UI', sans-serif;
+        }
+
+        .totals-row {
+            display: flex;
+            justify-content: space-between;
+            font-size: 0.82rem;
+            padding: 5px 0;
+            color: #444;
+            border-bottom: 1px solid #eee;
+        }
+
+        .totals-row.total-ttc {
+            font-size: 1rem;
+            font-weight: 800;
+            color: var(--navy);
+            border-top: 2px solid var(--navy);
+            border-bottom: none;
+            padding-top: 10px;
+            margin-top: 4px;
+        }
+
+        /* Payment */
+        .inv-payment {
+            background: #f5f7fb;
+            border-left: 3px solid var(--navy);
+            border-radius: 0 6px 6px 0;
+            padding: 13px 16px;
+            margin-bottom: 28px;
+            font-family: 'Segoe UI', sans-serif;
+            font-size: 0.78rem;
+            color: #444;
+            line-height: 1.65;
+        }
+
+        .inv-payment-title {
+            font-weight: 700;
+            color: var(--navy);
+            font-size: 0.8rem;
+            margin-bottom: 5px;
+        }
+
+        /* Signatures */
+        .inv-signatures {
+            display: flex;
+            justify-content: space-between;
+            gap: 32px;
+            margin-bottom: 32px;
+        }
+
+        .inv-sig-block {
+            flex: 1;
+            text-align: center;
+        }
+
+        .inv-sig-area {
+            height: 64px;
+            border-bottom: 1px solid #aaa;
+            margin-bottom: 6px;
+        }
+
+        .inv-sig-label {
+            font-size: 0.72rem;
+            color: #777;
+            font-family: 'Segoe UI', sans-serif;
+        }
+
+        .inv-sig-name {
+            font-size: 0.72rem;
+            font-style: italic;
+            color: #555;
+            font-family: 'Segoe UI', sans-serif;
+            margin-top: 2px;
+        }
+
+        /* CGV */
+        .inv-cgv {
+            border-top: 1px solid #ddd;
+            padding-top: 14px;
+            font-size: 0.58rem;
+            color: #999;
+            line-height: 1.65;
+            font-family: 'Segoe UI', sans-serif;
+        }
+
+        .cgv-title {
+            font-size: 0.62rem;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.12em;
+            color: #777;
+            margin-bottom: 7px;
+            display: block;
+        }
+
+        .cgv-article {
+            font-weight: 700;
+            color: #777;
+        }
+
+        /* Footer bar */
+        .inv-footer {
+            margin-top: 14px;
+            padding-top: 10px;
+            border-top: 1px solid #eee;
+            text-align: center;
+            font-size: 0.58rem;
+            color: #bbb;
+            font-family: 'Segoe UI', sans-serif;
+            letter-spacing: 0.04em;
+        }
+
+        /* ===== PRINT ===== */
+        @media print {
+            body { background: white !important; }
+
+            .app-header,
+            #form-section { display: none !important; }
+
+            #invoice-section {
+                display: block !important;
+                background: white !important;
+                padding: 0 !important;
+            }
+
+            .invoice-toolbar { display: none !important; }
+
+            .invoice-doc-wrap { margin: 0 !important; padding: 0 !important; max-width: 100% !important; }
+
+            #invoice-doc {
+                padding: 20px 32px !important;
+                max-width: 100% !important;
+                box-shadow: none !important;
+            }
+        }
+    </style>
+</head>
+<body>
+
+<!-- ===== APP HEADER ===== -->
+<header class="app-header">
+    <div class="header-brand">
+        <div class="header-logo">B</div>
+        <div>
+            <div class="header-title">BRD Services</div>
+            <div class="header-sub">Générateur de factures pro forma</div>
+        </div>
+    </div>
+    <div class="header-badge">Souhail Bouardi · Chauffeur</div>
+</header>
+
+<!-- ===== FORM ===== -->
+<div id="form-section">
+<div class="container">
+    <div class="card">
+        <div class="card-title">
+            <span>📄</span> Nouvelle facture pro forma
+        </div>
+
+        <div class="section-divider">Référence</div>
+
+        <div class="form-row">
+            <div class="form-group">
+                <label>N° de facture</label>
+                <input type="text" id="f-num" placeholder="Ex : 2026-001" autocomplete="off" />
+            </div>
+            <div class="form-group">
+                <label>Date</label>
+                <input type="date" id="f-date" />
+            </div>
+        </div>
+
+        <div class="section-divider">Client</div>
+
+        <div class="form-group">
+            <label>Nom du client *</label>
+            <input type="text" id="f-client" placeholder="Nom complet ou raison sociale" autocomplete="off" />
+        </div>
+
+        <div class="form-group">
+            <label>Adresse du client</label>
+            <input type="text" id="f-addr" placeholder="Adresse, code postal, ville" />
+        </div>
+
+        <div class="section-divider">Prestation</div>
+
+        <div class="form-group">
+            <label>Itinéraire / Description *</label>
+            <textarea id="f-itinerary" placeholder="Ex : Paris 8e → Aéroport CDG Terminal 2E&#10;Mise à disposition — Berline de luxe&#10;Durée estimée : 45 min"></textarea>
+        </div>
+
+        <div class="form-row">
+            <div class="form-group">
+                <label>Prix H.T. (€) *</label>
+                <input type="number" id="f-ht" placeholder="0.00" step="0.01" min="0" />
+            </div>
+            <div class="form-group">
+                <label>TVA (%)</label>
+                <input type="number" id="f-tva" value="10" step="0.5" min="0" max="100" />
+            </div>
+        </div>
+
+        <button class="btn-generate" onclick="genInvoice()">Générer la facture</button>
+    </div>
+</div>
+</div>
+
+<!-- ===== INVOICE SECTION ===== -->
+<div id="invoice-section">
+    <div class="invoice-toolbar">
+        <button class="btn-pdf" onclick="window.print()">🖨️&nbsp; PDF / Imprimer</button>
+        <button class="btn-close" onclick="closeInvoice()">← Nouvelle facture</button>
+    </div>
+    <div class="invoice-doc-wrap">
+        <div id="invoice-doc"></div>
+    </div>
+</div>
+
+<script>
+    /* ===== INVOICE COUNTER (localStorage optionnel) ===== */
+    function getCounter() {
+        try {
+            var y = new Date().getFullYear();
+            return { year: y, n: parseInt(localStorage.getItem('brd_inv_' + y) || '0') };
+        } catch(e) {
+            return { year: new Date().getFullYear(), n: 0 };
+        }
+    }
+
+    function saveCounter(year, n) {
+        try { localStorage.setItem('brd_inv_' + year, n); } catch(e) {}
+    }
+
+    function fmtNum(year, n) {
+        return year + '-' + String(n).padStart(3, '0');
+    }
+
+    /* ===== INIT ===== */
+    window.addEventListener('DOMContentLoaded', function() {
+        var today = new Date().toISOString().split('T')[0];
+        document.getElementById('f-date').value = today;
+        var c = getCounter();
+        document.getElementById('f-num').value = fmtNum(c.year, c.n + 1);
+    });
+
+    /* ===== FORMATTING ===== */
+    function money(v) {
+        return Number(v).toLocaleString('fr-FR', {
+            minimumFractionDigits: 2, maximumFractionDigits: 2
+        }) + '\u00a0€';
+    }
+
+    function fmtDate(iso) {
+        if (!iso) return '—';
+        const [y, m, d] = iso.split('-');
+        return d + '/' + m + '/' + y;
+    }
+
+    /* ===== GENERATE ===== */
+    function genInvoice() {
+        try {
+        var num      = document.getElementById('f-num').value.trim();
+        var date     = document.getElementById('f-date').value;
+        var client   = document.getElementById('f-client').value.trim();
+        var addr     = document.getElementById('f-addr').value.trim();
+        var itin     = document.getElementById('f-itinerary').value.trim();
+        var ht       = parseFloat(document.getElementById('f-ht').value) || 0;
+        var tvaRate  = parseFloat(document.getElementById('f-tva').value) || 10;
+
+        if (!client)  { alert('Veuillez renseigner le nom du client.'); return; }
+        if (!itin)    { alert('Veuillez decrire l\'itineraire ou la prestation.'); return; }
+        if (ht <= 0)  { alert('Veuillez saisir un prix H.T. valide.'); return; }
+
+        var tvaAmt = ht * (tvaRate / 100);
+        var ttc    = ht + tvaAmt;
+
+        /* Save counter */
+        var c = getCounter();
+        var match = num.match(/(\d{4})-(\d+)/);
+        if (match) {
+            var newN = parseInt(match[2]);
+            if (newN >= c.n) saveCounter(parseInt(match[1]), newN);
+        }
+
+        var itinHtml = itin.replace(/\n/g, '<br>');
+
+        document.getElementById('invoice-doc').innerHTML = `
+
+        <!-- HEADER -->
+        <div class="inv-header">
+            <div>
+                <div class="inv-brand-name">BRD Services</div>
+                <div class="inv-brand-tag">Transport &amp; Mise à disposition</div>
+                <div class="inv-brand-info">
+                    Chauffeur : Souhail Bouardi<br>
+                    SIREN : 942&nbsp;424&nbsp;201<br>
+                    SIRET : 942&nbsp;424&nbsp;201&nbsp;00013<br>
+                    N°&nbsp;TVA : FR35942424201
+                </div>
+            </div>
+            <div class="inv-title-block">
+                <div class="inv-proforma-label">Pro Forma</div>
+                <div class="inv-doc-title">FACTURE</div>
+                <div class="inv-meta">
+                    <strong>N°&nbsp;${num || '—'}</strong><br>
+                    Date&nbsp;: ${fmtDate(date)}<br>
+                    Validité&nbsp;: 30 jours
+                </div>
+            </div>
+        </div>
+
+        <!-- PARTIES -->
+        <div class="inv-parties">
+            <div class="inv-party emetteur">
+                <div class="inv-party-label">Émetteur</div>
+                <div class="inv-party-name">BRD Services</div>
+                <div class="inv-party-detail">
+                    Souhail Bouardi<br>
+                    SIRET : 942 424 201 00013<br>
+                    TVA : FR35942424201
+                </div>
+            </div>
+            <div class="inv-party client">
+                <div class="inv-party-label">Client / Destinataire</div>
+                <div class="inv-party-name">${client}</div>
+                <div class="inv-party-detail">
+                    ${addr ? addr : '&nbsp;'}
+                </div>
+            </div>
+        </div>
+
+        <!-- TABLE -->
+        <div class="inv-table-wrap">
+            <table class="inv-table">
+                <thead>
+                    <tr>
+                        <th style="width:48%">Description de la prestation</th>
+                        <th style="text-align:center">Qté</th>
+                        <th>Prix unit. H.T.</th>
+                        <th>TVA</th>
+                        <th>Total H.T.</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td>
+                            <div class="svc-title">Prestation de transport</div>
+                            <div class="svc-itinerary">${itinHtml}</div>
+                        </td>
+                        <td style="text-align:center;font-family:'Segoe UI',sans-serif">1</td>
+                        <td>${money(ht)}</td>
+                        <td>${tvaRate}&nbsp;%</td>
+                        <td>${money(ht)}</td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+
+        <!-- TOTALS -->
+        <div class="inv-totals-wrap">
+            <div class="inv-totals">
+                <div class="totals-row">
+                    <span>Total H.T.</span>
+                    <span>${money(ht)}</span>
+                </div>
+                <div class="totals-row">
+                    <span>TVA (${tvaRate}&nbsp;%)</span>
+                    <span>${money(tvaAmt)}</span>
+                </div>
+                <div class="totals-row total-ttc">
+                    <span>TOTAL T.T.C.</span>
+                    <span>${money(ttc)}</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- PAYMENT -->
+        <div class="inv-payment">
+            <div class="inv-payment-title">Modalités de règlement</div>
+            Paiement exigible à réception de la présente facture — par virement bancaire, espèces ou tout autre moyen convenu par écrit.<br>
+            Tout retard de paiement entraîne l'application de pénalités au taux légal en vigueur ainsi qu'une indemnité forfaitaire de recouvrement de 40&nbsp;€ (art.&nbsp;L.441‑10 C. com.).
+        </div>
+
+        <!-- SIGNATURES -->
+        <div class="inv-signatures">
+            <div class="inv-sig-block">
+                <div class="inv-sig-area"></div>
+                <div class="inv-sig-label">Signature du client</div>
+                <div class="inv-sig-name">Bon pour accord</div>
+            </div>
+            <div class="inv-sig-block">
+                <div class="inv-sig-area"></div>
+                <div class="inv-sig-label">Signature &amp; cachet BRD Services</div>
+                <div class="inv-sig-name">Souhail Bouardi</div>
+            </div>
+        </div>
+
+        <!-- CGV -->
+        <div class="inv-cgv">
+            <span class="cgv-title">Conditions Générales de Vente — BRD Services</span>
+            <span class="cgv-article">1. OBJET —</span> Les présentes Conditions Générales de Vente (CGV) s'appliquent à toutes les prestations de transport de personnes réalisées par BRD Services (SIREN&nbsp;942&nbsp;424&nbsp;201), ci-après « le Prestataire », pour tout client particulier ou professionnel. Toute commande implique l'acceptation sans réserve de ces CGV.
+            &nbsp;<span class="cgv-article">2. PRESTATIONS —</span> BRD Services propose des services de transport de personnes : transferts aéroports/gares, mise à disposition, navettes longue distance. Les prestations sont réalisées par Souhail Bouardi, chauffeur professionnel titulaire de l'ensemble des agréments et autorisations réglementaires en vigueur (carte professionnelle VTC). Le Prestataire s'engage à effectuer chaque mission avec professionnalisme, ponctualité et discrétion.
+            &nbsp;<span class="cgv-article">3. TARIFS &amp; FACTURATION —</span> Les prix sont exprimés en euros hors taxes (H.T.) et toutes taxes comprises (T.T.C.). La TVA applicable est celle en vigueur à la date de réalisation de la prestation. Toute prestation commencée est due en intégralité. Les frais annexes non inclus dans le devis initial (péages, parking, frais exceptionnels) seront refacturés sur justificatifs.
+            &nbsp;<span class="cgv-article">4. PAIEMENT —</span> Le règlement est exigible à réception de la facture, sauf accord écrit préalable. Modes de paiement acceptés : virement bancaire, espèces, chèque certifié ou tout moyen convenu. En cas de retard de paiement, des pénalités au taux légal en vigueur seront appliquées de plein droit, accompagnées d'une indemnité forfaitaire pour frais de recouvrement de 40&nbsp;€ (art.&nbsp;L.441‑10 du Code de commerce).
+            &nbsp;<span class="cgv-article">5. ANNULATION —</span> Toute annulation doit être notifiée par écrit (e-mail, SMS) dans les meilleurs délais. Annulation moins de 24&nbsp;h avant la prestation : 50&nbsp;% du montant convenu reste dû. Annulation le jour même ou non-présentation (no-show) : la totalité du montant est due.
+            &nbsp;<span class="cgv-article">6. RESPONSABILITÉ —</span> Le Prestataire est responsable de la bonne exécution des obligations de transport. Sa responsabilité ne saurait être engagée en cas de force majeure (accidents indépendants de sa volonté, conditions météorologiques exceptionnelles, grèves, événements imprévisibles). Le Client est responsable des dommages matériels causés au véhicule par lui-même ou ses accompagnants. Les objets oubliés sont conservés 30 jours, passé ce délai le Prestataire ne peut en être tenu responsable.
+            &nbsp;<span class="cgv-article">7. PROTECTION DES DONNÉES —</span> Les données personnelles collectées sont traitées conformément au RGPD (UE 2016/679) et à la loi Informatique et Libertés. Elles sont utilisées exclusivement dans le cadre de la relation commerciale et ne sont jamais transmises à des tiers sans consentement préalable. Droit d'accès, de rectification et de suppression : contact@brd-services.fr
+            &nbsp;<span class="cgv-article">8. LITIGES —</span> En cas de différend, les parties s'efforceront de trouver une solution amiable. À défaut d'accord, les tribunaux compétents du lieu du siège social de BRD Services seront seuls compétents, nonobstant pluralité de défendeurs ou appel en garantie.
+            &nbsp;<span style="font-weight:700;color:#888">Document pro forma — Ne constitue pas une facture définitive avant règlement effectif. Tout encaissement vaut acceptation de la prestation et des présentes CGV.</span>
+        </div>
+
+        <!-- FOOTER -->
+        <div class="inv-footer">
+            BRD Services &mdash; SIREN&nbsp;942&nbsp;424&nbsp;201 &mdash; SIRET&nbsp;942&nbsp;424&nbsp;201&nbsp;00013 &mdash; TVA Intracommunautaire&nbsp;: FR35942424201 &mdash; Chauffeur&nbsp;: Souhail Bouardi
+        </div>
+        `;
+
+        document.getElementById('form-section').style.display = 'none';
+        document.getElementById('invoice-section').style.display = 'block';
+        window.scrollTo(0, 0);
+        } catch(err) { alert('Erreur: ' + err.message); }
+    }
+
+    /* ===== CLOSE ===== */
+    function closeInvoice() {
+        document.getElementById('invoice-section').style.display = 'none';
+        document.getElementById('form-section').style.display = 'block';
+        window.scrollTo(0, 0);
+        var c = getCounter();
+        document.getElementById('f-num').value = fmtNum(c.year, c.n + 1);
+        document.getElementById('f-client').value = '';
+        document.getElementById('f-addr').value = '';
+        document.getElementById('f-itinerary').value = '';
+        document.getElementById('f-ht').value = '';
+        document.getElementById('f-date').value = new Date().toISOString().split('T')[0];
+    }
+</script>
+
+</body>
+</html>
