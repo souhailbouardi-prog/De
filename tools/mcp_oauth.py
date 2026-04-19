@@ -150,7 +150,7 @@ def _read_json(path: Path) -> dict | None:
     try:
         return json.loads(path.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError) as exc:
-        logger.warning("Failed to read %s: %s", path, exc)
+        logger.warning("Failed to read %s: %s", path, exc, exc_info=True)
         return None
 
 
