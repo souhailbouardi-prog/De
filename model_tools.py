@@ -20,6 +20,7 @@ Public API (signatures preserved from the original 2,400-line version):
     check_tool_availability(quiet) -> tuple
 """
 
+import atexit
 import json
 import asyncio
 import logging
@@ -54,6 +55,15 @@ def _get_tool_loop():
         if _tool_loop is None or _tool_loop.is_closed():
             _tool_loop = asyncio.new_event_loop()
         return _tool_loop
+
+
+def _cleanup_tool_loop():
+    """Stop the persistent tool loop on process exit to avoid resource leaks."""
+    if _tool_loop is not None and not _tool_loop.is_closed():
+        _tool_loop.call_soon_threadsafe(_tool_loop.stop)
+
+
+atexit.register(_cleanup_tool_loop)
 
 
 def _get_worker_loop():
@@ -110,7 +120,17 @@ def _run_async(coro):
         import concurrent.futures
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
             future = pool.submit(asyncio.run, coro)
-            return future.result(timeout=300)
+            try:
+                return future.result(timeout=300)
+            except concurrent.futures.TimeoutError:
+                # Cancel the coroutine's underlying task to free resources.
+                # asyncio.run() sets up its own loop internally; we can't
+                # reach that task directly, but cancelling the future
+                # prevents the executor from blocking on join.
+                future.cancel()
+                raise TimeoutError(
+                    "_run_async: coroutine did not complete within 300s"
+                )
 
     # If we're on a worker thread (e.g., parallel tool execution in
     # delegate_task), use a per-thread persistent loop.  This avoids
