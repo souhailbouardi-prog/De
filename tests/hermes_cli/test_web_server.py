@@ -694,6 +694,8 @@ class TestNewEndpoints:
         assert "totals" in data
         assert isinstance(data["daily"], list)
         assert "total_sessions" in data["totals"]
+        assert "total_cache_write" in data["totals"]
+        assert "total_api_calls" in data["totals"]
 
     def test_session_token_endpoint_removed(self):
         """GET /api/auth/session-token no longer exists."""

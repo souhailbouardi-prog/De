@@ -4,6 +4,7 @@ import {
   Cpu,
   Hash,
   TrendingUp,
+  Zap,
 } from "lucide-react";
 import { api } from "@/lib/api";
 import type { AnalyticsResponse, AnalyticsDailyEntry, AnalyticsModelEntry } from "@/lib/api";
@@ -18,6 +19,11 @@ const PERIODS = [
 ] as const;
 
 const CHART_HEIGHT_PX = 160;
+
+/** Compute total prompt tokens (input + cache_read + cache_write). */
+function getPromptTokens(d: { input_tokens: number; cache_read_tokens?: number; cache_write_tokens?: number }): number {
+  return d.input_tokens + (d.cache_read_tokens ?? 0) + (d.cache_write_tokens ?? 0);
+}
 
 function formatTokens(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
@@ -63,7 +69,7 @@ function TokenBarChart({ daily }: { daily: AnalyticsDailyEntry[] }) {
   const { t } = useI18n();
   if (daily.length === 0) return null;
 
-  const maxTokens = Math.max(...daily.map((d) => d.input_tokens + d.output_tokens), 1);
+  const maxTokens = Math.max(...daily.map((d) => getPromptTokens(d) + d.output_tokens), 1);
 
   return (
     <Card>
@@ -75,7 +81,7 @@ function TokenBarChart({ daily }: { daily: AnalyticsDailyEntry[] }) {
           <div className="flex items-center gap-4 text-xs text-muted-foreground">
           <div className="flex items-center gap-1.5">
             <div className="h-2.5 w-2.5 bg-[#ffe6cb]" />
-            {t.analytics.input}
+            {t.analytics.prompt}
           </div>
           <div className="flex items-center gap-1.5">
             <div className="h-2.5 w-2.5 bg-emerald-500" />
@@ -86,8 +92,9 @@ function TokenBarChart({ daily }: { daily: AnalyticsDailyEntry[] }) {
       <CardContent>
         <div className="flex items-end gap-[2px]" style={{ height: CHART_HEIGHT_PX }}>
           {daily.map((d) => {
-            const total = d.input_tokens + d.output_tokens;
-            const inputH = Math.round((d.input_tokens / maxTokens) * CHART_HEIGHT_PX);
+            const promptTokens = getPromptTokens(d);
+            const total = promptTokens + d.output_tokens;
+            const inputH = Math.round((promptTokens / maxTokens) * CHART_HEIGHT_PX);
             const outputH = Math.round((d.output_tokens / maxTokens) * CHART_HEIGHT_PX);
             return (
               <div
@@ -99,7 +106,7 @@ function TokenBarChart({ daily }: { daily: AnalyticsDailyEntry[] }) {
                 <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 hidden group-hover:block z-10 pointer-events-none">
                   <div className="bg-card border border-border px-2.5 py-1.5 text-[10px] text-foreground shadow-lg whitespace-nowrap">
                     <div className="font-medium">{formatDate(d.day)}</div>
-                    <div>{t.analytics.input}: {formatTokens(d.input_tokens)}</div>
+                    <div>{t.analytics.prompt}: {formatTokens(promptTokens)}</div>
                     <div>{t.analytics.output}: {formatTokens(d.output_tokens)}</div>
                     <div>{t.analytics.total}: {formatTokens(total)}</div>
                   </div>
@@ -152,18 +159,19 @@ function DailyTable({ daily }: { daily: AnalyticsDailyEntry[] }) {
               <tr className="border-b border-border text-muted-foreground text-xs">
                 <th className="text-left py-2 pr-4 font-medium">{t.analytics.date}</th>
                 <th className="text-right py-2 px-4 font-medium">{t.sessions.title}</th>
-                <th className="text-right py-2 px-4 font-medium">{t.analytics.input}</th>
+                <th className="text-right py-2 px-4 font-medium">{t.analytics.prompt}</th>
                 <th className="text-right py-2 pl-4 font-medium">{t.analytics.output}</th>
               </tr>
             </thead>
             <tbody>
               {sorted.map((d) => {
+                const promptTokens = getPromptTokens(d);
                 return (
                   <tr key={d.day} className="border-b border-border/50 hover:bg-secondary/20 transition-colors">
                     <td className="py-2 pr-4 font-medium">{formatDate(d.day)}</td>
                     <td className="text-right py-2 px-4 text-muted-foreground">{d.sessions}</td>
                     <td className="text-right py-2 px-4">
-                      <span className="text-[#ffe6cb]">{formatTokens(d.input_tokens)}</span>
+                      <span className="text-[#ffe6cb]">{formatTokens(promptTokens)}</span>
                     </td>
                     <td className="text-right py-2 pl-4">
                       <span className="text-emerald-400">{formatTokens(d.output_tokens)}</span>
@@ -184,7 +192,7 @@ function ModelTable({ models }: { models: AnalyticsModelEntry[] }) {
   if (models.length === 0) return null;
 
   const sorted = [...models].sort(
-    (a, b) => b.input_tokens + b.output_tokens - (a.input_tokens + a.output_tokens),
+    (a, b) => (getPromptTokens(b) + b.output_tokens) - (getPromptTokens(a) + a.output_tokens),
   );
 
   return (
@@ -213,7 +221,7 @@ function ModelTable({ models }: { models: AnalyticsModelEntry[] }) {
                   </td>
                   <td className="text-right py-2 px-4 text-muted-foreground">{m.sessions}</td>
                   <td className="text-right py-2 pl-4">
-                    <span className="text-[#ffe6cb]">{formatTokens(m.input_tokens)}</span>
+                    <span className="text-[#ffe6cb]">{formatTokens(getPromptTokens(m))}</span>
                     {" / "}
                     <span className="text-emerald-400">{formatTokens(m.output_tokens)}</span>
                   </td>
@@ -283,12 +291,17 @@ export default function AnalyticsPage() {
       {data && (
         <>
           {/* Summary cards */}
-          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
             <SummaryCard
               icon={Hash}
               label={t.analytics.totalTokens}
-              value={formatTokens(data.totals.total_input + data.totals.total_output)}
-              sub={t.analytics.inOut.replace("{input}", formatTokens(data.totals.total_input)).replace("{output}", formatTokens(data.totals.total_output))}
+              value={formatTokens(
+                (data.totals.total_input ?? 0) +
+                (data.totals.total_cache_read ?? 0) +
+                (data.totals.total_cache_write ?? 0) +
+                (data.totals.total_output ?? 0)
+              )}
+              sub={`${formatTokens((data.totals.total_input ?? 0) + (data.totals.total_cache_read ?? 0) + (data.totals.total_cache_write ?? 0))} ${t.analytics.prompt} / ${formatTokens(data.totals.total_output ?? 0)} ${t.analytics.output.toLowerCase()}`}
             />
             <SummaryCard
               icon={BarChart3}
@@ -297,11 +310,25 @@ export default function AnalyticsPage() {
               sub={`~${(data.totals.total_sessions / days).toFixed(1)}${t.analytics.perDayAvg}`}
             />
             <SummaryCard
-              icon={TrendingUp}
+              icon={Zap}
               label={t.analytics.apiCalls}
-              value={String(data.daily.reduce((sum, d) => sum + d.sessions, 0))}
+              value={String(data.totals.total_api_calls ?? data.daily.reduce((sum, d) => sum + d.sessions, 0))}
               sub={t.analytics.acrossModels.replace("{count}", String(data.by_model.length))}
             />
+            {(() => {
+              const promptSent = (data.totals.total_input ?? 0) + (data.totals.total_cache_read ?? 0);
+              const rate = promptSent > 0
+                ? `${((data.totals.total_cache_read ?? 0) / promptSent * 100).toFixed(0)}%`
+                : "—";
+              return (
+                <SummaryCard
+                  icon={TrendingUp}
+                  label={t.analytics.cacheHitRate}
+                  value={rate}
+                  sub={`${formatTokens(data.totals.total_cache_read ?? 0)} ${t.analytics.cached}`}
+                />
+              );
+            })()}
           </div>
 
           {/* Bar chart */}

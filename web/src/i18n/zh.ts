@@ -112,11 +112,14 @@ export const zh: Translations = {
     totalTokens: "总 Token 数",
     totalSessions: "总会话数",
     apiCalls: "API 调用",
+    cacheHitRate: "缓存命中率",
     dailyTokenUsage: "每日 Token 用量",
     dailyBreakdown: "每日明细",
     perModelBreakdown: "模型用量明细",
+    prompt: "提示",
     input: "输入",
     output: "输出",
+    cached: "已缓存",
     total: "总计",
     noUsageData: "该时间段暂无使用数据",
     startSession: "开始会话后将在此显示分析数据",
@@ -125,7 +128,6 @@ export const zh: Translations = {
     tokens: "Token",
     perDayAvg: "/天 平均",
     acrossModels: "共 {count} 个模型",
-    inOut: "输入 {input} / 输出 {output}",
   },
 
   logs: {

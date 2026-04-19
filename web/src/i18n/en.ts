@@ -112,11 +112,14 @@ export const en: Translations = {
     totalTokens: "Total Tokens",
     totalSessions: "Total Sessions",
     apiCalls: "API Calls",
+    cacheHitRate: "Cache Hit Rate",
     dailyTokenUsage: "Daily Token Usage",
     dailyBreakdown: "Daily Breakdown",
     perModelBreakdown: "Per-Model Breakdown",
+    prompt: "Prompt",
     input: "Input",
     output: "Output",
+    cached: "cached",
     total: "Total",
     noUsageData: "No usage data for this period",
     startSession: "Start a session to see analytics here",
@@ -125,7 +128,6 @@ export const en: Translations = {
     tokens: "Tokens",
     perDayAvg: "/day avg",
     acrossModels: "across {count} models",
-    inOut: "{input} in / {output} out",
   },
 
   logs: {
