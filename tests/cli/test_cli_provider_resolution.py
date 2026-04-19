@@ -676,3 +676,47 @@ def test_save_custom_provider_uses_provided_name(monkeypatch, tmp_path):
     entries = saved.get("custom_providers", [])
     assert len(entries) == 1
     assert entries[0]["name"] == "Ollama"
+
+
+def test_save_custom_provider_updates_existing_entry_fields(monkeypatch, tmp_path):
+    """Existing URL entry should be updated in-place (no duplicate append)."""
+    import yaml
+    from hermes_cli.main import _save_custom_provider
+
+    cfg_path = tmp_path / "config.yaml"
+    cfg_path.write_text(
+        yaml.dump(
+            {
+                "custom_providers": [
+                    {
+                        "name": "Old Name",
+                        "base_url": "https://www.flusions.com/v1",
+                        "api_key": "old-key",
+                        "model": "gpt-5.4",
+                    }
+                ]
+            }
+        )
+    )
+
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config", lambda: yaml.safe_load(cfg_path.read_text()) or {},
+    )
+    saved = {}
+
+    def _save(cfg):
+        saved.update(cfg)
+
+    monkeypatch.setattr("hermes_cli.config.save_config", _save)
+
+    _save_custom_provider(
+        "https://www.flusions.com/v1",
+        api_key="new-key",
+        model="gpt-5.4",
+        name="Flusions",
+    )
+    entries = saved.get("custom_providers", [])
+    assert len(entries) == 1
+    assert entries[0]["name"] == "Flusions"
+    assert entries[0]["api_key"] == "new-key"
+    assert entries[0]["model"] == "gpt-5.4"

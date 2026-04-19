@@ -2600,12 +2600,19 @@ def _save_custom_provider(
     if not isinstance(providers, list):
         providers = []
 
-    # Check if this URL is already saved — update model/context_length if so
+    # Check if this URL is already saved — update mutable fields in-place
+    # (name/api_key/model/context_length) rather than creating duplicates.
     for entry in providers:
         if isinstance(entry, dict) and entry.get("base_url", "").rstrip(
             "/"
         ) == base_url.rstrip("/"):
             changed = False
+            if name and entry.get("name") != name:
+                entry["name"] = name
+                changed = True
+            if api_key and entry.get("api_key") != api_key:
+                entry["api_key"] = api_key
+                changed = True
             if model and entry.get("model") != model:
                 entry["model"] = model
                 changed = True
