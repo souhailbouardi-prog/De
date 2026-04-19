@@ -309,11 +309,12 @@ def _check_gateway_running(profile_dir: Path) -> bool:
 
 def _count_skills(profile_dir: Path) -> int:
     """Count installed skills in a profile."""
+    from hermes_constants import rglob_follow
     skills_dir = profile_dir / "skills"
     if not skills_dir.is_dir():
         return 0
     count = 0
-    for md in skills_dir.rglob("SKILL.md"):
+    for md in rglob_follow(skills_dir, "SKILL.md"):
         if "/.hub/" not in str(md) and "/.git/" not in str(md):
             count += 1
     return count

@@ -549,8 +549,9 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
         dirs_to_scan.append(SKILLS_DIR)
     dirs_to_scan.extend(get_external_skills_dirs())
 
+    from hermes_constants import rglob_follow
     for scan_dir in dirs_to_scan:
-        for skill_md in scan_dir.rglob("SKILL.md"):
+        for skill_md in rglob_follow(scan_dir, "SKILL.md"):
             if any(part in _EXCLUDED_SKILL_DIRS for part in skill_md.parts):
                 continue
 
@@ -906,8 +907,9 @@ def skill_view(name: str, file_path: str = None, task_id: str = None) -> str:
 
         # Search by directory name across all dirs
         if not skill_md:
+            from hermes_constants import rglob_follow
             for search_dir in all_dirs:
-                for found_skill_md in search_dir.rglob("SKILL.md"):
+                for found_skill_md in rglob_follow(search_dir, "SKILL.md"):
                     if found_skill_md.parent.name == name:
                         skill_dir = found_skill_md.parent
                         skill_md = found_skill_md

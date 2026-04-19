@@ -217,10 +217,11 @@ def _find_skill(name: str) -> Optional[Dict[str, Any]]:
     {"path": Path} or None.
     """
     from agent.skill_utils import get_all_skills_dirs
+    from hermes_constants import rglob_follow
     for skills_dir in get_all_skills_dirs():
         if not skills_dir.exists():
             continue
-        for skill_md in skills_dir.rglob("SKILL.md"):
+        for skill_md in rglob_follow(skills_dir, "SKILL.md"):
             if skill_md.parent.name == name:
                 return {"path": skill_md.parent}
     return None

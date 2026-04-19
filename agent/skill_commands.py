@@ -217,6 +217,7 @@ def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
     try:
         from tools.skills_tool import SKILLS_DIR, _parse_frontmatter, skill_matches_platform, _get_disabled_skill_names
         from agent.skill_utils import get_external_skills_dirs
+        from hermes_constants import rglob_follow
         disabled = _get_disabled_skill_names()
         seen_names: set = set()
 
@@ -227,7 +228,7 @@ def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
         dirs_to_scan.extend(get_external_skills_dirs())
 
         for scan_dir in dirs_to_scan:
-            for skill_md in scan_dir.rglob("SKILL.md"):
+            for skill_md in rglob_follow(scan_dir, "SKILL.md"):
                 if any(part in ('.git', '.github', '.hub') for part in skill_md.parts):
                     continue
                 try:

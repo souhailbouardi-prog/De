@@ -7,7 +7,7 @@ from unittest.mock import patch
 import pytest
 
 import hermes_constants
-from hermes_constants import get_default_hermes_root, is_container
+from hermes_constants import get_default_hermes_root, is_container, rglob_follow
 
 
 class TestGetDefaultHermesRoot:
@@ -111,3 +111,52 @@ class TestIsContainer:
         # Even if we make os.path.exists return False, cached value wins
         monkeypatch.setattr(os.path, "exists", lambda p: False)
         assert is_container() is True
+
+
+class TestRglobFollow:
+    """Tests for rglob_follow() — skill discovery must traverse symlinked directories."""
+
+    def test_finds_file_in_regular_subdir(self, tmp_path):
+        """Baseline: rglob_follow finds files in plain subdirectories."""
+        sub = tmp_path / "cat"
+        sub.mkdir()
+        (sub / "SKILL.md").write_text("x")
+        found = list(rglob_follow(tmp_path, "SKILL.md"))
+        assert len(found) == 1
+        assert found[0].parent.name == "cat"
+
+    def test_follows_symlinked_directory(self, tmp_path):
+        """The bug this patch fixes: Path.rglob() skips symlinked dirs, rglob_follow must not."""
+        real = tmp_path / "real"
+        real.mkdir()
+        (real / "SKILL.md").write_text("real skill")
+
+        skills_root = tmp_path / "skills"
+        skills_root.mkdir()
+        # Symlink a skill directory into the scan root (mirrors ~/.hermes/skills/claude-imported/*)
+        try:
+            (skills_root / "linked").symlink_to(real, target_is_directory=True)
+        except (OSError, NotImplementedError):
+            pytest.skip("symlinks not supported on this platform/account")
+
+        # Sanity check: stock Path.rglob DOES NOT find the file through the symlink
+        # on Python 3.12 — this is exactly the bug.
+        plain = list(skills_root.rglob("SKILL.md"))
+        follow = list(rglob_follow(skills_root, "SKILL.md"))
+
+        assert len(follow) == 1, f"rglob_follow should traverse symlink; got {follow}"
+        # Don't assert on `plain` — behavior has varied across Python versions,
+        # but rglob_follow must reliably find it regardless.
+        assert follow[0].parent.name == "linked"
+
+    def test_glob_pattern_matches(self, tmp_path):
+        """Pattern argument acts as a fnmatch filter on filenames."""
+        (tmp_path / "a.md").write_text("")
+        (tmp_path / "b.txt").write_text("")
+        mds = list(rglob_follow(tmp_path, "*.md"))
+        assert len(mds) == 1
+        assert mds[0].name == "a.md"
+
+    def test_empty_when_no_match(self, tmp_path):
+        """Returns nothing when no files match."""
+        assert list(rglob_follow(tmp_path, "SKILL.md")) == []

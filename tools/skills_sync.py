@@ -135,11 +135,12 @@ def _discover_bundled_skills(bundled_dir: Path) -> List[Tuple[str, Path]]:
     Find all SKILL.md files in the bundled directory.
     Returns list of (skill_name, skill_directory_path) tuples.
     """
+    from hermes_constants import rglob_follow
     skills = []
     if not bundled_dir.exists():
         return skills
 
-    for skill_md in bundled_dir.rglob("SKILL.md"):
+    for skill_md in rglob_follow(bundled_dir, "SKILL.md"):
         path_str = str(skill_md)
         if "/.git/" in path_str or "/.github/" in path_str or "/.hub/" in path_str:
             continue

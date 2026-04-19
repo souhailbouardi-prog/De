@@ -2255,20 +2255,22 @@ class OptionalSkillSource(SkillSource):
 
     def _find_skill_dir(self, name: str) -> Optional[Path]:
         """Find a skill directory by name anywhere in optional-skills/."""
+        from hermes_constants import rglob_follow
         if not self._optional_dir.is_dir():
             return None
-        for skill_md in self._optional_dir.rglob("SKILL.md"):
+        for skill_md in rglob_follow(self._optional_dir, "SKILL.md"):
             if skill_md.parent.name == name:
                 return skill_md.parent
         return None
 
     def _scan_all(self) -> List[SkillMeta]:
         """Enumerate all optional skills with metadata."""
+        from hermes_constants import rglob_follow
         if not self._optional_dir.is_dir():
             return []
 
         results: List[SkillMeta] = []
-        for skill_md in sorted(self._optional_dir.rglob("SKILL.md")):
+        for skill_md in sorted(rglob_follow(self._optional_dir, "SKILL.md")):
             parent = skill_md.parent
             rel_parts = parent.relative_to(self._optional_dir).parts
             if any(part.startswith(".") for part in rel_parts):

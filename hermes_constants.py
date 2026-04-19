@@ -238,6 +238,21 @@ def get_skills_dir() -> Path:
     return get_hermes_home() / "skills"
 
 
+def rglob_follow(directory: Path, pattern: str):
+    """Like Path.rglob() but follows symlinks.
+
+    Python 3.12's Path.rglob() does NOT follow symlinks, so symlinked
+    skill directories (e.g. ~/.hermes/skills/claude-imported/spark-pmc-expert
+    -> ~/.claude/skills/spark-pmc-expert/) are invisible. This uses
+    os.walk(followlinks=True) to traverse symlinked directories.
+    """
+    import fnmatch
+    for dirpath, _dirnames, filenames in os.walk(directory, followlinks=True):
+        for filename in filenames:
+            if fnmatch.fnmatch(filename, pattern):
+                yield Path(dirpath) / filename
+
+
 
 def get_env_path() -> Path:
     """Return the path to the ``.env`` file under HERMES_HOME."""

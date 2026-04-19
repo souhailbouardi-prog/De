@@ -61,11 +61,12 @@ def _gateway_status() -> str:
 
 def _count_skills(hermes_home: Path) -> int:
     """Count installed skills."""
+    from hermes_constants import rglob_follow
     skills_dir = hermes_home / "skills"
     if not skills_dir.is_dir():
         return 0
     count = 0
-    for item in skills_dir.rglob("SKILL.md"):
+    for item in rglob_follow(skills_dir, "SKILL.md"):
         count += 1
     return count
 
