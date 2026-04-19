@@ -5,9 +5,11 @@ that connect() refuses to start on non-loopback without API_SERVER_KEY.
 """
 
 import socket
+import warnings
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from aiohttp.web_app import NotAppKeyWarning
 
 from gateway.config import PlatformConfig
 from gateway.platforms.api_server import APIServerAdapter
@@ -130,3 +132,19 @@ class TestConnectBindGuard:
         assert adapter._api_key == "sk-test"
         assert is_network_accessible("0.0.0.0") is True
         # Combined: the guard condition is False (key is set), so it passes
+
+    @pytest.mark.asyncio
+    async def test_connect_does_not_emit_not_app_key_warning(self):
+        adapter = APIServerAdapter(PlatformConfig(enabled=True, extra={"host": "127.0.0.1", "port": 0}))
+
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always", NotAppKeyWarning)
+            try:
+                result = await adapter.connect()
+                assert result is True
+            finally:
+                if getattr(adapter, "_site", None) is not None:
+                    await adapter.disconnect()
+
+        not_app_key_warnings = [w for w in caught if issubclass(w.category, NotAppKeyWarning)]
+        assert not not_app_key_warnings
