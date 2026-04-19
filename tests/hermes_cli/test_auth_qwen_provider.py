@@ -200,6 +200,12 @@ def test_refresh_qwen_cli_tokens_success(qwen_env):
     assert result["refresh_token"] == "new-refresh"
     assert "expiry_date" in result
 
+    # Verify User-Agent header is sent
+    call_kwargs = mock_httpx.post.call_args
+    headers = call_kwargs.kwargs.get("headers") or call_kwargs[1].get("headers", {})
+    assert "User-Agent" in headers
+    assert headers["User-Agent"].startswith("QwenCode/")
+
 
 def test_refresh_qwen_cli_tokens_preserves_old_refresh_if_not_in_response(qwen_env):
     tokens = _make_qwen_tokens(refresh_token="keep-me")
@@ -256,12 +262,16 @@ def test_refresh_qwen_cli_tokens_invalid_json_response(qwen_env):
     resp = MagicMock()
     resp.status_code = 200
     resp.json.side_effect = ValueError("bad json")
+    resp.headers = {"content-type": "text/html"}
+    resp.text = "<html>Not Found</html>"
 
     with patch("hermes_cli.auth.httpx") as mock_httpx:
         mock_httpx.post.return_value = resp
         with pytest.raises(AuthError) as exc:
             _refresh_qwen_cli_tokens(tokens)
     assert exc.value.code == "qwen_refresh_invalid_json"
+    assert "status=200" in str(exc.value)
+    assert "text/html" in str(exc.value)
 
 
 def test_refresh_qwen_cli_tokens_missing_access_token_in_response(qwen_env):

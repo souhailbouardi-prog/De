@@ -5,6 +5,16 @@ import os
 import pytest
 
 
+_ANTHROPIC_ENV_VARS = ("ANTHROPIC_API_KEY", "ANTHROPIC_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN")
+
+
+@pytest.fixture(autouse=True)
+def _clean_anthropic_env(monkeypatch):
+    """Remove anthropic env vars so CI secrets don't leak into tests."""
+    for var in _ANTHROPIC_ENV_VARS:
+        monkeypatch.delenv(var, raising=False)
+
+
 def _write_config(tmp_path, config: dict) -> None:
     hermes_home = tmp_path / "hermes"
     hermes_home.mkdir(parents=True, exist_ok=True)

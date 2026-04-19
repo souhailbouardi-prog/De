@@ -42,9 +42,13 @@ class TestRealSubagentInterrupt(unittest.TestCase):
     def setUp(self):
         set_interrupt(False)
         os.environ.setdefault("OPENAI_API_KEY", "test-key")
+        from run_agent import AIAgent
+        self._orig_build_system_prompt = AIAgent._build_system_prompt
 
     def tearDown(self):
         set_interrupt(False)
+        from run_agent import AIAgent
+        AIAgent._build_system_prompt = self._orig_build_system_prompt
 
     def test_interrupt_child_during_api_call(self):
         """Real AIAgent child interrupted while making API call."""
@@ -54,6 +58,7 @@ class TestRealSubagentInterrupt(unittest.TestCase):
         parent = AIAgent.__new__(AIAgent)
         parent._interrupt_requested = False
         parent._interrupt_message = None
+        parent._execution_thread_id = None
         parent._active_children = []
         parent._active_children_lock = threading.Lock()
         parent.quiet_mode = True

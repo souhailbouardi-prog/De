@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import platform
 import shutil
 import shlex
 import stat
@@ -77,6 +78,11 @@ CODEX_ACCESS_TOKEN_REFRESH_SKEW_SECONDS = 120
 QWEN_OAUTH_CLIENT_ID = "f0304373b74a44d2b584a3fb70ca9e56"
 QWEN_OAUTH_TOKEN_URL = "https://chat.qwen.ai/api/v1/oauth2/token"
 QWEN_ACCESS_TOKEN_REFRESH_SKEW_SECONDS = 120
+QWEN_OAUTH_USER_AGENT = "QwenCode/{version} ({system}; {machine})".format(
+    version="0.14.0",
+    system=platform.system().lower(),
+    machine=platform.machine(),
+)
 
 # Google Gemini OAuth (google-gemini-cli provider, Cloud Code Assist backend)
 DEFAULT_GEMINI_CLOUDCODE_BASE_URL = "cloudcode-pa://google"
@@ -1183,6 +1189,7 @@ def _refresh_qwen_cli_tokens(tokens: Dict[str, Any], timeout_seconds: float = 20
             headers={
                 "Content-Type": "application/x-www-form-urlencoded",
                 "Accept": "application/json",
+                "User-Agent": QWEN_OAUTH_USER_AGENT,
             },
             data={
                 "grant_type": "refresh_token",
@@ -1210,8 +1217,11 @@ def _refresh_qwen_cli_tokens(tokens: Dict[str, Any], timeout_seconds: float = 20
     try:
         payload = response.json()
     except Exception as exc:
+        ct = response.headers.get("content-type", "")
+        preview = response.text[:500] if response.text else "(empty)"
         raise AuthError(
-            f"Qwen OAuth refresh returned invalid JSON: {exc}",
+            f"Qwen OAuth refresh returned invalid JSON: {exc}"
+            f" (status={response.status_code}, content-type={ct!r}, body={preview!r})",
             provider="qwen-oauth",
             code="qwen_refresh_invalid_json",
         ) from exc
