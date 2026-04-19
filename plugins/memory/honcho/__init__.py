@@ -191,6 +191,7 @@ class HonchoMemoryProvider(MemoryProvider):
         self._manager = None   # HonchoSessionManager
         self._config = None    # HonchoClientConfig
         self._session_key = ""
+        self._last_init_error = ""
         self._prefetch_result = ""
         self._prefetch_lock = threading.Lock()
         self._prefetch_thread: Optional[threading.Thread] = None
@@ -342,8 +343,60 @@ class HonchoMemoryProvider(MemoryProvider):
         except ImportError:
             logger.debug("honcho-ai package not installed — plugin inactive")
         except Exception as e:
+            self._last_init_error = self._describe_init_error(e)
             logger.warning("Honcho init failed: %s", e)
             self._manager = None
+
+    def _describe_init_error(self, exc: Exception) -> str:
+        """Return a sanitized, user-facing Honcho init failure message."""
+        status = getattr(exc, "status", None)
+        code = getattr(exc, "code", None)
+        message = str(exc).strip() or exc.__class__.__name__
+        exc_type = exc.__class__.__name__
+        prefix = "Honcho memory unavailable for this operation"
+
+        if status:
+            return f"{prefix}: session bootstrap failed: {message} (HTTP {status})."
+        if code == "timeout" or "timeout" in message.lower() or "timed out" in message.lower():
+            return f"{prefix}: session bootstrap timed out ({exc_type})."
+        if code == "connection_error":
+            return f"{prefix}: connection error during session bootstrap ({exc_type})."
+        return f"{prefix}: session bootstrap failed: {message} ({exc_type})."
+
+    @staticmethod
+    def _is_retryable_init_error(exc: Exception) -> bool:
+        """Return True for transient Honcho/bootstrap failures worth retrying once."""
+        status = getattr(exc, "status", 0) or 0
+        code = getattr(exc, "code", "") or ""
+        message = str(exc).lower()
+        if status >= 500 or status == 429:
+            return True
+        if code in {"timeout", "connection_error", "server_error", "rate_limit_exceeded"}:
+            return True
+        return "timeout" in message or "timed out" in message
+
+    def _init_session_with_retry(self) -> Any:
+        """Initialize/get the Honcho session, retrying once on transient failures."""
+        attempts = 2
+        last_error: Exception | None = None
+
+        for attempt in range(1, attempts + 1):
+            try:
+                return self._manager.get_or_create(self._session_key)
+            except Exception as e:
+                last_error = e
+                if attempt >= attempts or not self._is_retryable_init_error(e):
+                    raise
+                logger.warning(
+                    "Honcho session bootstrap failed (attempt %d/%d): %s; retrying once",
+                    attempt,
+                    attempts,
+                    e,
+                )
+                time.sleep(1.0)
+
+        if last_error is not None:
+            raise last_error
 
     def _do_session_init(self, cfg, session_id: str, **kwargs) -> None:
         """Shared session initialization logic for both eager and lazy paths."""
@@ -373,7 +426,8 @@ class HonchoMemoryProvider(MemoryProvider):
         logger.debug("Honcho session key resolved: %s", self._session_key)
 
         # Create session eagerly
-        session = self._manager.get_or_create(self._session_key)
+        self._last_init_error = ""
+        session = self._init_session_with_retry()
         self._session_initialized = True
 
         # ----- B6: Memory file migration (one-time, for new sessions) -----
@@ -444,7 +498,7 @@ class HonchoMemoryProvider(MemoryProvider):
             return True
         if self._cron_skipped:
             return False
-        if not self._config or not self._lazy_init_kwargs:
+        if not self._config or self._lazy_init_kwargs is None:
             return False
 
         try:
@@ -458,6 +512,7 @@ class HonchoMemoryProvider(MemoryProvider):
             self._lazy_init_session_id = None
             return self._manager is not None
         except Exception as e:
+            self._last_init_error = self._describe_init_error(e)
             logger.warning("Honcho lazy session init failed: %s", e)
             return False
 
@@ -1138,7 +1193,9 @@ class HonchoMemoryProvider(MemoryProvider):
         # Port #1957: ensure session is initialized for tools-only mode
         if not self._session_initialized:
             if not self._ensure_session():
-                return tool_error("Honcho session could not be initialized.")
+                return tool_error(
+                    self._last_init_error or "Honcho session could not be initialized."
+                )
 
         if not self._manager or not self._session_key:
             return tool_error("Honcho is not active for this session.")
