@@ -64,7 +64,20 @@ function formatOutgoingMessage(message) {
 
 function normalizeWhatsAppId(value) {
   if (!value) return '';
-  return String(value).replace(':', '@');
+  const normalized = String(value).trim();
+
+  // Canonicalize Baileys device-suffixed IDs:
+  //   55001234567:2@s.whatsapp.net -> 55001234567@s.whatsapp.net
+  //   77009876543210:2@lid       -> 77009876543210@lid
+  const match = normalized.match(/^([^:@]+)(?::\d+)?@(s\.whatsapp\.net|lid|g\.us)$/);
+  if (match) {
+    return `${match[1]}@${match[2]}`;
+  }
+
+  if (normalized.includes(':') && normalized.includes('@')) {
+    return normalized.replace(':', '@');
+  }
+  return normalized;
 }
 
 function getMessageContent(msg) {
@@ -359,6 +372,20 @@ async function startSocket() {
         botIds,
         timestamp: msg.messageTimestamp,
       };
+
+      if (WHATSAPP_DEBUG) {
+        try {
+          console.log(JSON.stringify({
+            event: 'parsed',
+            chatId,
+            senderId,
+            mentionedIds,
+            quotedParticipant,
+            botIds,
+            contextInfo,
+          }));
+        } catch {}
+      }
 
       messageQueue.push(event);
       if (messageQueue.length > MAX_QUEUE_SIZE) {

@@ -199,6 +199,17 @@ class WhatsAppAdapter(BasePlatformAdapter):
         if not value:
             return ""
         normalized = str(value).strip()
+
+        # Baileys may emit IDs with device suffixes like:
+        #   55001234567:2@s.whatsapp.net
+        #   77009876543210:2@lid
+        # Canonicalize to compare participant IDs reliably:
+        #   55001234567@s.whatsapp.net
+        #   77009876543210@lid
+        match = re.match(r"^([^:@]+)(?::\d+)?@(s\.whatsapp\.net|lid|g\.us)$", normalized)
+        if match:
+            return f"{match.group(1)}@{match.group(2)}"
+
         if ":" in normalized and "@" in normalized:
             normalized = normalized.replace(":", "@", 1)
         return normalized
