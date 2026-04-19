@@ -30,7 +30,7 @@ Usage:
 """
 
 import re
-from typing import Tuple, Optional, List, Callable
+from typing import Tuple, Optional, List, Callable, Dict, Any
 from difflib import SequenceMatcher
 
 UNICODE_MAP = {
@@ -48,7 +48,8 @@ def _unicode_normalize(text: str) -> str:
 
 
 def fuzzy_find_and_replace(content: str, old_string: str, new_string: str,
-                            replace_all: bool = False) -> Tuple[str, int, Optional[str], Optional[str]]:
+                            replace_all: bool = False,
+                            config: Optional[Dict[str, Any]] = None) -> Tuple[str, int, Optional[str], Optional[str]]:
     """
     Find and replace text using a chain of increasingly fuzzy matching strategies.
 
@@ -57,6 +58,7 @@ def fuzzy_find_and_replace(content: str, old_string: str, new_string: str,
         old_string: The text to find
         new_string: The replacement text
         replace_all: If True, replace all occurrences; if False, require uniqueness
+        config: Optional config dict with file_edit.fuzzy_matching settings
 
     Returns:
         Tuple of (new_content, match_count, strategy_name, error_message)
@@ -69,6 +71,54 @@ def fuzzy_find_and_replace(content: str, old_string: str, new_string: str,
     if old_string == new_string:
         return content, 0, None, "old_string and new_string are identical"
 
+    # Read fuzzy matching configuration
+    cfg = config or {}
+    fm_cfg = cfg.get("file_edit", {}).get("fuzzy_matching", {})
+    deletion_mode = fm_cfg.get("deletion_mode", "inherit")
+
+    # Deletion operations can use stricter matching to prevent accidental data loss.
+    # When new_string is empty, we're deleting - check deletion_mode setting.
+    if new_string == "":
+        if deletion_mode == "exact":
+            # Strategy level 1: exact only (safest)
+            matches = _strategy_exact(content, old_string)
+            if not matches:
+                return content, 0, None, "Could not find exact match for deletion. Deletion requires precise matching to prevent accidental data loss."
+            if len(matches) > 1 and not replace_all:
+                return content, 0, None, (
+                    f"Found {len(matches)} exact matches for deletion. "
+                    f"Provide more context to make it unique, or use replace_all=True."
+                )
+            new_content = _apply_replacements(content, matches, new_string)
+            return new_content, len(matches), "exact_for_deletion", None
+
+        elif deletion_mode == "conservative":
+            # Strategy levels 1-3: exact, line_trimmed, whitespace_normalized
+            conservative_strategies: List[Tuple[str, Callable]] = [
+                ("exact", _strategy_exact),
+                ("line_trimmed", _strategy_line_trimmed),
+                ("whitespace_normalized", _strategy_whitespace_normalized),
+            ]
+            for strategy_name, strategy_fn in conservative_strategies:
+                matches = strategy_fn(content, old_string)
+                if matches:
+                    if len(matches) > 1 and not replace_all:
+                        return content, 0, None, (
+                            f"Found {len(matches)} matches for deletion using {strategy_name}. "
+                            f"Provide more context to make it unique, or use replace_all=True."
+                        )
+                    new_content = _apply_replacements(content, matches, new_string)
+                    return new_content, len(matches), f"{strategy_name}_for_deletion", None
+            return content, 0, None, "Could not find a match for deletion using conservative strategies (exact, line_trimmed, whitespace_normalized)."
+
+        elif deletion_mode == "full":
+            # Strategy levels 1-9: all strategies (least safe, most permissive)
+            # Fall through to normal matching logic below
+            pass
+
+        # deletion_mode == "inherit" or "full" - fall through to normal matching logic below
+
+    # Non-deletion operations, or deletion_mode == "inherit"
     # Try each matching strategy in order
     strategies: List[Tuple[str, Callable]] = [
         ("exact", _strategy_exact),

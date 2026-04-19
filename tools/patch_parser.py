@@ -240,6 +240,7 @@ def _count_occurrences(text: str, pattern: str) -> int:
 def _validate_operations(
     operations: List[PatchOperation],
     file_ops: Any,
+    config: Optional[Any] = None,
 ) -> List[str]:
     """Validate all operations without writing any files.
 
@@ -286,7 +287,7 @@ def _validate_operations(
                 replacement = '\n'.join(replace_lines)
 
                 new_simulated, count, _strategy, match_error = fuzzy_find_and_replace(
-                    simulated, search_pattern, replacement, replace_all=False
+                    simulated, search_pattern, replacement, replace_all=False, config=config
                 )
                 if count == 0:
                     label = f"'{hunk.context_hint}'" if hunk.context_hint else "(no hint)"
@@ -323,7 +324,8 @@ def _validate_operations(
 
 
 def apply_v4a_operations(operations: List[PatchOperation],
-                          file_ops: Any) -> 'PatchResult':
+                          file_ops: Any,
+                          config: Optional[Any] = None) -> 'PatchResult':
     """Apply V4A patch operations using a file operations interface.
 
     Uses a two-phase validate-then-apply approach:
@@ -336,6 +338,7 @@ def apply_v4a_operations(operations: List[PatchOperation],
     Args:
         operations: List of PatchOperation from parse_v4a_patch
         file_ops: Object with read_file_raw, write_file methods
+        config: Optional config dict for fuzzy matching settings
 
     Returns:
         PatchResult with results of all operations
@@ -344,7 +347,7 @@ def apply_v4a_operations(operations: List[PatchOperation],
     from tools.file_operations import PatchResult
 
     # ---- Phase 1: validate ----
-    validation_errors = _validate_operations(operations, file_ops)
+    validation_errors = _validate_operations(operations, file_ops, config=config)
     if validation_errors:
         return PatchResult(
             success=False,
@@ -386,7 +389,7 @@ def apply_v4a_operations(operations: List[PatchOperation],
                     errors.append(f"Failed to move {op.file_path}: {result[1]}")
 
             elif op.operation == OperationType.UPDATE:
-                result = _apply_update(op, file_ops)
+                result = _apply_update(op, file_ops, config=config)
                 if result[0]:
                     files_modified.append(op.file_path)
                     all_diffs.append(result[1])
@@ -479,7 +482,7 @@ def _apply_move(op: PatchOperation, file_ops: Any) -> Tuple[bool, str]:
     return True, diff
 
 
-def _apply_update(op: PatchOperation, file_ops: Any) -> Tuple[bool, str]:
+def _apply_update(op: PatchOperation, file_ops: Any, config: Optional[Any] = None) -> Tuple[bool, str]:
     """Apply an update file operation."""
     # Deferred import: breaks the patch_parser ↔ fuzzy_match circular dependency
     from tools.fuzzy_match import fuzzy_find_and_replace
@@ -514,7 +517,7 @@ def _apply_update(op: PatchOperation, file_ops: Any) -> Tuple[bool, str]:
             replacement = '\n'.join(replace_lines)
 
             new_content, count, _strategy, error = fuzzy_find_and_replace(
-                new_content, search_pattern, replacement, replace_all=False
+                new_content, search_pattern, replacement, replace_all=False, config=config
             )
 
             if error and count == 0:
@@ -529,7 +532,7 @@ def _apply_update(op: PatchOperation, file_ops: Any) -> Tuple[bool, str]:
                         window = new_content[window_start:window_end]
 
                         window_new, count, _strategy, error = fuzzy_find_and_replace(
-                            window, search_pattern, replacement, replace_all=False
+                            window, search_pattern, replacement, replace_all=False, config=config
                         )
                         
                         if count > 0:

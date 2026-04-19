@@ -445,6 +445,17 @@ DEFAULT_CONFIG = {
     # exceed this are rejected with guidance to use offset+limit.
     # 100K chars ≈ 25–35K tokens across typical tokenisers.
     "file_read_max_chars": 100_000,
+
+    # File edit fuzzy matching configuration
+    "file_edit": {
+        "fuzzy_matching": {
+            # Matching strategy for deletion operations (old_string found, new_string is empty)
+            # "inherit"      - Use Hermes default behavior (fuzzy matching enabled)
+            # "exact"        - Force exact match only (safest, prevents accidental deletions)
+            # "conservative" - Use only safe strategies: exact, line_trimmed, whitespace_normalized
+            "deletion_mode": "inherit",
+        },
+    },
     
     "compression": {
         "enabled": True,

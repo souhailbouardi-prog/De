@@ -780,8 +780,11 @@ class ShellFileOperations(FileOperations):
         # Import and use fuzzy matching
         from tools.fuzzy_match import fuzzy_find_and_replace
         
+        # Get config for fuzzy matching settings
+        config = getattr(self.env, 'config', None)
+        
         new_content, match_count, _strategy, error = fuzzy_find_and_replace(
-            content, old_string, new_string, replace_all
+            content, old_string, new_string, replace_all, config=config
         )
         
         if error:
@@ -834,8 +837,11 @@ class ShellFileOperations(FileOperations):
         if parse_error:
             return PatchResult(error=f"Failed to parse patch: {parse_error}")
         
+        # Get config for fuzzy matching settings
+        config = getattr(self.env, 'config', None)
+        
         # Apply operations
-        result = apply_v4a_operations(operations, self)
+        result = apply_v4a_operations(operations, self, config=config)
         return result
     
     def _check_lint(self, path: str) -> LintResult:
