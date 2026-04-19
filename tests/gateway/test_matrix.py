@@ -1229,6 +1229,7 @@ class TestMatrixUploadAndSend:
         """Encrypted rooms should use 'file' key with crypto metadata."""
         adapter = _make_adapter()
         adapter._encryption = True
+        fake_mautrix_mods = _make_fake_mautrix()
         mock_client = MagicMock()
         mock_client.crypto = object()
         mock_client.state_store = MagicMock()
@@ -1237,9 +1238,10 @@ class TestMatrixUploadAndSend:
         mock_client.send_message_event = AsyncMock(return_value="$event")
         adapter._client = mock_client
 
-        result = await adapter._upload_and_send(
-            "!room:example.org", b"secret", "secret.txt", "text/plain", "m.file",
-        )
+        with patch.dict("sys.modules", fake_mautrix_mods):
+            result = await adapter._upload_and_send(
+                "!room:example.org", b"secret", "secret.txt", "text/plain", "m.file",
+            )
 
         assert result.success is True
         # Should have uploaded ciphertext, not plaintext
