@@ -3,6 +3,7 @@ that only manifest at runtime (not in mocked unit tests)."""
 
 import os
 import sys
+import pytest
 from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
@@ -147,6 +148,45 @@ class TestBusyInputMode:
             cli._interrupt_queue.put(text)
         assert cli._interrupt_queue.get_nowait() == "redirect"
         assert cli._pending_input.empty()
+
+
+class TestKeyBindings:
+    def test_run_does_not_override_prompt_toolkit_ctrl_j_submit(self, monkeypatch):
+        cli_obj = _make_cli()
+
+        class RecordingKeyBindings:
+            def __init__(self):
+                self.bindings = []
+
+            def add(self, *keys, **kwargs):
+                def decorator(fn):
+                    self.bindings.append((keys, kwargs, fn.__name__))
+                    return fn
+
+                return decorator
+
+        captured = {}
+
+        def fake_keybindings():
+            kb = RecordingKeyBindings()
+            captured["kb"] = kb
+            return kb
+
+        def fake_application(*args, **kwargs):
+            raise RuntimeError("stop-after-bindings")
+
+        monkeypatch.setitem(cli_obj.run.__globals__, "KeyBindings", fake_keybindings)
+        monkeypatch.setitem(cli_obj.run.__globals__, "Application", fake_application)
+        monkeypatch.setattr(cli_obj, "show_banner", lambda: None)
+        cli_obj.console = MagicMock()
+
+        with pytest.raises(RuntimeError, match="stop-after-bindings"):
+            cli_obj.run()
+
+        registered = [keys for keys, _kwargs, _name in captured["kb"].bindings]
+        assert ("enter",) in registered
+        assert ("escape", "enter") in registered
+        assert ("c-j",) not in registered
 
 
 class TestSingleQueryState:

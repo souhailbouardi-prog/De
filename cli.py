@@ -8826,11 +8826,6 @@ class HermesCLI:
             """Alt+Enter inserts a newline for multi-line input."""
             event.current_buffer.insert_text('\n')
 
-        @kb.add('c-j')
-        def handle_ctrl_enter(event):
-            """Ctrl+Enter (c-j) inserts a newline. Most terminals send c-j for Ctrl+Enter."""
-            event.current_buffer.insert_text('\n')
-
         @kb.add('tab', eager=True)
         def handle_tab(event):
             """Tab: accept completion, auto-suggestion, or start completions.
