@@ -714,6 +714,45 @@ class TestRunJobSessionPersistence:
         # But the output log should show the placeholder
         assert "(No response generated)" in output
 
+    def test_run_job_invalid_cron_timeout_falls_back_to_default(self, caplog, tmp_path, monkeypatch):
+        job = {
+            "id": "timeout-fallback-job",
+            "name": "timeout fallback",
+            "prompt": "hello",
+        }
+        fake_db = MagicMock()
+        monkeypatch.setenv("HERMES_CRON_TIMEOUT", "abc")
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("dotenv.load_dotenv"), \
+             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch(
+                 "hermes_cli.runtime_provider.resolve_runtime_provider",
+                 return_value={
+                     "api_key": "***",
+                     "base_url": "https://example.invalid/v1",
+                     "provider": "openrouter",
+                     "api_mode": "chat_completions",
+                 },
+             ), \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = {"final_response": "ok"}
+            mock_agent_cls.return_value = mock_agent
+
+            with caplog.at_level(logging.WARNING, logger="cron.scheduler"):
+                success, output, final_response, error = run_job(job)
+
+        assert success is True
+        assert error is None
+        assert final_response == "ok"
+        assert "ok" in output
+        assert any(
+            "Invalid HERMES_CRON_TIMEOUT='abc'; using default 600" in record.message
+            for record in caplog.records
+        ), f"Expected invalid timeout warning, got: {[record.message for record in caplog.records]}"
+
     def test_tick_marks_empty_response_as_error(self, tmp_path):
         """When run_job returns success=True but final_response is empty,
         tick() should mark the job as error so last_status != 'ok'.
