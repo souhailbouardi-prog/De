@@ -1710,6 +1710,30 @@ class BasePlatformAdapter(ABC):
                 except Exception as e:
                     logger.error("[%s] Busy-session handler failed: %s", self.name, e, exc_info=True)
 
+            # /queue must bypass the active-session guard so it reaches the
+            # gateway's /queue handler (which stores the text without triggering
+            # an interrupt).  Without this, the adapter intercepts /queue as a
+            # normal follow-up message, triggers an interrupt, and the safety
+            # net in run.py discards it as a known command.
+            if cmd in ("queue", "q"):
+                logger.debug(
+                    "[%s] Queue command '/%s' bypassing active-session guard for %s",
+                    self.name, cmd, session_key,
+                )
+                try:
+                    _thread_meta = {"thread_id": event.source.thread_id} if event.source.thread_id else None
+                    response = await self._message_handler(event)
+                    if response:
+                        await self._send_with_retry(
+                            chat_id=event.source.chat_id,
+                            content=response,
+                            reply_to=event.message_id,
+                            metadata=_thread_meta,
+                        )
+                except Exception as e:
+                    logger.error("[%s] Queue dispatch failed: %s", self.name, e, exc_info=True)
+                return
+
             # Special case: photo bursts/albums frequently arrive as multiple near-
             # simultaneous messages. Queue them without interrupting the active run,
             # then process them immediately after the current task finishes.
