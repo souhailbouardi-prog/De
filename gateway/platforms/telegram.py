@@ -937,12 +937,21 @@ class TelegramAdapter(BasePlatformAdapter):
             return SendResult(success=True, message_id=None)
         
         try:
-            # Format and split message if needed
-            formatted = self.format_message(content)
+            # Auto-detect HTML tags — if present, send as HTML instead of
+            # converting to MarkdownV2 (which would escape the tags).
+            _has_html = bool(re.search(r'<(?:b|i|u|s|code|pre|a |em|strong|ins|del|span |tg-)[^>]*>', content))
+
+            if _has_html:
+                formatted = content
+                send_parse_mode = ParseMode.HTML
+            else:
+                formatted = self.format_message(content)
+                send_parse_mode = ParseMode.MARKDOWN_V2
+
             chunks = self.truncate_message(
                 formatted, self.MAX_MESSAGE_LENGTH, len_fn=utf16_len,
             )
-            if len(chunks) > 1:
+            if len(chunks) > 1 and send_parse_mode == ParseMode.MARKDOWN_V2:
                 # truncate_message appends a raw " (1/2)" suffix. Escape the
                 # MarkdownV2-special parentheses so Telegram doesn't reject the
                 # chunk and fall back to plain text.
@@ -977,21 +986,21 @@ class TelegramAdapter(BasePlatformAdapter):
                 msg = None
                 for _send_attempt in range(3):
                     try:
-                        # Try Markdown first, fall back to plain text if it fails
+                        # Try detected parse mode first, fall back to plain text if it fails
                         try:
                             msg = await self._bot.send_message(
                                 chat_id=int(chat_id),
                                 text=chunk,
-                                parse_mode=ParseMode.MARKDOWN_V2,
+                                parse_mode=send_parse_mode,
                                 reply_to_message_id=reply_to_id,
                                 message_thread_id=effective_thread_id,
                                 **self._link_preview_kwargs(),
                             )
                         except Exception as md_error:
-                            # Markdown parsing failed, try plain text
-                            if "parse" in str(md_error).lower() or "markdown" in str(md_error).lower():
-                                logger.warning("[%s] MarkdownV2 parse failed, falling back to plain text: %s", self.name, md_error)
-                                plain_chunk = _strip_mdv2(chunk)
+                            # Parse failed, try plain text
+                            if "parse" in str(md_error).lower() or "markdown" in str(md_error).lower() or "html" in str(md_error).lower():
+                                logger.warning("[%s] %s parse failed, falling back to plain text: %s", self.name, send_parse_mode, md_error)
+                                plain_chunk = _strip_mdv2(chunk) if send_parse_mode == ParseMode.MARKDOWN_V2 else re.sub(r'<[^>]+>', '', chunk)
                                 msg = await self._bot.send_message(
                                     chat_id=int(chat_id),
                                     text=plain_chunk,
