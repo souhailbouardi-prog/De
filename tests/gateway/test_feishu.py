@@ -3098,3 +3098,178 @@ class TestSenderNameResolution(unittest.TestCase):
             result = asyncio.run(adapter._resolve_sender_name_from_api("ou_broken"))
 
         self.assertIsNone(result)
+
+
+class TestRequireMention(unittest.TestCase):
+    """Tests for the FEISHU_REQUIRE_MENTION configuration (closes #5465)."""
+
+    # ── Parsing: _feishu_require_mention helper ──────────────────────────
+
+    def test_parse_require_mention_defaults_to_true(self):
+        from gateway.platforms.feishu import _feishu_require_mention
+
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertTrue(_feishu_require_mention({}))
+
+    def test_parse_require_mention_explicit_true(self):
+        from gateway.platforms.feishu import _feishu_require_mention
+
+        with patch.dict(os.environ, {"FEISHU_REQUIRE_MENTION": "true"}, clear=True):
+            self.assertTrue(_feishu_require_mention({}))
+
+    def test_parse_require_mention_false(self):
+        from gateway.platforms.feishu import _feishu_require_mention
+
+        with patch.dict(os.environ, {"FEISHU_REQUIRE_MENTION": "false"}, clear=True):
+            self.assertFalse(_feishu_require_mention({}))
+
+    def test_parse_require_mention_zero(self):
+        from gateway.platforms.feishu import _feishu_require_mention
+
+        with patch.dict(os.environ, {"FEISHU_REQUIRE_MENTION": "0"}, clear=True):
+            self.assertFalse(_feishu_require_mention({}))
+
+    def test_parse_require_mention_no(self):
+        from gateway.platforms.feishu import _feishu_require_mention
+
+        with patch.dict(os.environ, {"FEISHU_REQUIRE_MENTION": "no"}, clear=True):
+            self.assertFalse(_feishu_require_mention({}))
+
+    def test_parse_require_mention_off(self):
+        from gateway.platforms.feishu import _feishu_require_mention
+
+        with patch.dict(os.environ, {"FEISHU_REQUIRE_MENTION": "off"}, clear=True):
+            self.assertFalse(_feishu_require_mention({}))
+
+    def test_parse_require_mention_random_string_stays_true(self):
+        from gateway.platforms.feishu import _feishu_require_mention
+
+        with patch.dict(os.environ, {"FEISHU_REQUIRE_MENTION": "yes"}, clear=True):
+            self.assertTrue(_feishu_require_mention({}))
+
+    def test_parse_require_mention_empty_string_stays_true(self):
+        from gateway.platforms.feishu import _feishu_require_mention
+
+        with patch.dict(os.environ, {"FEISHU_REQUIRE_MENTION": ""}, clear=True):
+            self.assertTrue(_feishu_require_mention({}))
+
+    def test_parse_require_mention_config_extra_overrides_env(self):
+        from gateway.platforms.feishu import _feishu_require_mention
+
+        with patch.dict(os.environ, {"FEISHU_REQUIRE_MENTION": "true"}, clear=True):
+            self.assertFalse(_feishu_require_mention({"require_mention": "false"}))
+
+    def test_parse_require_mention_config_extra_bool_true(self):
+        from gateway.platforms.feishu import _feishu_require_mention
+
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertTrue(_feishu_require_mention({"require_mention": True}))
+
+    def test_parse_require_mention_config_extra_bool_false(self):
+        from gateway.platforms.feishu import _feishu_require_mention
+
+        with patch.dict(os.environ, {"FEISHU_REQUIRE_MENTION": "true"}, clear=True):
+            self.assertFalse(_feishu_require_mention({"require_mention": False}))
+
+    # ── Adapter integration ──────────────────────────────────────────────
+
+    @patch.dict(
+        os.environ,
+        {"FEISHU_GROUP_POLICY": "open", "FEISHU_REQUIRE_MENTION": "false"},
+        clear=True,
+    )
+    def test_group_message_accepted_without_mention_when_require_mention_false(self):
+        """When require_mention=false, group messages bypass the mention gate."""
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        message = SimpleNamespace(mentions=[], content='{"text":"hello"}', message_type="text")
+        sender_id = SimpleNamespace(open_id="ou_any", user_id=None)
+
+        self.assertTrue(adapter._should_accept_group_message(message, sender_id, ""))
+
+    @patch.dict(
+        os.environ,
+        {"FEISHU_GROUP_POLICY": "open", "FEISHU_REQUIRE_MENTION": "false"},
+        clear=True,
+    )
+    def test_group_message_still_requires_policy_gate_when_require_mention_false(self):
+        """Policy gate still applies even when mention gate is disabled."""
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        config = PlatformConfig(
+            extra={
+                "group_rules": {
+                    "oc_chat_a": {"policy": "disabled"},
+                },
+                "require_mention": False,
+            }
+        )
+        adapter = FeishuAdapter(config)
+        message = SimpleNamespace(mentions=[], content='{"text":"hello"}', message_type="text")
+        sender_id = SimpleNamespace(open_id="ou_any", user_id=None)
+
+        self.assertFalse(adapter._should_accept_group_message(message, sender_id, "oc_chat_a"))
+
+    @patch.dict(
+        os.environ,
+        {"FEISHU_GROUP_POLICY": "allowlist", "FEISHU_ALLOWED_USERS": "ou_allowed", "FEISHU_REQUIRE_MENTION": "false"},
+        clear=True,
+    )
+    def test_allowlist_policy_still_applies_without_mention(self):
+        """With require_mention=false + allowlist policy, only allowed users pass."""
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        message = SimpleNamespace(mentions=[], content='{"text":"hello"}', message_type="text")
+
+        self.assertTrue(
+            adapter._should_accept_group_message(
+                message,
+                SimpleNamespace(open_id="ou_allowed", user_id=None),
+                "",
+            )
+        )
+        self.assertFalse(
+            adapter._should_accept_group_message(
+                message,
+                SimpleNamespace(open_id="ou_blocked", user_id=None),
+                "",
+            )
+        )
+
+    @patch.dict(
+        os.environ,
+        {"FEISHU_GROUP_POLICY": "open"},
+        clear=True,
+    )
+    def test_default_require_mention_still_enforces_mention(self):
+        """Backward compat: when FEISHU_REQUIRE_MENTION is not set, mention is required."""
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        message = SimpleNamespace(mentions=[], content='{"text":"hello"}', message_type="text")
+        sender_id = SimpleNamespace(open_id="ou_any", user_id=None)
+
+        self.assertFalse(adapter._should_accept_group_message(message, sender_id, ""))
+
+    @patch.dict(
+        os.environ,
+        {"FEISHU_GROUP_POLICY": "open", "FEISHU_REQUIRE_MENTION": "false"},
+        clear=True,
+    )
+    def test_require_mention_false_via_config_extra(self):
+        """require_mention=false can also be set via PlatformConfig.extra."""
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        config = PlatformConfig(extra={"require_mention": "false"})
+        adapter = FeishuAdapter(config)
+        message = SimpleNamespace(mentions=[], content='{"text":"hello"}', message_type="text")
+        sender_id = SimpleNamespace(open_id="ou_any", user_id=None)
+
+        self.assertTrue(adapter._should_accept_group_message(message, sender_id, ""))

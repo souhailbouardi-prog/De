@@ -310,6 +310,7 @@ class FeishuAdapterSettings:
     ws_reconnect_interval: int = 120
     ws_ping_interval: Optional[int] = None
     ws_ping_timeout: Optional[int] = None
+    require_mention: bool = True
     admins: frozenset[str] = frozenset()
     default_group_policy: str = ""
     group_rules: Dict[str, FeishuGroupRule] = field(default_factory=dict)
@@ -342,6 +343,21 @@ def _escape_markdown_text(text: str) -> str:
 
 def _to_boolean(value: Any) -> bool:
     return value is True or value == 1 or value == "true"
+
+
+def _feishu_require_mention(extra: Dict[str, Any]) -> bool:
+    """Parse FEISHU_REQUIRE_MENTION using explicit-false semantics.
+
+    The safe default is True (mention gating on).  Only ``false``, ``0``,
+    ``no``, or ``off`` disable it — matching the pattern used by Slack,
+    Discord, and Matrix adapters.
+    """
+    configured = extra.get("require_mention")
+    if configured is not None:
+        if isinstance(configured, str):
+            return configured.strip().lower() not in ("false", "0", "no", "off")
+        return bool(configured)
+    return os.getenv("FEISHU_REQUIRE_MENTION", "true").strip().lower() not in ("false", "0", "no", "off")
 
 
 def _is_style_enabled(style: Dict[str, Any] | None, key: str) -> bool:
@@ -1219,6 +1235,7 @@ class FeishuAdapter(BasePlatformAdapter):
             ws_ping_interval=_coerce_int(extra.get("ws_ping_interval"), default=None, min_value=1),
             ws_ping_timeout=_coerce_int(extra.get("ws_ping_timeout"), default=None, min_value=1),
             admins=admins,
+            require_mention=_feishu_require_mention(extra),
             default_group_policy=default_group_policy,
             group_rules=group_rules,
         )
@@ -1233,6 +1250,7 @@ class FeishuAdapter(BasePlatformAdapter):
         self._group_policy = settings.group_policy
         self._allowed_group_users = set(settings.allowed_group_users)
         self._admins = set(settings.admins)
+        self._require_mention = settings.require_mention
         self._default_group_policy = settings.default_group_policy or settings.group_policy
         self._group_rules = settings.group_rules
         self._bot_open_id = settings.bot_open_id
@@ -3276,9 +3294,16 @@ class FeishuAdapter(BasePlatformAdapter):
         return bool(sender_ids and (sender_ids & self._allowed_group_users))
 
     def _should_accept_group_message(self, message: Any, sender_id: Any, chat_id: str = "") -> bool:
-        """Require an explicit @mention before group messages enter the agent."""
+        """Gate group messages: policy check first, then optional mention check.
+
+        When ``require_mention`` is False (controlled via ``FEISHU_REQUIRE_MENTION``
+        env var or config ``extra[\"require_mention\"]``), the mention gate is
+        skipped entirely after the policy gate passes.
+        """
         if not self._allow_group_message(sender_id, chat_id):
             return False
+        if not self._require_mention:
+            return True
         # @_all is Feishu's @everyone placeholder — always route to the bot.
         raw_content = getattr(message, "content", "") or ""
         if "@_all" in raw_content:
