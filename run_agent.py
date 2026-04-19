@@ -8810,6 +8810,9 @@ class AIAgent:
         from hermes_logging import set_session_context
         set_session_context(self.session_id)
 
+        self._current_tool = None
+        self._touch_activity("starting conversation turn")
+
         # If the previous turn activated fallback, restore the primary
         # runtime so this turn gets a fresh attempt with the preferred model.
         # No-op when _fallback_activated is False (gateway, first turn, etc.).
