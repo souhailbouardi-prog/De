@@ -10342,23 +10342,37 @@ class AIAgent:
                         # Fall through to normal error handling if compression
                         # is exhausted or didn't help.
 
-                    # Eager fallback for rate-limit errors (429 or quota exhaustion).
-                    # When a fallback model is configured, switch immediately instead
-                    # of burning through retries with exponential backoff -- the
-                    # primary provider won't recover within the retry window.
+                    # Eager fallback for availability failures when a fallback
+                    # model is configured. For rate limits and billing, avoid
+                    # short-circuiting credential pool rotation because another
+                    # key may still recover on the same provider. Overload
+                    # errors (503/529) do not benefit from pool rotation, so a
+                    # configured fallback provider should take over immediately.
                     is_rate_limited = classified.reason in (
                         FailoverReason.rate_limit,
                         FailoverReason.billing,
                     )
-                    if is_rate_limited and self._fallback_index < len(self._fallback_chain):
-                        # Don't eagerly fallback if credential pool rotation may
-                        # still recover.  The pool's retry-then-rotate cycle needs
-                        # at least one more attempt to fire — jumping to a fallback
-                        # provider here short-circuits it.
-                        pool = self._credential_pool
-                        pool_may_recover = pool is not None and pool.has_available()
-                        if not pool_may_recover:
-                            self._emit_status("⚠️ Rate limited — switching to fallback provider...")
+                    is_overloaded = classified.reason == FailoverReason.overloaded
+                    if self._fallback_index < len(self._fallback_chain):
+                        eager_fallback_status = None
+                        if is_rate_limited:
+                            # Don't eagerly fallback if credential pool
+                            # rotation may still recover. The pool's
+                            # retry-then-rotate cycle needs at least one more
+                            # attempt to fire.
+                            pool = self._credential_pool
+                            pool_may_recover = pool is not None and pool.has_available()
+                            if not pool_may_recover:
+                                eager_fallback_status = (
+                                    "⚠️ Rate limited — switching to fallback provider..."
+                                )
+                        elif is_overloaded:
+                            eager_fallback_status = (
+                                "⚠️ Provider overloaded — switching to fallback provider..."
+                            )
+
+                        if eager_fallback_status:
+                            self._emit_status(eager_fallback_status)
                             if self._try_activate_fallback():
                                 retry_count = 0
                                 compression_attempts = 0
