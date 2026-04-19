@@ -36,12 +36,18 @@ docker run -d \
   --restart unless-stopped \
   -v ~/.hermes:/opt/data \
   -p 8642:8642 \
+  -e API_SERVER_ENABLED=true \
+  -e API_SERVER_HOST=0.0.0.0 \
+  -e API_SERVER_KEY=your_api_key_here \
+  -e API_SERVER_CORS_ORIGINS='*' \
   nousresearch/hermes-agent gateway run
 ```
 
 Port 8642 exposes the gateway's [OpenAI-compatible API server](./api-server.md) and health endpoint. It's optional if you only use chat platforms (Telegram, Discord, etc.), but required if you want the dashboard or external tools to reach the gateway.
 
 Opening any port on an internet facing machine is a security risk. You should not do it unless you understand the risks.
+
+To expose the API server externally (to the host or other containers), you must override the default binding (127.0.0.1) with `API_SERVER_HOST=0.0.0.0` and provide a valid `API_SERVER_KEY` (minimum 8 characters). Generate a secure key with: `openssl rand -hex 32`.
 
 ## Running the dashboard
 
@@ -128,13 +134,17 @@ services:
       - "8642:8642"
     volumes:
       - ~/.hermes:/opt/data
+    environment:
+      - API_SERVER_ENABLED=true
+      - API_SERVER_HOST=0.0.0.0
+      - API_SERVER_KEY=${API_SERVER_KEY}
+      - API_SERVER_CORS_ORIGINS=*
+      # Uncomment to forward additional env vars:
+      # - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      # - OPENAI_API_KEY=${OPENAI_API_KEY}
+      # - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
     networks:
       - hermes-net
-    # Uncomment to forward specific env vars instead of using .env file:
-    # environment:
-    #   - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
-    #   - OPENAI_API_KEY=${OPENAI_API_KEY}
-    #   - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
     deploy:
       resources:
         limits:
@@ -145,7 +155,7 @@ services:
     image: nousresearch/hermes-agent:latest
     container_name: hermes-dashboard
     restart: unless-stopped
-    command: dashboard --host 0.0.0.0
+    command: dashboard --host 0.0.0.0 --insecure
     ports:
       - "9119:9119"
     volumes:
