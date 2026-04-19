@@ -475,6 +475,42 @@ class TestCmdMigrate:
         assert call_kwargs["migrate_secrets"] is True
 
 
+
+    def test_shows_warning_when_all_items_conflict(self, tmp_path, capsys):
+        """When migrated=0 but conflicts exist, show warning not 'Nothing to migrate'."""
+        openclaw_dir = tmp_path / ".openclaw"
+        openclaw_dir.mkdir()
+        config_path = tmp_path / "config.yaml"
+        fake_mod = ModuleType("openclaw_to_hermes")
+        fake_mod.resolve_selected_options = MagicMock(return_value=set())
+        fake_migrator = MagicMock()
+        fake_migrator.migrate.return_value = {
+            "summary": {"migrated": 0, "skipped": 0, "conflict": 3, "error": 1},
+            "items": [],
+        }
+        fake_mod.Migrator = MagicMock(return_value=fake_migrator)
+        args = Namespace(
+            source=str(openclaw_dir),
+            dry_run=False, preset="full", overwrite=False,
+            migrate_secrets=False, workspace_target=None,
+            skill_conflict="skip", yes=True,
+        )
+        with (
+            patch.object(claw_mod, "_find_migration_script", return_value=tmp_path / "s.py"),
+            patch.object(claw_mod, "_load_migration_module", return_value=fake_mod),
+            patch.object(claw_mod, "get_config_path", return_value=config_path),
+            patch.object(claw_mod, "save_config"),
+            patch.object(claw_mod, "load_config", return_value={}),
+            patch.object(claw_mod, "_warn_if_openclaw_running"),
+            patch.object(claw_mod, "_warn_if_gateway_running"),
+        ):
+            claw_mod._cmd_migrate(args)
+        captured = capsys.readouterr()
+        assert "Nothing can be migrated" in captured.out
+        assert "3 conflict(s)" in captured.out
+        assert "1 error(s)" in captured.out
+        assert "Nothing to migrate from OpenClaw" not in captured.out
+
 # ---------------------------------------------------------------------------
 # _cmd_cleanup
 # ---------------------------------------------------------------------------

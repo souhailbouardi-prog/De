@@ -432,9 +432,18 @@ def _cmd_migrate(args):
     preview_summary = preview_report.get("summary", {})
     preview_count = preview_summary.get("migrated", 0)
 
+    conflict_count = preview_summary.get("conflict", 0)
+    error_count = preview_summary.get("error", 0)
     if preview_count == 0:
         print()
-        print_info("Nothing to migrate from OpenClaw.")
+        if conflict_count or error_count:
+            print_error(
+                f"Nothing can be migrated — "
+                f"{conflict_count} conflict(s) and {error_count} error(s) found. "
+                "Use --overwrite to force conflicting items."
+            )
+        else:
+            print_info("Nothing to migrate from OpenClaw.")
         _print_migration_report(preview_report, dry_run=True)
         return
 
