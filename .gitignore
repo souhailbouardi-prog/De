@@ -62,4 +62,5 @@ mini-swe-agent/
 .direnv/
 .nix-stamps/
 result
+.DS_Store
 website/static/api/skills-index.json
