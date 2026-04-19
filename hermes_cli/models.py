@@ -167,20 +167,23 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "openai/gpt-oss-120b",
     ],
     "kimi-coding": [
-        "kimi-k2.5",
+        "k2.6-code-preview",
         "kimi-for-coding",
+        "kimi-k2.5",
         "kimi-k2-thinking",
         "kimi-k2-thinking-turbo",
         "kimi-k2-turbo-preview",
         "kimi-k2-0905-preview",
     ],
     "kimi-coding-cn": [
+        "k2.6-code-preview",
         "kimi-k2.5",
         "kimi-k2-thinking",
         "kimi-k2-turbo-preview",
         "kimi-k2-0905-preview",
     ],
     "moonshot": [
+        "k2.6-code-preview",
         "kimi-k2.5",
         "kimi-k2-thinking",
         "kimi-k2-turbo-preview",
@@ -1405,6 +1408,26 @@ def copilot_default_headers() -> dict[str, str]:
         }
 
 
+def kimi_coding_required_temperature(
+    model_id: Optional[str],
+    *,
+    base_url: Optional[str] = None,
+) -> Optional[float]:
+    """Return the exact temperature required by Kimi Coding routes, if any.
+
+    Kimi's ``k2.6-code-preview`` on ``api.kimi.com/coding/v1`` currently rejects
+    omitted temperatures and any value other than ``0.6`` with:
+    ``invalid temperature: only 0.6 is allowed for this model``.
+    """
+    normalized_model = (model_id or "").strip().lower()
+    normalized_base = (base_url or "").strip().lower()
+    if "api.kimi.com" not in normalized_base:
+        return None
+    if normalized_model == "k2.6-code-preview":
+        return 0.6
+    return None
+
+
 def _copilot_catalog_item_is_text_model(item: dict[str, Any]) -> bool:
     model_id = str(item.get("id") or "").strip()
     if not model_id:
@@ -2124,6 +2147,17 @@ def validate_requested_model(
             # listing (e.g. Z.AI Pro/Max plans can use glm-5 on coding
             # endpoints even though it's not in /models).  Warn but allow.
 
+            # Trust our static curated list when the live API is incomplete
+            # (e.g. Kimi Coding Plan only exposes kimi-for-coding).
+            static_models = _PROVIDER_MODELS.get(normalized, [])
+            if requested_for_lookup in static_models:
+                return {
+                    "accepted": True,
+                    "persist": True,
+                    "recognized": True,
+                    "message": None,
+                }
+
             # Auto-correct if the top match is very similar (e.g. typo)
             auto = get_close_matches(requested_for_lookup, api_models, n=1, cutoff=0.9)
             if auto:
@@ -2189,6 +2223,18 @@ def validate_requested_model(
             pass  # Fall through to generic warning
 
     provider_label = _PROVIDER_LABELS.get(normalized, normalized)
+
+    # Trust our static curated list even when the live API is unreachable.
+    # If we hand-picked the model, there's no value in warning the user.
+    static_models = _PROVIDER_MODELS.get(normalized, [])
+    if requested_for_lookup in static_models:
+        return {
+            "accepted": True,
+            "persist": True,
+            "recognized": True,
+            "message": None,
+        }
+
     return {
         "accepted": False,
         "persist": False,

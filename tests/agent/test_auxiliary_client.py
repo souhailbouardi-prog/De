@@ -21,6 +21,7 @@ from agent.auxiliary_client import (
     _is_payment_error,
     _try_payment_fallback,
     _resolve_auto,
+    _build_call_kwargs,
 )
 
 
@@ -52,6 +53,30 @@ def codex_auth_dir(tmp_path, monkeypatch):
         lambda: "codex-test-token-abc123",
     )
     return codex_dir
+
+
+class TestKimiCodingSamplingConstraints:
+    def test_build_call_kwargs_pins_required_temperature_for_k2_6_preview(self):
+        kwargs = _build_call_kwargs(
+            provider="kimi-coding",
+            model="k2.6-code-preview",
+            messages=[{"role": "user", "content": "hi"}],
+            temperature=None,
+            base_url="https://api.kimi.com/coding/v1",
+        )
+
+        assert kwargs["temperature"] == 0.6
+
+    def test_build_call_kwargs_overrides_incompatible_temperature_for_k2_6_preview(self):
+        kwargs = _build_call_kwargs(
+            provider="kimi-coding",
+            model="k2.6-code-preview",
+            messages=[{"role": "user", "content": "hi"}],
+            temperature=0.0,
+            base_url="https://api.kimi.com/coding/v1",
+        )
+
+        assert kwargs["temperature"] == 0.6
 
 
 class TestReadCodexAccessToken:

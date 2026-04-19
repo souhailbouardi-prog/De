@@ -1049,9 +1049,9 @@ class AIAgent:
 
                     client_kwargs["default_headers"] = copilot_default_headers()
                 elif "api.kimi.com" in effective_base.lower():
-                    client_kwargs["default_headers"] = {
-                        "User-Agent": "KimiCLI/1.30.0",
-                    }
+                    from hermes_cli.auth import kimi_coding_default_headers
+
+                    client_kwargs["default_headers"] = kimi_coding_default_headers()
                 elif "portal.qwen.ai" in effective_base.lower():
                     client_kwargs["default_headers"] = _qwen_portal_headers()
             else:
@@ -5242,7 +5242,8 @@ class AIAgent:
 
             self._client_kwargs["default_headers"] = copilot_default_headers()
         elif "api.kimi.com" in normalized:
-            self._client_kwargs["default_headers"] = {"User-Agent": "KimiCLI/1.30.0"}
+            from hermes_cli.auth import kimi_coding_default_headers
+            self._client_kwargs["default_headers"] = kimi_coding_default_headers()
         elif "portal.qwen.ai" in normalized:
             self._client_kwargs["default_headers"] = _qwen_portal_headers()
         else:
@@ -7152,6 +7153,13 @@ class AIAgent:
         if self._is_qwen_portal():
             extra_body["vl_high_resolution_images"] = True
 
+        # Kimi Coding k2.6-code-preview requires thinking config in the body.
+        # Without it, the API returns 400 "invalid temperature" even though
+        # the real issue is the missing thinking field.
+        if "api.kimi.com" in self._base_url_lower:
+            if "thinking" not in extra_body:
+                extra_body["thinking"] = {"type": "enabled"}
+
         if extra_body:
             api_kwargs["extra_body"] = extra_body
 
@@ -7159,6 +7167,15 @@ class AIAgent:
         # Applied last so overrides win over any defaults set above.
         if self.request_overrides:
             api_kwargs.update(self.request_overrides)
+
+        from hermes_cli.models import kimi_coding_required_temperature
+
+        kimi_required_temp = kimi_coding_required_temperature(
+            self.model,
+            base_url=self.base_url,
+        )
+        if kimi_required_temp is not None:
+            api_kwargs["temperature"] = kimi_required_temp
 
         return api_kwargs
 

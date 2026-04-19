@@ -157,6 +157,7 @@ DEFAULT_CONTEXT_LENGTHS = {
     "grok-2": 131072,           # grok-2, grok-2-1212, grok-2-latest
     "grok": 131072,             # catch-all (grok-beta, unknown grok-*)
     # Kimi
+    "k2.6-code-preview": 256000,
     "kimi": 262144,
     # Nemotron — NVIDIA's open-weights series (128K context across all sizes)
     "nemotron": 131072,

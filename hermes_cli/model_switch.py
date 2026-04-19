@@ -170,7 +170,9 @@ class DirectAlias(NamedTuple):
 
 
 # Built-in direct aliases (can be extended via config.yaml model_aliases:)
-_BUILTIN_DIRECT_ALIASES: dict[str, DirectAlias] = {}
+_BUILTIN_DIRECT_ALIASES: dict[str, DirectAlias] = {
+    "kimi": DirectAlias("k2.6-code-preview", "kimi-coding", ""),
+}
 
 # Merged dict (builtins + user config); populated by _load_direct_aliases()
 DIRECT_ALIASES: dict[str, DirectAlias] = {}
@@ -341,13 +343,27 @@ def resolve_alias(
 
     vendor, family = identity
 
-    # Search the provider's catalog from models.dev
+    # Prefer our static curated list (maintains correct ordering and includes
+    # models not yet present in the models.dev catalog).
+    from hermes_cli.models import _PROVIDER_MODELS
+    curated = _PROVIDER_MODELS.get(current_provider, [])
+    aggregator = is_aggregator(current_provider)
+
+    for model_id in curated:
+        mid_lower = model_id.lower()
+        if aggregator:
+            prefix = f"{vendor}/{family}".lower()
+            if mid_lower.startswith(prefix):
+                return (current_provider, model_id, key)
+        else:
+            family_lower = family.lower()
+            if mid_lower.startswith(family_lower):
+                return (current_provider, model_id, key)
+
+    # Fallback: search the provider's catalog from models.dev
     catalog = list_provider_models(current_provider)
     if not catalog:
         return None
-
-    # For aggregators, models are vendor/model-name format
-    aggregator = is_aggregator(current_provider)
 
     for model_id in catalog:
         mid_lower = model_id.lower()
@@ -501,6 +517,25 @@ def switch_model(
             )
 
         target_provider = pdef.id
+        # Some providers have a models.dev ID that differs from the Hermes
+        # internal ID (e.g. models.dev uses "kimi-for-coding" but Hermes uses
+        # "kimi-coding" everywhere else). Prefer the Hermes internal ID when
+        # the user explicitly named a provider we know natively.
+        try:
+            from hermes_cli.auth import PROVIDER_REGISTRY
+            _HERMES_ALIASES = {
+                "kimi": "kimi-coding",
+                "kimi-for-coding": "kimi-coding",
+                "moonshot": "kimi-coding",
+                "kimi-cn": "kimi-coding-cn",
+                "moonshot-cn": "kimi-coding-cn",
+            }
+            _raw = explicit_provider.strip().lower()
+            _canonical_explicit = _HERMES_ALIASES.get(_raw, _raw)
+            if _canonical_explicit in PROVIDER_REGISTRY:
+                target_provider = _canonical_explicit
+        except Exception:
+            pass
 
         # If no model specified, try auto-detect from endpoint
         if not new_model:

@@ -863,7 +863,8 @@ def run_doctor(args):
                 _url = (_base.rstrip("/") + "/models") if _base else _default_url
                 _headers = {"Authorization": f"Bearer {_key}"}
                 if "api.kimi.com" in _url.lower():
-                    _headers["User-Agent"] = "KimiCLI/1.30.0"
+                    from hermes_cli.auth import kimi_coding_default_headers
+                    _headers.update(kimi_coding_default_headers())
                 _resp = httpx.get(
                     _url,
                     headers=_headers,

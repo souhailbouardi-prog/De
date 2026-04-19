@@ -456,6 +456,16 @@ class TestValidateApiNotFound:
         assert result.get("corrected_model") is None
         assert "not found" in result["message"]
 
+    def test_static_list_trusted_when_api_is_incomplete(self):
+        """If the live API omits a model we curate statically, trust the static list."""
+        # Simulate Kimi Coding Plan's /models endpoint, which only exposes
+        # kimi-for-coding even though newer models like k2.6-code-preview work.
+        with patch("hermes_cli.models.fetch_api_models", return_value=["kimi-for-coding"]):
+            result = validate_requested_model("k2.6-code-preview", "kimi-coding")
+        assert result["accepted"] is True
+        assert result["recognized"] is True
+        assert result["message"] is None
+
 
 # -- validate — API unreachable — reject with guidance ----------------
 
@@ -540,3 +550,23 @@ class TestValidateCodexAutoCorrection:
         assert result["recognized"] is False
         assert result.get("corrected_model") is None
         assert "not found" in result["message"]
+
+
+class TestKimiCodingRequiredTemperature:
+    def test_returns_06_for_k26_preview_on_kimi_endpoint(self):
+        from hermes_cli.models import kimi_coding_required_temperature
+        assert kimi_coding_required_temperature(
+            "k2.6-code-preview", base_url="https://api.kimi.com/coding/v1"
+        ) == 0.6
+
+    def test_returns_none_for_other_models_on_kimi_endpoint(self):
+        from hermes_cli.models import kimi_coding_required_temperature
+        assert kimi_coding_required_temperature(
+            "kimi-k2.5", base_url="https://api.kimi.com/coding/v1"
+        ) is None
+
+    def test_returns_none_for_k26_preview_on_moonshot_endpoint(self):
+        from hermes_cli.models import kimi_coding_required_temperature
+        assert kimi_coding_required_temperature(
+            "k2.6-code-preview", base_url="https://api.moonshot.ai/v1"
+        ) is None

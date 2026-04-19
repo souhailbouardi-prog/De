@@ -142,3 +142,16 @@ class TestStrictApiValidation:
 
         # Should NOT sanitize for Codex
         assert agent._should_sanitize_tool_calls() is False
+
+    def test_build_api_kwargs_pins_kimi_required_temperature_for_k2_6_preview(self, monkeypatch):
+        agent = _make_agent(
+            monkeypatch,
+            "kimi-coding",
+            api_mode="chat_completions",
+            base_url="https://api.kimi.com/coding/v1",
+        )
+        agent.model = "k2.6-code-preview"
+
+        kwargs = agent._build_api_kwargs([{"role": "user", "content": "hi"}])
+
+        assert kwargs["temperature"] == 0.6
