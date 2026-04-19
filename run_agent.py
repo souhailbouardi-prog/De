@@ -7171,6 +7171,81 @@ class AIAgent:
 
         return api_kwargs
 
+    def _needs_mistral_tool_id_rewrite(self) -> bool:
+        """Return True when tool_call IDs must be rewritten for Mistral API.
+
+        Mistral requires tool_call IDs to be exactly 9 alphanumeric characters
+        [a-zA-Z0-9]. Anthropic-style IDs (toolu_bdrk_...) and other long/non-
+        alphanumeric IDs cause HTTP 400 errors.
+        """
+        return "api.mistral.ai" in self._base_url_lower
+
+    @staticmethod
+    def _rewrite_tool_ids_for_mistral(api_messages: list) -> None:
+        """Rewrite tool_call IDs in api_messages to 9-char alphanumeric for Mistral.
+
+        Scans all assistant messages for tool_calls and builds an old->new ID
+        mapping, then rewrites tool_call_id in role='tool' messages to match.
+        Only modifies messages that have non-compliant IDs (not 9 chars or
+        not purely alphanumeric).
+        """
+        import re
+        import hashlib
+
+        _VALID_MISTRAL_ID = re.compile(r'^[a-zA-Z0-9]{9}$')
+        id_map: dict[str, str] = {}  # old_id -> new_9char_id
+        _counter = 0
+
+        def _make_short_id(original: str, counter: int) -> str:
+            """Generate a deterministic 9-char alphanumeric ID from the original."""
+            digest = hashlib.md5(f"{original}:{counter}".encode()).hexdigest()
+            # Take first 9 chars, ensure alphanumeric (md5 hex is always [0-9a-f])
+            return digest[:9]
+
+        # Pass 1: collect all tool_call IDs from assistant messages and build mapping
+        for msg in api_messages:
+            if msg.get("role") != "assistant":
+                continue
+            tool_calls = msg.get("tool_calls")
+            if not isinstance(tool_calls, list):
+                continue
+            for tc in tool_calls:
+                if not isinstance(tc, dict):
+                    continue
+                old_id = tc.get("id", "")
+                if old_id and not _VALID_MISTRAL_ID.match(old_id):
+                    if old_id not in id_map:
+                        id_map[old_id] = _make_short_id(old_id, _counter)
+                        _counter += 1
+
+        if not id_map:
+            return  # nothing to rewrite
+
+        # Pass 2: rewrite IDs in-place (api_messages are already copies)
+        for msg in api_messages:
+            role = msg.get("role")
+            if role == "assistant":
+                tool_calls = msg.get("tool_calls")
+                if isinstance(tool_calls, list):
+                    for tc in tool_calls:
+                        if isinstance(tc, dict) and tc.get("id") in id_map:
+                            tc["id"] = id_map[tc["id"]]
+            elif role == "tool":
+                old_tcid = msg.get("tool_call_id")
+                if old_tcid in id_map:
+                    msg["tool_call_id"] = id_map[old_tcid]
+
+
+    def _supports_reasoning_content_field(self) -> bool:
+        """Return True when reasoning_content is safe to include in messages.
+
+        Mistral rejects unknown fields (reasoning_content) with HTTP 422.
+        Block Mistral specifically; all other providers accept or ignore it.
+        """
+        if "api.mistral.ai" in self._base_url_lower:
+            return False
+        return True
+
     def _supports_reasoning_extra_body(self) -> bool:
         """Return True when reasoning extra_body is safe to send for this route/model.
 
@@ -7461,7 +7536,7 @@ class AIAgent:
                 api_msg = msg.copy()
                 if msg.get("role") == "assistant":
                     reasoning = msg.get("reasoning")
-                    if reasoning:
+                    if reasoning and self._supports_reasoning_content_field():
                         api_msg["reasoning_content"] = reasoning
                 api_msg.pop("reasoning", None)
                 api_msg.pop("finish_reason", None)
@@ -7473,6 +7548,10 @@ class AIAgent:
 
             if self._cached_system_prompt:
                 api_messages = [{"role": "system", "content": self._cached_system_prompt}] + api_messages
+
+            # Rewrite tool_call IDs for Mistral (9-char alphanumeric requirement)
+            if self._needs_mistral_tool_id_rewrite():
+                self._rewrite_tool_ids_for_mistral(api_messages)
 
             # Make one API call with only the memory tool available
             memory_tool_def = None
@@ -8544,6 +8623,10 @@ class AIAgent:
                 for idx, pfm in enumerate(self.prefill_messages):
                     api_messages.insert(sys_offset + idx, pfm.copy())
 
+            # Rewrite tool_call IDs for Mistral (9-char alphanumeric requirement)
+            if self._needs_mistral_tool_id_rewrite():
+                self._rewrite_tool_ids_for_mistral(api_messages)
+
             summary_extra_body = {}
             try:
                 from agent.auxiliary_client import _fixed_temperature_for_model
@@ -9128,7 +9211,7 @@ class AIAgent:
                 # This ensures multi-turn reasoning context is preserved
                 if msg.get("role") == "assistant":
                     reasoning_text = msg.get("reasoning")
-                    if reasoning_text:
+                    if reasoning_text and self._supports_reasoning_content_field():
                         # Add reasoning_content for API compatibility (Moonshot AI, Novita, OpenRouter)
                         api_msg["reasoning_content"] = reasoning_text
 
@@ -9220,6 +9303,10 @@ class AIAgent:
             # lone surrogates (U+D800-U+DFFF) that crash json.dumps() inside
             # the OpenAI SDK. Sanitizing here prevents the 3-retry cycle.
             _sanitize_messages_surrogates(api_messages)
+
+            # Rewrite tool_call IDs for Mistral (9-char alphanumeric requirement)
+            if self._needs_mistral_tool_id_rewrite():
+                self._rewrite_tool_ids_for_mistral(api_messages)
 
             # Calculate approximate request size for logging
             total_chars = sum(len(str(msg)) for msg in api_messages)

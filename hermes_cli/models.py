@@ -2009,6 +2009,18 @@ def validate_requested_model(
         }
 
     if normalized == "custom":
+        # Special handling for Mistral API - skip /models probe since it's not always available
+        # but Mistral models are still valid and work fine
+        if base_url and "api.mistral.ai" in base_url:
+            # For Mistral, we trust the model name without validating via /models endpoint
+            # This avoids false warnings when Mistral's /models endpoint is unreachable
+            return {
+                "accepted": True,
+                "persist": True,
+                "recognized": True,
+                "message": None,
+            }
+
         probe = probe_api_models(api_key, base_url)
         api_models = probe.get("models")
         if api_models is not None:
