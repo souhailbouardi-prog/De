@@ -1195,6 +1195,8 @@ def _seed_from_env(provider: str, entries: List[PooledCredential]) -> Tuple[bool
 
     for env_var in env_vars:
         token = os.getenv(env_var, "").strip()
+        # Strip terminal escape sequences that may contaminate pasted keys
+        token = re.sub(r'\x1b\[[A-Za-z0-9;]*|\x1b.', '', token).strip()
         if not token:
             continue
         source = f"env:{env_var}"
@@ -1205,6 +1207,8 @@ def _seed_from_env(provider: str, entries: List[PooledCredential]) -> Tuple[bool
             base_url = _resolve_kimi_base_url(token, pconfig.inference_base_url, env_url)
         elif provider == "zai":
             base_url = _resolve_zai_base_url(token, pconfig.inference_base_url, env_url)
+        elif provider == "kimi-coding":
+            base_url = _resolve_kimi_base_url(token, pconfig.inference_base_url, env_url)
         changed |= _upsert_entry(
             entries,
             provider,
