@@ -9,6 +9,12 @@ import model_tools
 import tools.mcp_tool
 
 
+class _BannerSkin:
+    def __init__(self, hero: str = "", logo: str = ""):
+        self.banner_hero = hero
+        self.banner_logo = logo
+
+
 def test_display_toolset_name_strips_legacy_suffix():
     assert banner._display_toolset_name("homeassistant_tools") == "homeassistant"
     assert banner._display_toolset_name("honcho_tools") == "honcho"
@@ -68,3 +74,25 @@ def test_build_welcome_banner_uses_normalized_toolset_names():
     assert "homeassistant_tools:" not in output
     assert "honcho_tools:" not in output
     assert "web_tools:" not in output
+
+
+def test_build_welcome_banner_left_aligns_hero_lines_without_center_padding():
+    with (
+        patch.object(model_tools, "check_tool_availability", return_value=([], [])),
+        patch.object(banner, "get_available_skills", return_value={}),
+        patch.object(banner, "get_update_result", return_value=None),
+        patch.object(tools.mcp_tool, "get_mcp_status", return_value=[]),
+        patch("hermes_cli.skin_engine.get_active_skin", return_value=_BannerSkin(hero="[green]⠀X[/]")),
+    ):
+        console = Console(record=True, force_terminal=False, color_system=None, width=80)
+        banner.build_welcome_banner(
+            console=console,
+            model="m",
+            cwd="/tmp",
+            tools=[],
+            get_toolset_for_tool=lambda _: None,
+        )
+
+    output_lines = console.export_text().splitlines()
+    hero_line = next(line for line in output_lines if "⠀X" in line)
+    assert hero_line.startswith("│  ⠀X")
