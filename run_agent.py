@@ -2496,6 +2496,8 @@ class AIAgent:
                      contextlib.redirect_stderr(_devnull):
                     review_agent = AIAgent(
                         model=self.model,
+                        base_url=self._base_url,
+                        api_key=self.api_key,
                         max_iterations=8,
                         quiet_mode=True,
                         platform=self.platform,
