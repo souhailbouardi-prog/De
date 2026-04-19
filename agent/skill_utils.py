@@ -224,6 +224,44 @@ def get_external_skills_dirs() -> List[Path]:
     return result
 
 
+def get_default_write_dir() -> Optional[Path]:
+    """Read ``skills.default_write_dir`` from config.yaml.
+
+    Returns a validated absolute path if configured and the directory exists,
+    otherwise ``None`` (fall back to the local skills dir).
+    """
+    config_path = get_config_path()
+    if not config_path.exists():
+        return None
+    try:
+        parsed = yaml_load(config_path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    if not isinstance(parsed, dict):
+        return None
+
+    skills_cfg = parsed.get("skills")
+    if not isinstance(skills_cfg, dict):
+        return None
+
+    raw = skills_cfg.get("default_write_dir")
+    if not raw or not isinstance(raw, str):
+        return None
+
+    expanded = os.path.expanduser(os.path.expandvars(raw.strip()))
+    p = Path(expanded).resolve()
+
+    local_skills = get_skills_dir().resolve()
+    if p == local_skills:
+        return None  # same as default, no point overriding
+
+    if not p.is_dir():
+        logger.debug("default_write_dir does not exist, ignoring: %s", p)
+        return None
+
+    return p
+
+
 def get_all_skills_dirs() -> List[Path]:
     """Return all skill directories: local ``~/.hermes/skills/`` first, then external.
 

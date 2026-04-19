@@ -202,10 +202,16 @@ def _validate_content_size(content: str, label: str = "SKILL.md") -> Optional[st
 
 
 def _resolve_skill_dir(name: str, category: str = None) -> Path:
-    """Build the directory path for a new skill, optionally under a category."""
+    """Build the directory path for a new skill, optionally under a category.
+
+    Uses ``skills.default_write_dir`` from config.yaml when set, otherwise
+    falls back to the local ``~/.hermes/skills/``.
+    """
+    from agent.skill_utils import get_default_write_dir
+    write_dir = get_default_write_dir() or SKILLS_DIR
     if category:
-        return SKILLS_DIR / category / name
-    return SKILLS_DIR / name
+        return write_dir / category / name
+    return write_dir / name
 
 
 def _find_skill(name: str) -> Optional[Dict[str, Any]]:
@@ -343,10 +349,16 @@ def _create_skill(name: str, content: str, category: str = None) -> Dict[str, An
         shutil.rmtree(skill_dir, ignore_errors=True)
         return {"success": False, "error": scan_error}
 
+    # Build the relative path for the result message
+    try:
+        rel_path = str(skill_dir.relative_to(SKILLS_DIR))
+    except ValueError:
+        rel_path = str(skill_dir)
+
     result = {
         "success": True,
         "message": f"Skill '{name}' created.",
-        "path": str(skill_dir.relative_to(SKILLS_DIR)),
+        "path": rel_path,
         "skill_md": str(skill_md),
     }
     if category:
@@ -495,12 +507,23 @@ def _delete_skill(name: str) -> Dict[str, Any]:
         return {"success": False, "error": f"Skill '{name}' is in an external directory and cannot be deleted."}
 
     skill_dir = existing["path"]
+    parent = skill_dir.parent
     shutil.rmtree(skill_dir)
 
-    # Clean up empty category directories (don't remove SKILLS_DIR itself)
-    parent = skill_dir.parent
-    if parent != SKILLS_DIR and parent.exists() and not any(parent.iterdir()):
-        parent.rmdir()
+    # Clean up empty category directories — but only under known skill dirs
+    # to avoid accidentally removing directories outside our control.
+    from agent.skill_utils import get_default_write_dir
+    safe_roots = {SKILLS_DIR}
+    write_dir = get_default_write_dir()
+    if write_dir:
+        safe_roots.add(write_dir)
+    try:
+        if (parent in safe_roots or any(
+            parent.is_relative_to(r) for r in safe_roots
+        )) and parent.exists() and not any(parent.iterdir()):
+            parent.rmdir()
+    except (OSError, ValueError):
+        pass
 
     return {
         "success": True,
