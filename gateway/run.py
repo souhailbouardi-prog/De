@@ -3431,6 +3431,9 @@ class GatewayRunner:
         if canonical == "usage":
             return await self._handle_usage_command(event)
 
+        if canonical == "limits":
+            return await self._handle_limits_command(event)
+
         if canonical == "insights":
             return await self._handle_insights_command(event)
 
@@ -4592,6 +4595,7 @@ class GatewayRunner:
             error_type = type(e).__name__
             error_detail = str(e)[:300] if str(e) else "no details available"
             status_hint = ""
+            action_hint = "Try again or use /reset to start a fresh session."
             status_code = getattr(e, "status_code", None)
             _hist_len = len(history) if 'history' in locals() else 0
             if status_code == 401:
@@ -4608,13 +4612,11 @@ class GatewayRunner:
                 except Exception:
                     pass
                 if _err_json.get("type") == "usage_limit_reached":
-                    _resets_in = _err_json.get("resets_in_seconds")
-                    if _resets_in and _resets_in > 0:
-                        import math
-                        _hours = math.ceil(_resets_in / 3600)
-                        status_hint = f" Your plan's usage limit has been reached. It resets in ~{_hours}h."
-                    else:
-                        status_hint = " Your plan's usage limit has been reached. Please wait until it resets."
+                    _agent_obj = locals().get("agent")
+                    status_hint, action_hint = self._format_usage_limit_status_hint(
+                        error_payload=_err_json,
+                        agent=_agent_obj,
+                    )
                 else:
                     status_hint = " You are being rate-limited. Please wait a moment and try again."
             elif status_code == 529:
@@ -4635,7 +4637,7 @@ class GatewayRunner:
                 f"Sorry, I encountered an error ({error_type}).\n"
                 f"{error_detail}\n"
                 f"{status_hint}"
-                "Try again or use /reset to start a fresh session."
+                f"{action_hint}"
             )
         finally:
             # Restore session context variables to their pre-handler state
@@ -7116,6 +7118,41 @@ class GatewayRunner:
             f"Use `/resume` to switch back to the original."
         )
 
+    def _format_usage_limit_status_hint(self, *, error_payload: dict | None = None, agent=None) -> tuple[str, str]:
+        """Build a clearer message for plan usage exhaustion, including live limits when available."""
+        payload = error_payload if isinstance(error_payload, dict) else {}
+        resets_in = payload.get("resets_in_seconds")
+        status_hint = " Your plan limit has been reached."
+        if resets_in:
+            try:
+                import math
+                hours = math.ceil(float(resets_in) / 3600)
+                if hours > 0:
+                    status_hint += f" It resets in about {hours}h."
+            except Exception:
+                pass
+        else:
+            status_hint += " Wait for the next reset window."
+
+        limits_text = ""
+        try:
+            from hermes_cli.codex_limits import get_codex_limits_text, should_show_codex_limits
+
+            provider = getattr(agent, "provider", None) if agent is not None else None
+            base_url = getattr(agent, "base_url", None) if agent is not None else None
+            if should_show_codex_limits(provider, base_url):
+                limits_text = get_codex_limits_text().strip()
+        except Exception:
+            limits_text = ""
+
+        if limits_text:
+            status_hint += f"\n\n{limits_text}\n\n"
+        else:
+            status_hint += "\n\nRun /limits to see the current limit windows.\n\n"
+
+        action_hint = "Wait for one of the windows above to reset, or run /limits again later."
+        return status_hint, action_hint
+
     async def _handle_usage_command(self, event: MessageEvent) -> str:
         """Handle /usage command -- show token usage for the current session.
 
@@ -7139,6 +7176,16 @@ class GatewayRunner:
 
         if agent and hasattr(agent, "session_total_tokens") and agent.session_api_calls > 0:
             lines = []
+
+            # Plan limits for ChatGPT/Codex (shown first when available)
+            try:
+                from hermes_cli.codex_limits import get_codex_limits_text, should_show_codex_limits
+
+                if should_show_codex_limits(getattr(agent, "provider", None), getattr(agent, "base_url", None)):
+                    lines.append(get_codex_limits_text())
+                    lines.append("")
+            except Exception:
+                pass
 
             # Rate limits (when available from provider headers)
             rl_state = agent.get_rate_limit_state()
@@ -7210,6 +7257,18 @@ class GatewayRunner:
                 f"_(Detailed usage available after the first agent response)_"
             )
         return "No usage data available for this session."
+
+    async def _handle_limits_command(self, event: MessageEvent) -> str:
+        """Handle /limits command -- show live ChatGPT/Codex plan limits."""
+        try:
+            from hermes_cli.codex_limits import CodexLimitsError, get_codex_limits_text
+
+            return get_codex_limits_text()
+        except CodexLimitsError as exc:
+            return str(exc)
+        except Exception as exc:
+            logger.error("Limits command error: %s", exc, exc_info=True)
+            return f"Could not fetch Codex limits: {exc}"
 
     async def _handle_insights_command(self, event: MessageEvent) -> str:
         """Handle /insights command -- show usage insights and analytics."""

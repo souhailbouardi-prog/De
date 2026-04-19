@@ -5711,6 +5711,8 @@ class HermesCLI:
             self._manual_compress(cmd_original)
         elif canonical == "usage":
             self._show_usage()
+        elif canonical == "limits":
+            self._show_limits()
         elif canonical == "insights":
             self._show_insights(cmd_original)
         elif canonical == "copy":
@@ -6694,6 +6696,17 @@ class HermesCLI:
             print("(._.) No API calls made yet in this session.")
             return
 
+        # ── Plan limits for ChatGPT/Codex (shown first when available) ──
+        try:
+            from hermes_cli.codex_limits import get_codex_limits_text, should_show_codex_limits
+
+            if should_show_codex_limits(getattr(agent, "provider", None), getattr(agent, "base_url", None)):
+                print()
+                print(get_codex_limits_text())
+                print()
+        except Exception:
+            pass
+
         # ── Rate limits (shown first when available) ────────────────
         rl_state = agent.get_rate_limit_state()
         if rl_state and rl_state.has_data:
@@ -6767,6 +6780,19 @@ class HermesCLI:
             logging.getLogger().setLevel(logging.INFO)
             for quiet_logger in ('tools', 'run_agent', 'trajectory_compressor', 'cron', 'hermes_cli'):
                 logging.getLogger(quiet_logger).setLevel(logging.ERROR)
+
+    def _show_limits(self):
+        """Show current ChatGPT/Codex plan limits from the live backend."""
+        try:
+            from hermes_cli.codex_limits import CodexLimitsError, get_codex_limits_text
+
+            print()
+            print(get_codex_limits_text())
+            print()
+        except CodexLimitsError as exc:
+            print(f"(._.) {exc}")
+        except Exception as exc:
+            print(f"(._.) Failed to fetch Codex limits: {exc}")
 
     def _show_insights(self, command: str = "/insights"):
         """Show usage insights and analytics from session history."""

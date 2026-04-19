@@ -293,6 +293,29 @@ class TestCLIUsageReport:
         assert "Session duration:" in output
         assert "Compressions:" in output
 
+    def test_show_usage_includes_codex_plan_limits(self, capsys):
+        cli_obj = _attach_agent(
+            _make_cli(model="gpt-5.4"),
+            prompt_tokens=10_230,
+            completion_tokens=2_220,
+            total_tokens=12_450,
+            api_calls=7,
+            context_tokens=12_450,
+            context_length=200_000,
+        )
+        cli_obj.agent.provider = "openai-codex"
+        cli_obj.agent.base_url = "https://chatgpt.com/backend-api/codex"
+        cli_obj.verbose = False
+
+        with patch("hermes_cli.codex_limits.get_codex_limits_text", return_value="Limits:\n5 hours: 32% remaining."), \
+             patch("hermes_cli.codex_limits.should_show_codex_limits", return_value=True):
+            cli_obj._show_usage()
+        output = capsys.readouterr().out
+
+        assert "Limits:" in output
+        assert "5 hours: 32% remaining." in output
+        assert "Session Token Usage" in output
+
     def test_show_usage_marks_unknown_pricing(self, capsys):
         cli_obj = _attach_agent(
             _make_cli(model="local/my-custom-model"),

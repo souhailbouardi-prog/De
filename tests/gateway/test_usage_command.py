@@ -93,6 +93,22 @@ class TestUsageCachedAgent:
         assert "Compressions: 1" in result
 
     @pytest.mark.asyncio
+    async def test_codex_usage_includes_live_plan_limits(self):
+        agent = _make_mock_agent(provider="openai-codex")
+        runner = _make_runner(SK, cached_agent=agent)
+        event = MagicMock()
+
+        with patch("agent.rate_limit_tracker.format_rate_limit_compact", return_value="RPM: 50/60"), \
+             patch("agent.usage_pricing.estimate_usage_cost") as mock_cost, \
+             patch("hermes_cli.codex_limits.get_codex_limits_text", return_value="Limits:\n5 hours: 32% remaining."), \
+             patch("hermes_cli.codex_limits.should_show_codex_limits", return_value=True):
+            mock_cost.return_value = MagicMock(amount_usd=None, status="included")
+            result = await runner._handle_usage_command(event)
+
+        assert result.startswith("Limits:\n5 hours: 32% remaining.")
+        assert "Session Token Usage" in result
+
+    @pytest.mark.asyncio
     async def test_running_agent_preferred_over_cache(self):
         """When agent is in both dicts, the running one wins."""
         running = _make_mock_agent(session_api_calls=10, session_total_tokens=80_000)
