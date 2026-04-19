@@ -1252,6 +1252,11 @@ class AIAgent:
         
         # Cached system prompt -- built once per session, only rebuilt on compression
         self._cached_system_prompt: Optional[str] = None
+
+        # Notifications from the background review thread (skill/memory creates).
+        # Drained at the top of the next run_conversation() call and injected as
+        # [System: ...] messages so the LLM knows what happened.
+        self._pending_bg_notifications: List[str] = []
         
         # Filesystem checkpoint manager (transparent — not a tool)
         from tools.checkpoint_manager import CheckpointManager
@@ -2567,6 +2572,7 @@ class AIAgent:
                 # Scan the review agent's messages for successful tool actions
                 # and surface a compact summary to the user.
                 actions = []
+                skill_notifications = []  # Track skill creates for main agent notification
                 for msg in getattr(review_agent, "_session_messages", []):
                     if not isinstance(msg, dict) or msg.get("role") != "tool":
                         continue
@@ -2580,6 +2586,9 @@ class AIAgent:
                     target = data.get("target", "")
                     if "created" in message.lower():
                         actions.append(message)
+                        # Skill creation — collect name/path for main agent notification
+                        skill_path = data.get("path") or data.get("skill_md") or ""
+                        skill_notifications.append((message, skill_path))
                     elif "updated" in message.lower():
                         actions.append(message)
                     elif "added" in message.lower() or (target and "add" in message.lower()):
@@ -2599,6 +2608,32 @@ class AIAgent:
                     if _bg_cb:
                         try:
                             _bg_cb(f"💾 {summary}")
+                        except Exception:
+                            pass
+
+                # Notify the main agent about skill creations so the LLM
+                # can respond when the user asks about them.
+                if skill_notifications:
+                    for msg_text, path in skill_notifications:
+                        note = msg_text
+                        if path:
+                            note += f" Path: {path}. Use skill_view to read it."
+                        # list.append is GIL-atomic — safe from background thread
+                        self._pending_bg_notifications.append(note)
+
+                    # Invalidate the main agent's cached system prompt so the
+                    # skills index rebuilds on the next turn.
+                    # Attribute assignment is GIL-atomic — safe from background thread.
+                    self._cached_system_prompt = None
+
+                    # Also clear the DB-stored prompt so the gateway path
+                    # (which loads from the session DB, not the instance cache)
+                    # rebuilds fresh on the next turn.
+                    if self._session_db:
+                        try:
+                            self._session_db.update_system_prompt(
+                                self.session_id, None
+                            )
                         except Exception:
                             pass
 
@@ -8945,6 +8980,14 @@ class AIAgent:
             if self._turns_since_memory >= self._memory_nudge_interval:
                 _should_review_memory = True
                 self._turns_since_memory = 0
+
+        # Drain any pending notifications from the background review thread.
+        # These appear before the user's new message so the LLM knows about
+        # skill/memory creates that happened between turns.
+        if self._pending_bg_notifications:
+            for _bg_note in self._pending_bg_notifications:
+                messages.append({"role": "user", "content": f"[System: {_bg_note}]"})
+            self._pending_bg_notifications.clear()
 
         # Add user message
         user_msg = {"role": "user", "content": user_message}
