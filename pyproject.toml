@@ -34,6 +34,10 @@ dependencies = [
   "edge-tts>=7.2.7,<8",
   # Skills Hub (GitHub App JWT auth — optional, only needed for bot identity)
   "PyJWT[crypto]>=2.12.0,<3",  # CVE-2026-32597
+  # Workspace .hermesignore parsing (gitignore-style patterns)
+  "pathspec>=0.12.0,<1",
+  # Workspace encoding detection for non-UTF8 files
+  "charset-normalizer>=3.3.0,<4",
 ]
 
 [project.optional-dependencies]
@@ -64,6 +68,8 @@ sms = ["aiohttp>=3.9.0,<4"]
 acp = ["agent-client-protocol>=0.9.0,<1.0"]
 mistral = ["mistralai>=2.3.0,<3"]
 bedrock = ["boto3>=1.35.0,<2"]
+workspace = ["chonkie[code]>=1.6.0,<2", "hermes-agent[parsing]"]
+parsing = ["markitdown[pdf,docx,pptx]>=0.1.0"]
 termux = [
   # Tested Android / Termux path: keeps the core CLI feature-rich while
   # avoiding extras that currently depend on non-Android wheels (notably
@@ -126,7 +132,7 @@ py-modules = ["run_agent", "model_tools", "toolsets", "batch_runner", "trajector
 hermes_cli = ["web_dist/**/*"]
 
 [tool.setuptools.packages.find]
-include = ["agent", "tools", "tools.*", "hermes_cli", "gateway", "gateway.*", "tui_gateway", "tui_gateway.*", "cron", "acp_adapter", "plugins", "plugins.*"]
+include = ["agent", "tools", "tools.*", "hermes_cli", "gateway", "gateway.*", "tui_gateway", "tui_gateway.*", "cron", "acp_adapter", "plugins", "plugins.*", "workspace"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

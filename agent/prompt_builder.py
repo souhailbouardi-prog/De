@@ -176,6 +176,66 @@ SKILLS_GUIDANCE = (
     "Skills that aren't maintained become liabilities."
 )
 
+# =========================================================================
+# Workspace tool guidance
+#
+# Injected when workspace tools are enabled. The assembler
+# build_workspace_guidance() returns one coherent block that grows with the
+# tools available. workspace_delete is intentionally not prompted — it's
+# destructive and should never be a default reach.
+# =========================================================================
+
+WORKSPACE_SEARCH_GUIDANCE_CORE = (
+    "You have workspace_search, a BM25 full-text search tool over files "
+    "indexed from configured workspace roots. When the user asks about "
+    "concepts, terms, or content that could plausibly live in the indexed "
+    "codebase or docs, call workspace_search first — it is faster and more "
+    "precise than terminal-based grep/find/cat for retrieval. "
+    "It returns ranked chunks with path:line_start-line_end and a snippet, "
+    "which you can follow up on by reading the file directly if needed. "
+    "Do NOT use workspace_search for file edits, for content you already "
+    "have, or for files you know aren't in the index (e.g. /tmp, build "
+    "artifacts, the user's non-workspace projects)."
+)
+
+WORKSPACE_RETRIEVE_GUIDANCE = (
+    "When you know the specific file path and want its full indexed content "
+    "(all chunks), use workspace_retrieve instead of re-searching. Retrieve "
+    "dumps every chunk for that one path in order."
+)
+
+WORKSPACE_LIST_GUIDANCE = (
+    "Use workspace_list to see what's actually in the index when you're "
+    "unsure whether a file is indexed. Prefer this over guessing at paths."
+)
+
+WORKSPACE_INDEX_GUIDANCE = (
+    "workspace_index rebuilds the full index. It is expensive — only call "
+    "it when the user has just modified indexed files and search results "
+    "look stale. Never call it speculatively at session start."
+)
+
+
+def build_workspace_guidance(available_tools: set[str]) -> str | None:
+    """Assemble workspace guidance based on which tools are enabled.
+
+    Returns None if workspace_search isn't available (nothing to guide).
+    Otherwise returns a single string composed of the core guidance plus
+    one paragraph per additional workspace tool that's present. The output
+    is a newline-joined block ready to be appended to the system prompt.
+    """
+    if "workspace_search" not in available_tools:
+        return None
+    sections = [WORKSPACE_SEARCH_GUIDANCE_CORE]
+    if "workspace_retrieve" in available_tools:
+        sections.append(WORKSPACE_RETRIEVE_GUIDANCE)
+    if "workspace_list" in available_tools:
+        sections.append(WORKSPACE_LIST_GUIDANCE)
+    if "workspace_index" in available_tools:
+        sections.append(WORKSPACE_INDEX_GUIDANCE)
+    return "\n".join(sections)
+
+
 TOOL_USE_ENFORCEMENT_GUIDANCE = (
     "# Tool-use enforcement\n"
     "You MUST use your tools to take action — do not describe what you would do "

@@ -19,6 +19,13 @@ Usage:
     hermes cron status         # Check if cron scheduler is running
     hermes doctor              # Check configuration and dependencies
     hermes honcho setup                    # Configure Honcho AI memory integration
+    hermes workspace roots list/add/remove  # Manage workspace root directories
+    hermes workspace index                   # Index workspace files
+    hermes workspace search <query>            # Search indexed content
+    hermes workspace search <query> --path <prefix>  # Search with path filter
+    hermes workspace search <query> --glob <pattern>  # Search with glob pattern
+    hermes workspace search <query> --limit <n>      # Limit number of results
+    hermes workspace search <query> --human         # Human-readable output format
     hermes honcho status                   # Show Honcho config and connection status
     hermes honcho sessions                 # List directory → session name mappings
     hermes honcho map <name>               # Map current directory to a session name
@@ -8344,6 +8351,90 @@ Examples:
         help="Filter by component: gateway, agent, tools, cli, cron",
     )
     logs_parser.set_defaults(func=cmd_logs)
+
+    # =========================================================================
+    # workspace command
+    # =========================================================================
+    workspace_parser = subparsers.add_parser(
+        "workspace",
+        help="Workspace indexing and search",
+        description="Manage workspace roots, index files, search, and inspect the FTS5 index",
+    )
+    workspace_flag_parent = argparse.ArgumentParser(add_help=False)
+    workspace_flag_parent.add_argument(
+        "--human",
+        action="store_true",
+        help="Human-readable Rich output instead of JSON",
+    )
+    workspace_subparsers = workspace_parser.add_subparsers(dest="workspace_action")
+
+    # workspace roots
+    roots_parser = workspace_subparsers.add_parser(
+        "roots",
+        help="Manage workspace roots",
+        parents=[workspace_flag_parent],
+    )
+    roots_sub = roots_parser.add_subparsers(dest="roots_action")
+    roots_sub.add_parser("list", help="List configured workspace roots", parents=[workspace_flag_parent])
+    roots_add = roots_sub.add_parser("add", help="Add a workspace root", parents=[workspace_flag_parent])
+    roots_add.add_argument("path", help="Directory path to add as workspace root")
+    roots_add.add_argument("--recursive", action="store_true", help="Recursively index subdirectories")
+    roots_rm = roots_sub.add_parser("remove", help="Remove a workspace root", parents=[workspace_flag_parent])
+    roots_rm.add_argument("path", help="Directory path to remove")
+
+    # workspace index
+    workspace_subparsers.add_parser(
+        "index",
+        help="Index all workspace roots into FTS5",
+        parents=[workspace_flag_parent],
+    )
+
+    # workspace search
+    ws_search = workspace_subparsers.add_parser(
+        "search",
+        help="Search indexed workspace files",
+        parents=[workspace_flag_parent],
+    )
+    ws_search.add_argument("query", help="Search query")
+    ws_search.add_argument("--limit", type=int, help="Max results")
+    ws_search.add_argument("--path", help="Filter by absolute path prefix")
+    ws_search.add_argument("--glob", help="Filter by filename glob pattern")
+
+    # workspace status
+    workspace_subparsers.add_parser(
+        "status",
+        help="Show workspace index status",
+        parents=[workspace_flag_parent],
+    )
+
+    # workspace list
+    workspace_subparsers.add_parser(
+        "list",
+        help="List all indexed files",
+        parents=[workspace_flag_parent],
+    )
+
+    # workspace retrieve
+    ws_retrieve = workspace_subparsers.add_parser(
+        "retrieve",
+        help="Retrieve all indexed chunks for a file",
+        parents=[workspace_flag_parent],
+    )
+    ws_retrieve.add_argument("path", help="Absolute path to the file")
+
+    # workspace delete
+    ws_delete = workspace_subparsers.add_parser(
+        "delete",
+        help="Delete a file from the workspace index",
+        parents=[workspace_flag_parent],
+    )
+    ws_delete.add_argument("path", help="Absolute path to the file to remove")
+
+    def cmd_workspace(args):
+        from workspace.commands import workspace_command
+        workspace_command(args)
+
+    workspace_parser.set_defaults(func=cmd_workspace)
 
     # =========================================================================
     # Parse and execute

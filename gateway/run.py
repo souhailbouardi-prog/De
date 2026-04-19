@@ -3434,6 +3434,9 @@ class GatewayRunner:
         if canonical == "insights":
             return await self._handle_insights_command(event)
 
+        if canonical == "workspace":
+            return await self._handle_workspace_command(event)
+
         if canonical == "reload-mcp":
             return await self._handle_reload_mcp_command(event)
 
@@ -7262,6 +7265,153 @@ class GatewayRunner:
         except Exception as e:
             logger.error("Insights command error: %s", e, exc_info=True)
             return f"Error generating insights: {e}"
+
+    async def _handle_workspace_command(self, event: MessageEvent) -> str:
+        """Handle /workspace command -- status, search, index management.
+
+        Subcommands: status, search <query>, list, retrieve <path>,
+        delete <path>, index, roots [list|add|remove]. Default is status.
+        """
+        args = event.get_command_args().strip()
+        parts = args.split() if args else []
+        action = parts[0].lower() if parts else "status"
+
+        loop = asyncio.get_running_loop()
+
+        def _run():
+            from pathlib import Path as _Path
+
+            from workspace import get_indexer
+            from workspace.config import load_workspace_config
+
+            config = load_workspace_config()
+            if not config.enabled:
+                return "Workspace is disabled (workspace.enabled = false)."
+
+            indexer = get_indexer(config)
+
+            if action == "status":
+                info = indexer.status()
+                if not info:
+                    return "No status available."
+                lines = []
+                for k, v in info.items():
+                    if k == "db_size_bytes":
+                        lines.append(f"  {k}: {v / (1024 * 1024):.1f} MB")
+                    else:
+                        lines.append(f"  {k}: {v}")
+                return "\n".join(lines)
+
+            if action == "search":
+                query = " ".join(parts[1:]).strip()
+                if not query:
+                    return "Usage: /workspace search <query>"
+                results = indexer.search(query, limit=10)
+                if not results:
+                    return "No results found."
+                out = []
+                for r in results:
+                    section = f"  [{r.section}]" if r.section else ""
+                    snippet = r.content[:200].replace("\n", " ")
+                    if len(r.content) > 200:
+                        snippet += "..."
+                    out.append(
+                        f"{r.path}:{r.line_start}-{r.line_end} "
+                        f"(score: {r.score:.1f}){section}\n  {snippet}"
+                    )
+                return "\n\n".join(out)
+
+            if action == "list":
+                files = indexer.list_files()
+                if not files:
+                    return "No files indexed."
+                lines = [f"{len(files)} indexed files:"]
+                for f in files[:20]:
+                    size_kb = f.get("size_bytes", 0) / 1024
+                    chunks = f.get("chunks", 0)
+                    lines.append(f"  {f['path']} ({size_kb:.0f} KB, {chunks} chunks)")
+                if len(files) > 20:
+                    lines.append(f"  ... and {len(files) - 20} more")
+                return "\n".join(lines)
+
+            if action == "retrieve":
+                if len(parts) < 2:
+                    return "Usage: /workspace retrieve <path>"
+                path = str(_Path(parts[1]).expanduser().resolve())
+                results = indexer.retrieve(path)
+                if not results:
+                    return f"No indexed chunks for: {path}"
+                lines = [f"{len(results)} chunks for {path}:"]
+                for r in results[:10]:
+                    section = f" [{r.section}]" if r.section else ""
+                    snippet = r.content[:150].replace("\n", " ")
+                    if len(r.content) > 150:
+                        snippet += "..."
+                    lines.append(
+                        f"  chunk {r.chunk_index}: lines {r.line_start}-{r.line_end}{section}\n    {snippet}"
+                    )
+                if len(results) > 10:
+                    lines.append(f"  ... and {len(results) - 10} more chunks")
+                return "\n".join(lines)
+
+            if action == "delete":
+                if len(parts) < 2:
+                    return "Usage: /workspace delete <path>"
+                path = str(_Path(parts[1]).expanduser().resolve())
+                deleted = indexer.delete(path)
+                return f"Deleted from index: {path}" if deleted else f"Not found in index: {path}"
+
+            if action == "index":
+                summary = indexer.index()
+                return (
+                    f"Indexed {summary.files_indexed} files "
+                    f"({summary.chunks_created} chunks), "
+                    f"skipped {summary.files_skipped}, "
+                    f"errored {summary.files_errored}, "
+                    f"pruned {summary.files_pruned} stale. "
+                    f"Took {summary.duration_seconds:.1f}s."
+                )
+
+            if action == "roots":
+                sub = parts[1].lower() if len(parts) > 1 else "list"
+                if sub == "list":
+                    roots = config.knowledgebase.roots
+                    if not roots:
+                        return "No workspace roots configured."
+                    return "\n".join(
+                        f"  {r.path}" + (" (recursive)" if r.recursive else "")
+                        for r in roots
+                    )
+                if sub == "add":
+                    if len(parts) < 3:
+                        return "Usage: /workspace roots add <path> [--recursive]"
+                    from workspace.commands import _add_root
+
+                    root_path = str(_Path(parts[2]).expanduser().resolve())
+                    recursive = "--recursive" in parts[3:]
+                    _add_root(root_path, recursive)
+                    return f"Added workspace root: {root_path} (recursive={recursive})"
+                if sub == "remove":
+                    if len(parts) < 3:
+                        return "Usage: /workspace roots remove <path>"
+                    from workspace.commands import _remove_root
+
+                    root_path = str(_Path(parts[2]).expanduser().resolve())
+                    _remove_root(root_path)
+                    return f"Removed workspace root: {root_path}"
+                return "Usage: /workspace roots [list|add|remove]"
+
+            return (
+                f"Unknown workspace subcommand: {action}\n"
+                "Usage: /workspace [status|search <query>|list|retrieve <path>|"
+                "delete <path>|index|roots ...]"
+            )
+
+        try:
+            return await loop.run_in_executor(None, _run)
+        except Exception as e:
+            logger.error("Workspace command error: %s", e, exc_info=True)
+            return f"Error: {e}"
 
     async def _handle_reload_mcp_command(self, event: MessageEvent) -> str:
         """Handle /reload-mcp command -- disconnect and reconnect all MCP servers."""

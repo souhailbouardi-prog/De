@@ -83,6 +83,7 @@ from agent.prompt_builder import (
     DEFAULT_AGENT_IDENTITY, PLATFORM_HINTS,
     MEMORY_GUIDANCE, SESSION_SEARCH_GUIDANCE, SKILLS_GUIDANCE,
     build_nous_subscription_prompt,
+    build_workspace_guidance,
 )
 from agent.model_metadata import (
     fetch_model_metadata,
@@ -3733,6 +3734,9 @@ class AIAgent:
             tool_guidance.append(SESSION_SEARCH_GUIDANCE)
         if "skill_manage" in self.valid_tool_names:
             tool_guidance.append(SKILLS_GUIDANCE)
+        workspace_block = build_workspace_guidance(self.valid_tool_names)
+        if workspace_block:
+            tool_guidance.append(workspace_block)
         if tool_guidance:
             prompt_parts.append(" ".join(tool_guidance))
 

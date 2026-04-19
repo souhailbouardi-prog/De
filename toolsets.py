@@ -60,6 +60,8 @@ _HERMES_CORE_TOOLS = [
     "send_message",
     # Home Assistant smart home control (gated on HASS_TOKEN via check_fn)
     "ha_list_entities", "ha_get_state", "ha_list_services", "ha_call_service",
+    # Workspace knowledgebase (gated on workspace.enabled via check_fn)
+    "workspace_search", "workspace_index",
 ]
 
 
@@ -201,6 +203,15 @@ TOOLSETS = {
         "includes": []
     },
 
+    "workspace": {
+        "description": "Workspace knowledgebase — full tool suite for index management",
+        "tools": [
+            "workspace_search", "workspace_index", "workspace_status",
+            "workspace_list", "workspace_retrieve", "workspace_delete",
+        ],
+        "includes": []
+    },
+
     "feishu_doc": {
         "description": "Read Feishu/Lark document content",
         "tools": ["feishu_doc_read"],
@@ -215,7 +226,6 @@ TOOLSETS = {
         ],
         "includes": []
     },
-
 
     # Scenario-specific toolsets
     

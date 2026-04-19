@@ -818,6 +818,27 @@ DEFAULT_CONFIG = {
         "force_ipv4": False,
     },
 
+    # Workspace — local document directory for curated files.
+    "workspace": {
+        "enabled": True,
+        "path": "",       # empty = HERMES_HOME/workspace
+    },
+
+    # Knowledgebase — indexing and search configuration for workspace files.
+    "knowledgebase": {
+        "roots": [],      # [{path: "/abs/path", recursive: false}]
+        "chunking": {
+            "strategy": "standard",  # "standard" | "semantic" | "neural"
+            "chunk_size": 512,       # words per chunk
+        },
+        "indexing": {
+            "max_file_mb": 10,      # skip files over this size
+        },
+        "search": {
+            "default_limit": 20,    # default search result count
+        },
+    },
+
     # Config schema version - bump this when adding new required fields
     "_config_version": 19,
 }

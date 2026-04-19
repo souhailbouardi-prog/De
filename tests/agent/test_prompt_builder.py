@@ -1052,4 +1052,110 @@ class TestOpenAIModelExecutionGuidance:
 # =========================================================================
 
 
+# =========================================================================
+# Workspace guidance assembler
+# =========================================================================
 
+from agent.prompt_builder import (
+    build_workspace_guidance,
+    WORKSPACE_SEARCH_GUIDANCE_CORE,
+    WORKSPACE_RETRIEVE_GUIDANCE,
+    WORKSPACE_LIST_GUIDANCE,
+    WORKSPACE_INDEX_GUIDANCE,
+)
+
+
+class TestWorkspaceGuidance:
+    def test_returns_none_when_search_unavailable(self):
+        """If workspace_search is not in tools, guidance is not injected at all."""
+        assert build_workspace_guidance(set()) is None
+        assert build_workspace_guidance({"memory", "todo"}) is None
+
+    def test_core_only_when_only_search_available(self):
+        """With just workspace_search, guidance contains core paragraph only."""
+        out = build_workspace_guidance({"workspace_search"})
+        assert out is not None
+        assert WORKSPACE_SEARCH_GUIDANCE_CORE in out
+        assert WORKSPACE_RETRIEVE_GUIDANCE not in out
+        assert WORKSPACE_LIST_GUIDANCE not in out
+        assert WORKSPACE_INDEX_GUIDANCE not in out
+
+    def test_core_plus_retrieve(self):
+        """Adds retrieve paragraph when workspace_retrieve is also present."""
+        out = build_workspace_guidance({"workspace_search", "workspace_retrieve"})
+        assert out is not None
+        assert WORKSPACE_SEARCH_GUIDANCE_CORE in out
+        assert WORKSPACE_RETRIEVE_GUIDANCE in out
+        assert WORKSPACE_LIST_GUIDANCE not in out
+
+    def test_core_plus_list(self):
+        out = build_workspace_guidance({"workspace_search", "workspace_list"})
+        assert out is not None
+        assert WORKSPACE_LIST_GUIDANCE in out
+
+    def test_core_plus_index(self):
+        out = build_workspace_guidance({"workspace_search", "workspace_index"})
+        assert out is not None
+        assert WORKSPACE_INDEX_GUIDANCE in out
+
+    def test_all_tools_available(self):
+        """Full workspace toolset: all paragraphs present in stable order."""
+        out = build_workspace_guidance({
+            "workspace_search", "workspace_retrieve",
+            "workspace_list", "workspace_index", "workspace_delete",
+        })
+        assert out is not None
+        assert WORKSPACE_SEARCH_GUIDANCE_CORE in out
+        assert WORKSPACE_RETRIEVE_GUIDANCE in out
+        assert WORKSPACE_LIST_GUIDANCE in out
+        assert WORKSPACE_INDEX_GUIDANCE in out
+        core_pos = out.index(WORKSPACE_SEARCH_GUIDANCE_CORE)
+        retrieve_pos = out.index(WORKSPACE_RETRIEVE_GUIDANCE)
+        list_pos = out.index(WORKSPACE_LIST_GUIDANCE)
+        index_pos = out.index(WORKSPACE_INDEX_GUIDANCE)
+        assert core_pos < retrieve_pos < list_pos < index_pos
+
+    def test_delete_not_prompted(self):
+        """workspace_delete is destructive — we do NOT nudge the model toward it."""
+        out = build_workspace_guidance({
+            "workspace_search", "workspace_delete",
+        })
+        assert out is not None
+        assert "delete" not in out.lower()
+
+    def test_output_is_single_string(self):
+        out = build_workspace_guidance({"workspace_search"})
+        assert isinstance(out, str)
+        assert len(out.strip()) > 0
+
+    def test_wiring_into_system_prompt(self):
+        """End-to-end: the assembler output reaches the system prompt when
+        workspace_search is in valid_tool_names.
+
+        Uses the same tool_guidance collection pattern as _build_system_prompt
+        in run_agent.py so we verify the contract without booting AIAgent.
+        """
+        from agent.prompt_builder import (
+            MEMORY_GUIDANCE,
+            build_workspace_guidance,
+        )
+        valid_tool_names = {"memory", "workspace_search", "workspace_retrieve"}
+        tool_guidance = []
+        if "memory" in valid_tool_names:
+            tool_guidance.append(MEMORY_GUIDANCE)
+        ws = build_workspace_guidance(valid_tool_names)
+        if ws:
+            tool_guidance.append(ws)
+        combined = " ".join(tool_guidance)
+        assert WORKSPACE_SEARCH_GUIDANCE_CORE in combined
+        assert WORKSPACE_RETRIEVE_GUIDANCE in combined
+        assert MEMORY_GUIDANCE in combined
+
+    def test_wiring_skips_when_workspace_unavailable(self):
+        valid_tool_names = {"memory"}
+        tool_guidance = []
+        ws = build_workspace_guidance(valid_tool_names)
+        if ws:
+            tool_guidance.append(ws)
+        combined = " ".join(tool_guidance)
+        assert WORKSPACE_SEARCH_GUIDANCE_CORE not in combined

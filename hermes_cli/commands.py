@@ -145,6 +145,10 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("browser", "Connect browser tools to your live Chrome via CDP", "Tools & Skills",
                cli_only=True, args_hint="[connect|disconnect|status]",
                subcommands=("connect", "disconnect", "status")),
+    CommandDef("workspace", "Workspace status, search, and index management",
+               "Tools & Skills",
+               args_hint="[status|index|list|search|retrieve|delete|roots]",
+               subcommands=("status", "index", "list", "search", "retrieve", "delete", "roots")),
     CommandDef("plugins", "List installed plugins and their status",
                "Tools & Skills", cli_only=True),
 

@@ -5752,6 +5752,9 @@ class HermesCLI:
                         print(f"  {status} {p['name']}{version}{detail}{error}")
             except Exception as e:
                 print(f"Plugin system error: {e}")
+        elif canonical == "workspace":
+            from hermes_cli.workspace_slash import handle_workspace_slash
+            handle_workspace_slash(cmd_original, console=self.console)
         elif canonical == "rollback":
             self._handle_rollback_command(cmd_original)
         elif canonical == "snapshot":
