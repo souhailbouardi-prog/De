@@ -55,7 +55,7 @@ def _make_event(text="hello", chat_id="123", platform_val="telegram"):
     return evt
 
 
-def _make_runner():
+def _make_runner(busy_input_mode="interrupt"):
     """Build a minimal GatewayRunner-like object for testing."""
     from gateway.run import GatewayRunner, _AGENT_PENDING_SENTINEL
 
@@ -64,6 +64,7 @@ def _make_runner():
     runner._running_agents_ts = {}
     runner._pending_messages = {}
     runner._busy_ack_ts = {}
+    runner._busy_input_mode = busy_input_mode
     runner._draining = False
     runner.adapters = {}
     runner.config = MagicMock()
@@ -291,3 +292,144 @@ class TestBusySessionAck:
 
         result = await runner._handle_active_session_busy_message(event, sk)
         assert result is False  # not handled, let default path try
+
+
+# ---------------------------------------------------------------------------
+# Queue-mode tests for busy_input_mode == "queue"
+# ---------------------------------------------------------------------------
+
+class TestBusySessionQueueMode:
+    """When busy_input_mode is "queue", messages are queued without interrupting."""
+
+    @pytest.mark.asyncio
+    async def test_queue_mode_does_not_interrupt(self):
+        """Queue mode should NOT call agent.interrupt()."""
+        runner, sentinel = _make_runner(busy_input_mode="queue")
+        adapter = _make_adapter()
+
+        event = _make_event(text="hello again")
+        sk = build_session_key(event.source)
+
+        agent = MagicMock()
+        agent.get_activity_summary.return_value = {
+            "api_call_count": 5,
+            "max_iterations": 60,
+            "current_tool": "web_search",
+            "last_activity_ts": time.time(),
+            "last_activity_desc": "tool",
+            "seconds_since_activity": 0.5,
+        }
+        runner._running_agents[sk] = agent
+        runner._running_agents_ts[sk] = time.time() - 120
+        runner.adapters[event.source.platform] = adapter
+
+        result = await runner._handle_active_session_busy_message(event, sk)
+
+        assert result is True  # handled
+        agent.interrupt.assert_not_called()  # key: no interrupt
+        # Message should still be queued
+        assert sk in adapter._pending_messages
+
+    @pytest.mark.asyncio
+    async def test_queue_mode_sends_queued_ack(self):
+        """Queue mode ack should say 'Queued' not 'Interrupting'."""
+        runner, sentinel = _make_runner(busy_input_mode="queue")
+        adapter = _make_adapter()
+
+        event = _make_event(text="ping")
+        sk = build_session_key(event.source)
+
+        agent = MagicMock()
+        agent.get_activity_summary.return_value = {
+            "api_call_count": 3,
+            "max_iterations": 30,
+            "current_tool": "terminal",
+            "last_activity_ts": time.time(),
+            "last_activity_desc": "terminal",
+            "seconds_since_activity": 1.0,
+        }
+        runner._running_agents[sk] = agent
+        runner._running_agents_ts[sk] = time.time() - 300  # 5 min
+        runner.adapters[event.source.platform] = adapter
+
+        result = await runner._handle_active_session_busy_message(event, sk)
+
+        assert result is True
+        adapter._send_with_retry.assert_called_once()
+        call_kwargs = adapter._send_with_retry.call_args
+        content = call_kwargs.kwargs.get("content", "")
+        assert "Queued" in content
+        assert "Interrupting" not in content
+
+    @pytest.mark.asyncio
+    async def test_queue_mode_still_debounces(self):
+        """Queue mode should still debounce acks within 30s cooldown."""
+        runner, sentinel = _make_runner(busy_input_mode="queue")
+        adapter = _make_adapter()
+
+        event1 = _make_event(text="msg1")
+        event2 = MessageEvent(
+            text="msg2",
+            message_type=MessageType.TEXT,
+            source=event1.source,
+            message_id="msg2",
+        )
+        sk = build_session_key(event1.source)
+
+        agent = MagicMock()
+        agent.get_activity_summary.return_value = {
+            "api_call_count": 5,
+            "max_iterations": 60,
+            "current_tool": None,
+            "last_activity_ts": time.time(),
+            "last_activity_desc": "api_call",
+            "seconds_since_activity": 0.5,
+        }
+        runner._running_agents[sk] = agent
+        runner._running_agents_ts[sk] = time.time() - 60
+        runner.adapters[event1.source.platform] = adapter
+
+        # First message — should get ack
+        result1 = await runner._handle_active_session_busy_message(event1, sk)
+        assert result1 is True
+        assert adapter._send_with_retry.call_count == 1
+
+        # Second message within cooldown — queued but no ack
+        result2 = await runner._handle_active_session_busy_message(event2, sk)
+        assert result2 is True
+        assert adapter._send_with_retry.call_count == 1  # still 1
+
+        # No interrupts should have been called
+        agent.interrupt.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_interrupt_mode_still_works(self):
+        """When busy_input_mode is 'interrupt' (default), existing behavior unchanged."""
+        runner, sentinel = _make_runner(busy_input_mode="interrupt")
+        adapter = _make_adapter()
+
+        event = _make_event(text="hello?")
+        sk = build_session_key(event.source)
+
+        agent = MagicMock()
+        agent.get_activity_summary.return_value = {
+            "api_call_count": 5,
+            "max_iterations": 60,
+            "current_tool": "terminal",
+            "last_activity_ts": time.time(),
+            "last_activity_desc": "terminal",
+            "seconds_since_activity": 0.5,
+        }
+        runner._running_agents[sk] = agent
+        runner._running_agents_ts[sk] = time.time() - 60
+        runner.adapters[event.source.platform] = adapter
+
+        result = await runner._handle_active_session_busy_message(event, sk)
+
+        assert result is True
+        # Should still interrupt in interrupt mode
+        agent.interrupt.assert_called_once_with("hello?")
+        adapter._send_with_retry.assert_called_once()
+        call_kwargs = adapter._send_with_retry.call_args
+        content = call_kwargs.kwargs.get("content", "")
+        assert "Interrupting" in content

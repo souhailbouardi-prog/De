@@ -1511,21 +1511,74 @@ class GatewayRunner:
             return True
 
         # --- Normal busy case (agent actively running a task) ---
-        # The user sent a message while the agent is working.  Interrupt the
-        # agent immediately so it stops the current tool-calling loop and
-        # processes the new message.  The pending message is stored in the
-        # adapter so the base adapter picks it up once the interrupted run
-        # returns.  A brief ack tells the user what's happening (debounced
-        # to avoid spam when they fire multiple messages quickly).
+        # The user sent a message while the agent is working.  By default we
+        # interrupt the agent immediately, but when busy_input_mode is "queue"
+        # we store the message for the next turn without interrupting.
 
         adapter = self.adapters.get(event.source.platform)
         if not adapter:
             return False  # let default path handle it
 
-        # Store the message so it's processed as the next turn after the
-        # interrupt causes the current run to exit.
+        # Store the message so it's processed as the next turn.
         from gateway.platforms.base import merge_pending_message_event
         merge_pending_message_event(adapter._pending_messages, session_key, event)
+
+        # --- Queue mode: store message, send queued ack, do NOT interrupt ---
+        if self._busy_input_mode == "queue":
+            # Debounce: only send an acknowledgment once every 30 seconds per session
+            _BUSY_ACK_COOLDOWN = 30
+            now = time.time()
+            last_ack = self._busy_ack_ts.get(session_key, 0)
+            if now - last_ack < _BUSY_ACK_COOLDOWN:
+                return True  # message queued, ack already delivered recently
+
+            self._busy_ack_ts[session_key] = now
+
+            # Build a status-rich queued acknowledgment
+            running_agent = self._running_agents.get(session_key)
+            status_parts = []
+            if running_agent and running_agent is not _AGENT_PENDING_SENTINEL:
+                try:
+                    summary = running_agent.get_activity_summary()
+                    iteration = summary.get("api_call_count", 0)
+                    max_iter = summary.get("max_iterations", 0)
+                    current_tool = summary.get("current_tool")
+                    start_ts = self._running_agents_ts.get(session_key, 0)
+                    if start_ts:
+                        elapsed_min = int((now - start_ts) / 60)
+                        if elapsed_min > 0:
+                            status_parts.append(f"{elapsed_min} min elapsed")
+                    if max_iter:
+                        status_parts.append(f"iteration {iteration}/{max_iter}")
+                    if current_tool:
+                        status_parts.append(f"running: {current_tool}")
+                except Exception:
+                    pass
+
+            status_detail = f" ({', '.join(status_parts)})" if status_parts else ""
+            message = (
+                f"📥 Queued for next turn{status_detail}. "
+                f"I'll get to your message when the current task finishes."
+            )
+
+            thread_meta = {"thread_id": event.source.thread_id} if event.source.thread_id else None
+            try:
+                await adapter._send_with_retry(
+                    chat_id=event.source.chat_id,
+                    content=message,
+                    reply_to=event.message_id,
+                    metadata=thread_meta,
+                )
+            except Exception as e:
+                logger.debug("Failed to send busy-ack: %s", e)
+
+            return True
+
+        # --- Interrupt mode (default): interrupt the running agent ---
+        # The pending message is already stored above.  Now interrupt the
+        # agent so it stops the current tool-calling loop and processes the
+        # new message.  A brief ack tells the user what's happening (debounced
+        # to avoid spam when they fire multiple messages quickly).
 
         # Interrupt the running agent — this aborts in-flight tool calls and
         # causes the agent loop to exit at the next check point.
