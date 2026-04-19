@@ -113,10 +113,16 @@ class _VikingClient:
         return resp.json()
 
     def post(self, path: str, payload: dict = None, **kwargs) -> dict:
-        resp = self._httpx.post(
-            self._url(path), json=payload or {}, headers=self._headers(),
-            timeout=_TIMEOUT, **kwargs
-        )
+        if "files" in kwargs:
+            resp = self._httpx.post(
+                self._url(path), headers={k: v for k, v in self._headers().items() if k != "Content-Type"},
+                timeout=_TIMEOUT, **kwargs
+            )
+        else:
+            resp = self._httpx.post(
+                self._url(path), json=payload or {}, headers=self._headers(),
+                timeout=_TIMEOUT, **kwargs
+            )
         resp.raise_for_status()
         return resp.json()
 
@@ -647,17 +653,43 @@ class OpenVikingMemoryProvider(MemoryProvider):
         })
 
     def _tool_add_resource(self, args: dict) -> str:
-        url = args.get("url", "")
-        if not url:
-            return tool_error("url is required")
-
-        payload: Dict[str, Any] = {"path": url}
+        # Support both 'path' and 'url' for backward compatibility
+        path = args.get("path", args.get("url", ""))
+        if not path:
+            return tool_error("path or url is required")
+        
+        payload: Dict[str, Any] = {}
+        
+        # Check if it's a local file
+        if os.path.exists(path):
+            # Upload via temp endpoint first
+            try:
+                with open(path, 'rb') as f:
+                    files = {'file': (os.path.basename(path), f, 'text/markdown')}
+                    upload_resp = self._client.post(
+                        "/api/v1/resources/temp_upload",
+                        files=files
+                    )
+                    if upload_resp.get("status") != "ok":
+                        return tool_error(f"Failed to upload file: {upload_resp.get('result', {})}")
+                    temp_id = upload_resp.get("result", {}).get("temp_file_id")
+                    if not temp_id:
+                        return tool_error("Failed to get temp_file_id from upload")
+                    payload["temp_file_id"] = temp_id
+            except Exception as e:
+                return tool_error(f"Error uploading file: {str(e)}")
+        else:
+            # Remote URL - use path directly
+            payload["path"] = path
+        
         if args.get("reason"):
             payload["reason"] = args["reason"]
-
+        if args.get("wait"):
+            payload["wait"] = args["wait"]
+        
         resp = self._client.post("/api/v1/resources", payload)
         result = resp.get("result", {})
-
+        
         return json.dumps({
             "status": "added",
             "root_uri": result.get("root_uri", ""),
