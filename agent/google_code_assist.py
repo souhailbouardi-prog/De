@@ -252,7 +252,7 @@ def load_code_assist(
                     cloudaicompanion_project=project_id,
                 )
             last_err = exc
-            logger.warning("loadCodeAssist failed on %s: %s", endpoint, exc)
+            logger.warning("loadCodeAssist failed on %s: %s", endpoint, exc, exc_info=True)
             continue
     if last_err:
         raise last_err
@@ -327,7 +327,7 @@ def onboard_user(
             try:
                 poll_resp = _post_json(poll_url, {}, access_token, user_agent_model=user_agent_model)
             except CodeAssistError as exc:
-                logger.warning("Onboarding poll attempt %d failed: %s", attempt + 1, exc)
+                logger.warning("Onboarding poll attempt %d failed: %s", attempt + 1, exc, exc_info=True)
                 continue
             if poll_resp.get("done"):
                 return poll_resp

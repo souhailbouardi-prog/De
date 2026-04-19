@@ -475,7 +475,7 @@ def load_credentials() -> Optional[GoogleCredentials]:
             raw = path.read_text(encoding="utf-8")
         data = json.loads(raw)
     except (json.JSONDecodeError, OSError, IOError) as exc:
-        logger.warning("Failed to read Google OAuth credentials at %s: %s", path, exc)
+        logger.warning("Failed to read Google OAuth credentials at %s: %s", path, exc, exc_info=True)
         return None
     if not isinstance(data, dict):
         return None
@@ -518,7 +518,7 @@ def clear_credentials() -> None:
         except FileNotFoundError:
             pass
         except OSError as exc:
-            logger.warning("Failed to remove Google OAuth credentials at %s: %s", path, exc)
+            logger.warning("Failed to remove Google OAuth credentials at %s: %s", path, exc, exc_info=True)
 
 
 # =============================================================================
