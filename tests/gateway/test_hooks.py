@@ -81,6 +81,22 @@ class TestDiscoverAndLoad:
 
         assert len(reg.loaded_hooks) == 0
 
+    def test_skips_scalar_events_manifest(self, tmp_path, capsys):
+        hook_dir = tmp_path / "scalar-events"
+        hook_dir.mkdir()
+        (hook_dir / "HOOK.yaml").write_text("name: scalar-events\nevents: agent:start\n")
+        (hook_dir / "handler.py").write_text("def handle(e, c): pass\n")
+
+        reg = HookRegistry()
+        with patch("gateway.hooks.HOOKS_DIR", tmp_path), _patch_no_builtins(reg):
+            reg.discover_and_load()
+
+        captured = capsys.readouterr()
+        assert len(reg.loaded_hooks) == 0
+        assert "invalid events" in captured.out.lower()
+        assert "agent:start" not in reg._handlers
+        assert "a" not in reg._handlers
+
     def test_skips_no_handle_function(self, tmp_path):
         hook_dir = tmp_path / "no-handle"
         hook_dir.mkdir()
