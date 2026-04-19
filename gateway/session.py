@@ -835,16 +835,24 @@ class SessionStore:
         """Mark a session as suspended so it auto-resets on next access.
 
         Used by ``/stop`` to prevent stuck sessions from being resumed
-        after a gateway restart (#7536).  Returns True if the session
-        existed and was marked.
+        after a gateway restart (#7536).  Also ends the session in the
+        SQLite DB so ended_at is populated and zombie sessions are
+        prevented (#9090).  Returns True if the session existed and
+        was marked.
         """
+        db_end_session_id = None
         with self._lock:
             self._ensure_loaded_locked()
             if session_key in self._entries:
                 self._entries[session_key].suspended = True
+                db_end_session_id = self._entries[session_key].session_id
                 self._save()
-                return True
-        return False
+        if self._db and db_end_session_id:
+            try:
+                self._db.end_session(db_end_session_id, "suspended")
+            except Exception as e:
+                logger.debug("Session DB end_session failed: %s", e)
+        return db_end_session_id is not None
 
     def mark_resume_pending(
         self,
@@ -953,6 +961,8 @@ class SessionStore:
         in-flight when the gateway last exited from being blindly resumed
         (#7536).  Only suspends sessions updated within *max_age_seconds*
         to avoid resetting long-idle sessions that are harmless to resume.
+        Also ends each suspended session in the SQLite DB so ended_at is
+        populated and zombie sessions are prevented (#9090).
         Returns the number of sessions that were suspended.
 
         Entries flagged ``resume_pending=True`` are skipped — those were
@@ -964,7 +974,7 @@ class SessionStore:
         from datetime import timedelta
 
         cutoff = _now() - timedelta(seconds=max_age_seconds)
-        count = 0
+        suspended_ids: list[tuple[str, str]] = []  # (session_key, session_id)
         with self._lock:
             self._ensure_loaded_locked()
             for entry in self._entries.values():
@@ -972,10 +982,16 @@ class SessionStore:
                     continue
                 if not entry.suspended and entry.updated_at >= cutoff:
                     entry.suspended = True
-                    count += 1
-            if count:
+                    suspended_ids.append((entry.session_key, entry.session_id))
+            if suspended_ids:
                 self._save()
-        return count
+        if self._db:
+            for session_key, session_id in suspended_ids:
+                try:
+                    self._db.end_session(session_id, "suspended")
+                except Exception as e:
+                    logger.debug("Session DB end_session failed for %s: %s", session_key, e)
+        return len(suspended_ids)
 
     def reset_session(self, session_key: str) -> Optional[SessionEntry]:
         """Force reset a session, creating a new session ID."""
