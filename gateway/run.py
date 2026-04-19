@@ -4376,8 +4376,15 @@ class GatewayRunner:
                         "/reset to start fresh."
                     )
                 else:
+                    # Sanitize HTML error pages (e.g. Cloudflare, proxy
+                    # errors) so raw markup is never sent to chat platforms.
+                    _err_text = str(error_detail)
+                    if "<!DOCTYPE" in _err_text or "<html" in _err_text:
+                        import re as _re
+                        _m = _re.search(r"<title[^>]*>([^<]+)</title>", _err_text, _re.IGNORECASE)
+                        _err_text = _m.group(1).strip() if _m else "HTML error page from provider"
                     response = (
-                        f"The request failed: {str(error_detail)[:300]}\n"
+                        f"The request failed: {_err_text[:300]}\n"
                         "Try again or use /reset to start a fresh session."
                     )
 
