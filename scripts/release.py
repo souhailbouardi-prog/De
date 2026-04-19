@@ -68,6 +68,7 @@ AUTHOR_MAP = {
     "258577966+voidborne-d@users.noreply.github.com": "voidborne-d",
     "70424851+insecurejezza@users.noreply.github.com": "insecurejezza",
     "259807879+Bartok9@users.noreply.github.com": "Bartok9",
+    "MestreY0d4-Uninter@users.noreply.github.com": "MestreY0d4-Uninter",
     "241404605+MestreY0d4-Uninter@users.noreply.github.com": "MestreY0d4-Uninter",
     "268667990+Roy-oss1@users.noreply.github.com": "Roy-oss1",
     "27917469+nosleepcassette@users.noreply.github.com": "nosleepcassette",
