@@ -8573,18 +8573,24 @@ class AIAgent:
                 if self.max_tokens is not None:
                     summary_kwargs.update(self._max_tokens_param(self.max_tokens))
 
-                # Include provider routing preferences
-                provider_preferences = {}
-                if self.providers_allowed:
-                    provider_preferences["only"] = self.providers_allowed
-                if self.providers_ignored:
-                    provider_preferences["ignore"] = self.providers_ignored
-                if self.providers_order:
-                    provider_preferences["order"] = self.providers_order
-                if self.provider_sort:
-                    provider_preferences["sort"] = self.provider_sort
-                if provider_preferences:
-                    summary_extra_body["provider"] = provider_preferences
+                # Include provider routing preferences — OpenRouter-specific,
+                # must not be sent to other providers (#8591).
+                if self._is_openrouter_url():
+                    provider_preferences = {}
+                    if self.providers_allowed:
+                        provider_preferences["only"] = self.providers_allowed
+                    if self.providers_ignored:
+                        provider_preferences["ignore"] = self.providers_ignored
+                    if self.providers_order:
+                        provider_preferences["order"] = self.providers_order
+                    if self.provider_sort:
+                        provider_preferences["sort"] = self.provider_sort
+                    if self.provider_require_parameters:
+                        provider_preferences["require_parameters"] = True
+                    if self.provider_data_collection:
+                        provider_preferences["data_collection"] = self.provider_data_collection
+                    if provider_preferences:
+                        summary_extra_body["provider"] = provider_preferences
 
                 if summary_extra_body:
                     summary_kwargs["extra_body"] = summary_extra_body

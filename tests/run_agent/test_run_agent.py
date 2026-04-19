@@ -1812,6 +1812,61 @@ class TestHandleMaxIterations:
         kwargs = agent.client.chat.completions.create.call_args.kwargs
         assert "reasoning" not in kwargs.get("extra_body", {})
 
+    def test_summary_includes_provider_preferences_for_openrouter(self, agent):
+        """Provider routing prefs should be included for OpenRouter (#8591)."""
+        resp = _mock_response(content="Summary")
+        agent.client.chat.completions.create.return_value = resp
+        agent._cached_system_prompt = "You are helpful."
+        agent.base_url = "https://openrouter.ai/api/v1"
+        agent._base_url_lower = agent.base_url.lower()
+        agent.providers_allowed = ["Anthropic"]
+        agent.provider_sort = "price"
+        messages = [{"role": "user", "content": "do stuff"}]
+
+        result = agent._handle_max_iterations(messages, 60)
+
+        assert result == "Summary"
+        kwargs = agent.client.chat.completions.create.call_args.kwargs
+        provider = kwargs["extra_body"]["provider"]
+        assert provider["only"] == ["Anthropic"]
+        assert provider["sort"] == "price"
+
+    def test_summary_omits_provider_preferences_for_non_openrouter(self, agent):
+        """Provider routing prefs must NOT be sent to non-OpenRouter providers (#8591)."""
+        resp = _mock_response(content="Summary")
+        agent.client.chat.completions.create.return_value = resp
+        agent._cached_system_prompt = "You are helpful."
+        agent.base_url = "https://api.openai.com/v1"
+        agent._base_url_lower = agent.base_url.lower()
+        agent.providers_allowed = ["Anthropic"]
+        messages = [{"role": "user", "content": "do stuff"}]
+
+        result = agent._handle_max_iterations(messages, 60)
+
+        assert result == "Summary"
+        kwargs = agent.client.chat.completions.create.call_args.kwargs
+        assert "provider" not in kwargs.get("extra_body", {})
+
+    def test_summary_includes_require_parameters_for_openrouter(self, agent):
+        """require_parameters and data_collection should be forwarded to OpenRouter."""
+        resp = _mock_response(content="Summary")
+        agent.client.chat.completions.create.return_value = resp
+        agent._cached_system_prompt = "You are helpful."
+        agent.base_url = "https://openrouter.ai/api/v1"
+        agent._base_url_lower = agent.base_url.lower()
+        agent.providers_allowed = ["Anthropic"]
+        agent.provider_require_parameters = True
+        agent.provider_data_collection = "deny"
+        messages = [{"role": "user", "content": "do stuff"}]
+
+        result = agent._handle_max_iterations(messages, 60)
+
+        assert result == "Summary"
+        kwargs = agent.client.chat.completions.create.call_args.kwargs
+        provider = kwargs["extra_body"]["provider"]
+        assert provider["require_parameters"] is True
+        assert provider["data_collection"] == "deny"
+
 
 class TestRunConversation:
     """Tests for the main run_conversation method.
