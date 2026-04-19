@@ -208,6 +208,34 @@ class TestMemoryStorePersistence:
         assert len(store.memory_entries) == 2
 
 
+class TestMemoryStoreCharLimitOnLoad:
+    def test_warns_when_loaded_content_exceeds_limit(self, tmp_path, monkeypatch, caplog):
+        monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: tmp_path)
+        mem_file = tmp_path / "MEMORY.md"
+        mem_file.write_text("x" * 2500)  # exceeds default 2200
+
+        import logging
+        with caplog.at_level(logging.WARNING, logger="tools.memory_tool"):
+            store = MemoryStore()
+            store.load_from_disk()
+
+        assert "exceeds char limit" in caplog.text
+        # Content still loaded (no truncation)
+        assert len(store.memory_entries) == 1
+
+    def test_no_warning_when_under_limit(self, tmp_path, monkeypatch, caplog):
+        monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: tmp_path)
+        mem_file = tmp_path / "MEMORY.md"
+        mem_file.write_text("short entry")
+
+        import logging
+        with caplog.at_level(logging.WARNING, logger="tools.memory_tool"):
+            store = MemoryStore()
+            store.load_from_disk()
+
+        assert "exceeds char limit" not in caplog.text
+
+
 class TestMemoryStoreSnapshot:
     def test_snapshot_frozen_at_load(self, store):
         store.add("memory", "loaded at start")

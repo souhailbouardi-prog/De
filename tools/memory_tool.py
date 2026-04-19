@@ -133,6 +133,17 @@ class MemoryStore:
         self.memory_entries = list(dict.fromkeys(self.memory_entries))
         self.user_entries = list(dict.fromkeys(self.user_entries))
 
+        # Warn if loaded content exceeds char limits (can happen from external writes)
+        for target in ("memory", "user"):
+            count = self._char_count(target)
+            limit = self._char_limit(target)
+            if count > limit:
+                logger.warning(
+                    "%s.md exceeds char limit on load: %d/%d chars (%.0f%%). "
+                    "Content will be injected as-is but further additions will be blocked.",
+                    target.upper(), count, limit, count / limit * 100,
+                )
+
         # Capture frozen snapshot for system prompt injection
         self._system_prompt_snapshot = {
             "memory": self._render_block("memory", self.memory_entries),
