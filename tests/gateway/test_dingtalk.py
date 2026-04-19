@@ -45,6 +45,36 @@ class TestDingTalkRequirements:
         from gateway.platforms.dingtalk import check_dingtalk_requirements
         assert check_dingtalk_requirements() is True
 
+    def test_returns_true_when_credentials_in_config_extra(self, monkeypatch):
+        """Credentials supplied via ``platforms.dingtalk.extra`` should satisfy
+        the check even when env vars are absent — mirrors
+        ``DingTalkAdapter.__init__`` precedence.
+        """
+        monkeypatch.setattr(
+            "gateway.platforms.dingtalk.DINGTALK_STREAM_AVAILABLE", True
+        )
+        monkeypatch.setattr("gateway.platforms.dingtalk.HTTPX_AVAILABLE", True)
+        monkeypatch.delenv("DINGTALK_CLIENT_ID", raising=False)
+        monkeypatch.delenv("DINGTALK_CLIENT_SECRET", raising=False)
+        from gateway.platforms.dingtalk import check_dingtalk_requirements
+        config = PlatformConfig(
+            enabled=True,
+            extra={"client_id": "cfg-id", "client_secret": "cfg-secret"},
+        )
+        assert check_dingtalk_requirements(config) is True
+
+    def test_returns_false_when_config_extra_partial(self, monkeypatch):
+        """Partial credentials in config.extra (e.g. missing secret) are rejected."""
+        monkeypatch.setattr(
+            "gateway.platforms.dingtalk.DINGTALK_STREAM_AVAILABLE", True
+        )
+        monkeypatch.setattr("gateway.platforms.dingtalk.HTTPX_AVAILABLE", True)
+        monkeypatch.delenv("DINGTALK_CLIENT_ID", raising=False)
+        monkeypatch.delenv("DINGTALK_CLIENT_SECRET", raising=False)
+        from gateway.platforms.dingtalk import check_dingtalk_requirements
+        config = PlatformConfig(enabled=True, extra={"client_id": "cfg-id"})
+        assert check_dingtalk_requirements(config) is False
+
 
 # ---------------------------------------------------------------------------
 # Adapter construction

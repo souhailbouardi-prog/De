@@ -2714,8 +2714,8 @@ class GatewayRunner:
 
         elif platform == Platform.DINGTALK:
             from gateway.platforms.dingtalk import DingTalkAdapter, check_dingtalk_requirements
-            if not check_dingtalk_requirements():
-                logger.warning("DingTalk: dingtalk-stream not installed or DINGTALK_CLIENT_ID/SECRET not set")
+            if not check_dingtalk_requirements(config):
+                logger.warning("DingTalk: dingtalk-stream not installed or client_id/client_secret not set (checked platforms.dingtalk.extra and DINGTALK_CLIENT_ID/SECRET env vars)")
                 return None
             return DingTalkAdapter(config)
 

@@ -110,11 +110,19 @@ DINGTALK_TYPE_MAPPING = {
 }
 
 
-def check_dingtalk_requirements() -> bool:
-    """Check if DingTalk dependencies are available and configured."""
+def check_dingtalk_requirements(config: Optional[PlatformConfig] = None) -> bool:
+    """Check if DingTalk dependencies are available and configured.
+
+    Credentials are accepted from ``config.extra`` (preferred — matches
+    ``DingTalkAdapter.__init__``) or the ``DINGTALK_CLIENT_ID`` /
+    ``DINGTALK_CLIENT_SECRET`` environment variables as a fallback.
+    """
     if not DINGTALK_STREAM_AVAILABLE or not HTTPX_AVAILABLE:
         return False
-    if not os.getenv("DINGTALK_CLIENT_ID") or not os.getenv("DINGTALK_CLIENT_SECRET"):
+    extra = (config.extra if config else None) or {}
+    client_id = extra.get("client_id") or os.getenv("DINGTALK_CLIENT_ID")
+    client_secret = extra.get("client_secret") or os.getenv("DINGTALK_CLIENT_SECRET")
+    if not client_id or not client_secret:
         return False
     return True
 
