@@ -10,6 +10,9 @@ from typing import Callable, List, Optional, Set
 from hermes_cli.colors import Colors, color
 
 
+_PENDING_KEYS: dict[int, list[int]] = {}
+
+
 def flush_stdin() -> None:
     """Flush any stray bytes from the stdin input buffer.
 
@@ -30,6 +33,109 @@ def flush_stdin() -> None:
         termios.tcflush(sys.stdin, termios.TCIFLUSH)
     except Exception:
         pass
+
+
+def _enable_keypad(stdscr) -> None:
+    """Ask curses to translate escape sequences into KEY_* constants when possible."""
+    try:
+        stdscr.keypad(True)
+    except Exception:
+        pass
+
+
+def _queue_pending_keys(stdscr, *keys: int) -> None:
+    """Push keys back so the next ``read_curses_key`` call can consume them."""
+    values = [key for key in keys if key != -1]
+    if not values:
+        return
+
+    ident = id(stdscr)
+    existing = _PENDING_KEYS.get(ident, [])
+    _PENDING_KEYS[ident] = values + existing
+
+
+def read_curses_key(stdscr, curses_mod=None) -> int:
+    """Read one logical key from curses, decoding raw arrow escape sequences.
+
+    Some terminals still deliver arrows as ``ESC [ A/B`` or ``ESC O A/B`` when
+    ``keypad(True)`` does not take effect. Treat those sequences as arrow keys
+    instead of misreading the leading ``ESC`` as a cancel action.
+    """
+    ident = id(stdscr)
+    pending = _PENDING_KEYS.get(ident)
+    if pending:
+        key = pending.pop(0)
+        if not pending:
+            _PENDING_KEYS.pop(ident, None)
+        return key
+
+    if curses_mod is None:
+        import curses as curses_mod
+
+    key = stdscr.getch()
+    if key != 27:
+        return key
+
+    # Use a short blocking timeout rather than nodelay so we tolerate
+    # terminals (slow SSH/tmux PTYs) that deliver ESC, [, A across
+    # separate reads — a naive non-blocking poll would misread those
+    # as a bare Escape/cancel.
+    try:
+        stdscr.timeout(50)
+    except Exception:
+        pass
+
+    try:
+        second = stdscr.getch()
+        if second == -1:
+            return key
+        if second not in (91, 79):  # CSI or SS3
+            _queue_pending_keys(stdscr, second)
+            return key
+
+        # CSI/SS3 sequence. Read until we hit a terminator so function keys
+        # like Home/End/Delete (ESC [ H, ESC [ F, ESC [ 3 ~) don't leak their
+        # tail bytes back into the caller's input buffer where they would be
+        # injected as printable characters.
+        sequence: list[int] = []
+        while True:
+            part = stdscr.getch()
+            if part == -1:
+                break
+            sequence.append(part)
+            if second == 79:  # SS3: single-byte function identifier
+                break
+            # CSI final byte is in range 0x40–0x7E.
+            if 0x40 <= part <= 0x7E:
+                break
+            if len(sequence) >= 8:
+                break
+
+        if not sequence:
+            # Incomplete escape (e.g. Alt-[ / Alt-O). Preserve the lead byte
+            # so Alt-key semantics still work and return the bare ESC.
+            _queue_pending_keys(stdscr, second)
+            return key
+
+        last = sequence[-1]
+        mapping = {
+            65: curses_mod.KEY_UP,
+            66: curses_mod.KEY_DOWN,
+            67: curses_mod.KEY_RIGHT,
+            68: curses_mod.KEY_LEFT,
+        }
+        mapped = mapping.get(last)
+        if mapped is not None:
+            return mapped
+        # Unknown function key — swallow the whole sequence rather than
+        # replaying it as input; returning 0 is a harmless no-op for the
+        # menu/filter loops (not ESC, not printable, not an arrow).
+        return 0
+    finally:
+        try:
+            stdscr.timeout(-1)
+        except Exception:
+            pass
 
 
 def curses_checklist(
@@ -65,6 +171,7 @@ def curses_checklist(
         result_holder: list = [None]
 
         def _draw(stdscr):
+            _enable_keypad(stdscr)
             curses.curs_set(0)
             if curses.has_colors():
                 curses.start_color()
@@ -137,7 +244,7 @@ def curses_checklist(
                         pass
 
                 stdscr.refresh()
-                key = stdscr.getch()
+                key = read_curses_key(stdscr, curses)
 
                 if key in (curses.KEY_UP, ord("k")):
                     cursor = (cursor - 1) % len(items)
@@ -194,6 +301,7 @@ def curses_radiolist(
         result_holder: list = [None]
 
         def _draw(stdscr):
+            _enable_keypad(stdscr)
             curses.curs_set(0)
             if curses.has_colors():
                 curses.start_color()
@@ -261,7 +369,7 @@ def curses_radiolist(
                         pass
 
                 stdscr.refresh()
-                key = stdscr.getch()
+                key = read_curses_key(stdscr, curses)
 
                 if key in (curses.KEY_UP, ord("k")):
                     cursor = (cursor - 1) % len(items)
@@ -314,23 +422,39 @@ def curses_single_select(
     default_index: int = 0,
     *,
     cancel_label: str = "Cancel",
+    footer_lines: List[str] | None = None,
 ) -> int | None:
     """Curses single-select menu. Returns selected index or None on cancel.
 
     Works inside prompt_toolkit because curses.wrapper() restores the terminal
     safely, unlike simple_term_menu which conflicts with /dev/tty.
+
+    ``title`` may contain newlines — each line is rendered on its own row so
+    callers can supply a multi-line header (e.g. a pricing column legend).
+    ``footer_lines`` is rendered dimly below the items and is useful for
+    supplementary information such as unavailable-model hints.
     """
+    all_items = list(items) + [cancel_label]
+    cancel_idx = len(items)
+    footer = list(footer_lines or [])
+    title_lines = title.splitlines() or [""]
+
     if not sys.stdin.isatty():
-        return None
+        # Headless invocation (piped stdin, scripted tests). Fall back to the
+        # numbered prompt so callers that feed a numeric choice through stdin
+        # keep working; _numbered_single_fallback catches EOFError and returns
+        # None when there is nothing to read, so truly detached contexts still
+        # cancel cleanly without blocking.
+        return _numbered_single_fallback(
+            title, all_items, cancel_idx, footer_lines=footer
+        )
 
     try:
         import curses
         result_holder: list = [None]
 
-        all_items = list(items) + [cancel_label]
-        cancel_idx = len(items)
-
         def _draw(stdscr):
+            _enable_keypad(stdscr)
             curses.curs_set(0)
             if curses.has_colors():
                 curses.start_color()
@@ -339,6 +463,8 @@ def curses_single_select(
                 curses.init_pair(2, curses.COLOR_YELLOW, -1)
             cursor = min(default_index, len(all_items) - 1)
             scroll_offset = 0
+            title_rows = len(title_lines)
+            items_start = title_rows + 1  # +1 for the hint row
 
             while True:
                 stdscr.clear()
@@ -348,25 +474,43 @@ def curses_single_select(
                     hattr = curses.A_BOLD
                     if curses.has_colors():
                         hattr |= curses.color_pair(2)
-                    stdscr.addnstr(0, 0, title, max_x - 1, hattr)
-                    stdscr.addnstr(
-                        1, 0,
-                        "  ↑↓ navigate  ENTER confirm  ESC/q cancel",
-                        max_x - 1, curses.A_DIM,
-                    )
+                    for row, line in enumerate(title_lines):
+                        if row >= max_y:
+                            break
+                        attr = hattr if row == 0 else curses.A_NORMAL
+                        stdscr.addnstr(row, 0, line, max_x - 1, attr)
+                    if title_rows < max_y:
+                        stdscr.addnstr(
+                            title_rows, 0,
+                            "  ↑↓ navigate  ENTER confirm  ESC/q cancel",
+                            max_x - 1, curses.A_DIM,
+                        )
                 except curses.error:
                     pass
 
-                visible_rows = max_y - 3
+                # Cap footer at one-third of the rows below the hint so a long
+                # unavailable-model block can't crush the selectable list on a
+                # standard 24-row terminal. The remaining footer lines are
+                # dropped (users can still see them in the numbered fallback).
+                # The footer is rendered after a blank separator row, so budget
+                # for that separator too — otherwise a 6–8 row tmux split would
+                # reserve space for a footer that never actually fits, hiding
+                # selectable rows for no visible gain.
+                available = max(1, max_y - items_start - 1)
+                footer_cap = max(0, (available - 1) // 3) if footer else 0
+                footer_shown = min(len(footer), footer_cap)
+                separator_row = 1 if footer_shown else 0
+                visible_rows = max(1, available - footer_shown - separator_row)
                 if cursor < scroll_offset:
                     scroll_offset = cursor
                 elif cursor >= scroll_offset + visible_rows:
                     scroll_offset = cursor - visible_rows + 1
 
+                last_item_row = items_start
                 for draw_i, i in enumerate(
                     range(scroll_offset, min(len(all_items), scroll_offset + visible_rows))
                 ):
-                    y = draw_i + 3
+                    y = draw_i + items_start
                     if y >= max_y - 1:
                         break
                     arrow = "→" if i == cursor else " "
@@ -380,9 +524,24 @@ def curses_single_select(
                         stdscr.addnstr(y, 0, line, max_x - 1, attr)
                     except curses.error:
                         pass
+                    last_item_row = y
+
+                if footer_shown:
+                    footer_start = last_item_row + 2
+                    for i in range(footer_shown):
+                        y = footer_start + i
+                        if y >= max_y - 1:
+                            break
+                        fline = footer[i]
+                        if i == footer_shown - 1 and footer_shown < len(footer):
+                            fline = f"{fline}  (+{len(footer) - footer_shown} more)"
+                        try:
+                            stdscr.addnstr(y, 0, fline, max_x - 1, curses.A_DIM)
+                        except curses.error:
+                            pass
 
                 stdscr.refresh()
-                key = stdscr.getch()
+                key = read_curses_key(stdscr, curses)
 
                 if key in (curses.KEY_UP, ord("k")):
                     cursor = (cursor - 1) % len(all_items)
@@ -402,20 +561,26 @@ def curses_single_select(
         return result_holder[0]
 
     except Exception:
-        all_items = list(items) + [cancel_label]
-        cancel_idx = len(items)
-        return _numbered_single_fallback(title, all_items, cancel_idx)
+        return _numbered_single_fallback(
+            title, list(items) + [cancel_label], len(items), footer_lines=footer
+        )
 
 
 def _numbered_single_fallback(
     title: str,
     items: List[str],
     cancel_idx: int,
+    *,
+    footer_lines: List[str] | None = None,
 ) -> int | None:
     """Text-based numbered fallback for single-select."""
     print(f"\n  {title}\n")
     for i, label in enumerate(items, 1):
         print(f"  {i}. {label}")
+    if footer_lines:
+        print()
+        for line in footer_lines:
+            print(f"  {line}")
     print()
     try:
         val = input(f"  Choice [1-{len(items)}]: ").strip()
