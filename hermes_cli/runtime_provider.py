@@ -40,12 +40,16 @@ def _detect_api_mode_for_url(base_url: str) -> Optional[str]:
 
     Direct api.openai.com endpoints need the Responses API for GPT-5.x
     tool calls with reasoning (chat/completions returns 400).
+    Third-party Anthropic-compatible endpoints (URL ending in ``/anthropic``)
+    need the Anthropic Messages API — e.g. MiniMax, Zhipu GLM, LiteLLM proxies.
     """
     normalized = (base_url or "").strip().lower().rstrip("/")
     if "api.x.ai" in normalized:
         return "codex_responses"
     if "api.openai.com" in normalized and "openrouter" not in normalized:
         return "codex_responses"
+    if normalized.endswith("/anthropic") or "api.anthropic.com" in normalized:
+        return "anthropic_messages"
     return None
 
 
