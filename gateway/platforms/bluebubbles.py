@@ -153,7 +153,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
     # Lifecycle
     # ------------------------------------------------------------------
 
-    async def connect(self) -> bool:
+    async def connect(self, *, send_only: bool = False) -> bool:
         if not self.server_url or not self.password:
             logger.error(
                 "[bluebubbles] BLUEBUBBLES_SERVER_URL and BLUEBUBBLES_PASSWORD are required"
@@ -182,6 +182,13 @@ class BlueBubblesAdapter(BasePlatformAdapter):
                 await self.client.aclose()
                 self.client = None
             return False
+
+        # send_only=True skips the local webhook server — outbound-only callers
+        # (standalone cron delivery, send_message_tool) don't need to receive
+        # inbound events and must not bind a port already held by the gateway.
+        if send_only:
+            self._mark_connected()
+            return True
 
         app = web.Application()
         app.router.add_get("/health", lambda _: web.Response(text="ok"))
@@ -910,9 +917,9 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         self._background_tasks.add(task)
         task.add_done_callback(self._background_tasks.discard)
 
+
         # Fire-and-forget read receipt
         if self.send_read_receipts and session_chat_id:
             asyncio.create_task(self.mark_read(session_chat_id))
 
         return web.Response(text="ok")
-
