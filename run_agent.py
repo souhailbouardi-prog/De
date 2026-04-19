@@ -9246,7 +9246,14 @@ class AIAgent:
             
             api_start_time = time.time()
             retry_count = 0
-            max_retries = 3
+            # Number of API retries before giving up on the primary provider.
+            # Overridable via HERMES_API_MAX_RETRIES for users who want to
+            # failover to a configured fallback provider sooner instead of
+            # burning minutes on a flapping upstream (see issue #11616).
+            try:
+                max_retries = max(0, int(os.getenv("HERMES_API_MAX_RETRIES", "3")))
+            except (TypeError, ValueError):
+                max_retries = 3
             primary_recovery_attempted = False
             max_compression_attempts = 3
             codex_auth_retry_attempted=False
