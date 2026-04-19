@@ -449,6 +449,32 @@ def _clamp_command_names(
     return result
 
 
+def _clamp_command_triples(
+    entries: list[tuple[str, str, str]],
+    reserved: set[str],
+) -> list[tuple[str, str, str]]:
+    """Clamp command names while preserving attached metadata like ``cmd_key``."""
+    used: set[str] = set(reserved)
+    result: list[tuple[str, str, str]] = []
+    for name, desc, cmd_key in entries:
+        if len(name) > _CMD_NAME_LIMIT:
+            candidate = name[:_CMD_NAME_LIMIT]
+            if candidate in used:
+                prefix = name[:_CMD_NAME_LIMIT - 1]
+                for digit in range(10):
+                    candidate = f"{prefix}{digit}"
+                    if candidate not in used:
+                        break
+                else:
+                    continue
+            name = candidate
+        if name in used:
+            continue
+        used.add(name)
+        result.append((name, desc, cmd_key))
+    return result
+
+
 # Backward-compat alias.
 _clamp_telegram_names = _clamp_command_names
 
@@ -553,17 +579,14 @@ def _collect_gateway_skill_entries(
     except Exception:
         pass
 
-    # Clamp names; _clamp_command_names works on (name, desc) pairs so we
-    # need to zip/unzip.
-    skill_pairs = [(n, d) for n, d, _ in skill_triples]
-    key_by_pair = {(n, d): k for n, d, k in skill_triples}
-    skill_pairs = _clamp_command_names(skill_pairs, reserved_names)
+    # Clamp skill names while preserving the original cmd_key used at dispatch.
+    skill_triples = _clamp_command_triples(skill_triples, reserved_names)
 
     # Skills fill remaining slots — only tier that gets trimmed
     remaining = max(0, max_slots - len(all_entries))
-    hidden_count = max(0, len(skill_pairs) - remaining)
-    for n, d in skill_pairs[:remaining]:
-        all_entries.append((n, d, key_by_pair.get((n, d), "")))
+    hidden_count = max(0, len(skill_triples) - remaining)
+    for n, d, cmd_key in skill_triples[:remaining]:
+        all_entries.append((n, d, cmd_key))
 
     return all_entries[:max_slots], hidden_count
 
@@ -633,6 +656,21 @@ def discord_skill_commands(
         max_slots=max_slots,
         reserved_names=set(reserved_names),  # copy — don't mutate caller's set
         desc_limit=100,
+    )
+
+
+def discord_skill_autocomplete_entries(
+    reserved_names: set[str],
+) -> tuple[list[tuple[str, str, str]], int]:
+    """Return all Discord skill entries for the flat ``/skill`` autocomplete UI.
+
+    The flat autocomplete command no longer has Discord's old 25-groups ×
+    25-subcommands structural limit, so it should expose the full filtered skill
+    catalog instead of routing through the legacy category-capped collector.
+    """
+    return discord_skill_commands(
+        max_slots=10_000,
+        reserved_names=reserved_names,
     )
 
 

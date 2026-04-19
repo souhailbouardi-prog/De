@@ -695,22 +695,16 @@ def test_register_skill_command_is_flat_not_nested(adapter):
     flat layout sidesteps the limit — autocomplete options are fetched
     dynamically by Discord and don't count against the registration budget.
     """
-    mock_categories = {
-        "creative": [
-            ("ascii-art", "Generate ASCII art", "/ascii-art"),
-            ("excalidraw", "Hand-drawn diagrams", "/excalidraw"),
-        ],
-        "media": [
-            ("gif-search", "Search for GIFs", "/gif-search"),
-        ],
-    }
-    mock_uncategorized = [
+    mock_entries = [
         ("dogfood", "Exploratory QA testing", "/dogfood"),
+        ("ascii-art", "Generate ASCII art", "/ascii-art"),
+        ("excalidraw", "Hand-drawn diagrams", "/excalidraw"),
+        ("gif-search", "Search for GIFs", "/gif-search"),
     ]
 
     with patch(
-        "hermes_cli.commands.discord_skill_commands_by_category",
-        return_value=(mock_categories, mock_uncategorized, 0),
+        "hermes_cli.commands.discord_skill_autocomplete_entries",
+        return_value=(mock_entries, 0),
     ):
         adapter._register_slash_commands()
 
@@ -727,8 +721,8 @@ def test_register_skill_command_is_flat_not_nested(adapter):
 def test_register_skill_command_empty_skills_no_command(adapter):
     """No /skill command should be registered when there are zero skills."""
     with patch(
-        "hermes_cli.commands.discord_skill_commands_by_category",
-        return_value=({}, [], 0),
+        "hermes_cli.commands.discord_skill_autocomplete_entries",
+        return_value=([], 0),
     ):
         adapter._register_slash_commands()
 
@@ -740,18 +734,14 @@ def test_register_skill_command_callback_dispatches_by_name(adapter):
     """The /skill callback should look up the skill by ``name`` and
     dispatch via ``_run_simple_slash`` with the real command key.
     """
-    mock_categories = {
-        "media": [
-            ("gif-search", "Search for GIFs", "/gif-search"),
-        ],
-    }
-    mock_uncategorized = [
+    mock_entries = [
         ("dogfood", "QA testing", "/dogfood"),
+        ("gif-search", "Search for GIFs", "/gif-search"),
     ]
 
     with patch(
-        "hermes_cli.commands.discord_skill_commands_by_category",
-        return_value=(mock_categories, mock_uncategorized, 0),
+        "hermes_cli.commands.discord_skill_autocomplete_entries",
+        return_value=(mock_entries, 0),
     ):
         adapter._register_slash_commands()
 
@@ -782,8 +772,8 @@ def test_register_skill_command_handles_unknown_skill_gracefully(adapter):
     an ephemeral error message, NOT crash the callback.
     """
     with patch(
-        "hermes_cli.commands.discord_skill_commands_by_category",
-        return_value=({"media": [("gif-search", "GIFs", "/gif-search")]}, [], 0),
+        "hermes_cli.commands.discord_skill_autocomplete_entries",
+        return_value=([("gif-search", "GIFs", "/gif-search")], 0),
     ):
         adapter._register_slash_commands()
 
@@ -820,18 +810,16 @@ def test_register_skill_command_payload_fits_discord_8kb_limit(adapter):
 
     # Simulate the largest catalog the collector will ever produce:
     # 20 categories × 25 skills each, with verbose 100-char descriptions.
-    large_categories: dict[str, list[tuple[str, str, str]]] = {}
     long_desc = "A verbose description padded to approximately 100 chars " + "." * 42
-    for i in range(20):
-        cat = f"cat{i:02d}"
-        large_categories[cat] = [
-            (f"skill-{i:02d}-{j:02d}", long_desc, f"/skill-{i:02d}-{j:02d}")
-            for j in range(25)
-        ]
+    large_entries = [
+        (f"skill-{i:02d}-{j:02d}", long_desc, f"/skill-{i:02d}-{j:02d}")
+        for i in range(20)
+        for j in range(25)
+    ]
 
     with patch(
-        "hermes_cli.commands.discord_skill_commands_by_category",
-        return_value=(large_categories, [], 0),
+        "hermes_cli.commands.discord_skill_autocomplete_entries",
+        return_value=(large_entries, 0),
     ):
         adapter._register_slash_commands()
 
@@ -856,18 +844,14 @@ def test_register_skill_command_autocomplete_filters_by_name_and_description(ada
     """The autocomplete callback should match on both skill name and
     description so the user can search by either.
     """
-    mock_categories = {
-        "ocr": [
-            ("ocr-and-documents", "Extract text from PDFs and scanned documents", "/ocr-and-documents"),
-        ],
-        "media": [
-            ("gif-search", "Search and download GIFs from Tenor", "/gif-search"),
-        ],
-    }
+    mock_entries = [
+        ("ocr-and-documents", "Extract text from PDFs and scanned documents", "/ocr-and-documents"),
+        ("gif-search", "Search and download GIFs from Tenor", "/gif-search"),
+    ]
 
     with patch(
-        "hermes_cli.commands.discord_skill_commands_by_category",
-        return_value=(mock_categories, [], 0),
+        "hermes_cli.commands.discord_skill_autocomplete_entries",
+        return_value=(mock_entries, 0),
     ):
         adapter._register_slash_commands()
 

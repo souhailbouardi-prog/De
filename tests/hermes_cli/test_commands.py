@@ -17,6 +17,7 @@ from hermes_cli.commands import (
     _clamp_command_names,
     _clamp_telegram_names,
     _sanitize_telegram_name,
+    discord_skill_autocomplete_entries,
     discord_skill_commands,
     gateway_help_lines,
     resolve_command,
@@ -1031,6 +1032,59 @@ class TestDiscordSkillCommands:
             assert len(name) <= _CMD_NAME_LIMIT, (
                 f"Name '{name}' is {len(name)} chars (limit {_CMD_NAME_LIMIT})"
             )
+
+    def test_truncated_names_preserve_cmd_key(self, tmp_path, monkeypatch):
+        """Long skill names must stay dispatchable after Discord name clamping."""
+        from unittest.mock import patch
+
+        fake_skills_dir = str(tmp_path / "skills")
+        long_name = "a" * 50
+        fake_cmds = {
+            f"/{long_name}": {
+                "name": long_name,
+                "description": "Long name skill",
+                "skill_md_path": f"{fake_skills_dir}/{long_name}/SKILL.md",
+                "skill_dir": f"{fake_skills_dir}/{long_name}",
+            },
+        }
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "skills").mkdir(exist_ok=True)
+        with (
+            patch("agent.skill_commands.get_skill_commands", return_value=fake_cmds),
+            patch("tools.skills_tool.SKILLS_DIR", tmp_path / "skills"),
+        ):
+            entries, _ = discord_skill_commands(
+                max_slots=50, reserved_names=set(),
+            )
+
+        assert entries == [("a" * _CMD_NAME_LIMIT, "Long name skill", f"/{long_name}")]
+
+    def test_autocomplete_entries_do_not_keep_legacy_group_cap(self, tmp_path, monkeypatch):
+        """Flat Discord /skill autocomplete should expose more than 25 same-category skills."""
+        from unittest.mock import patch
+
+        fake_skills_dir = str(tmp_path / "skills")
+        fake_cmds = {
+            f"/skill-{i:02d}": {
+                "name": f"skill-{i:02d}",
+                "description": f"Skill {i}",
+                "skill_md_path": f"{fake_skills_dir}/category/skill-{i:02d}/SKILL.md",
+                "skill_dir": f"{fake_skills_dir}/category/skill-{i:02d}",
+            }
+            for i in range(30)
+        }
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "skills").mkdir(exist_ok=True)
+        with (
+            patch("agent.skill_commands.get_skill_commands", return_value=fake_cmds),
+            patch("tools.skills_tool.SKILLS_DIR", tmp_path / "skills"),
+        ):
+            entries, hidden = discord_skill_autocomplete_entries(
+                reserved_names=set(),
+            )
+
+        assert len(entries) == 30
+        assert hidden == 0
 
 
 # ---------------------------------------------------------------------------
