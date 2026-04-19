@@ -667,6 +667,13 @@ class TestRunJobSessionPersistence:
         assert kwargs["session_db"] is fake_db
         assert kwargs["platform"] == "cron"
         assert kwargs["session_id"].startswith("cron_test-job_")
+        # Cron jobs run in ephemeral sessions and must not pull SOUL.md /
+        # AGENTS.md / .cursorrules into the system prompt — the same guarantee
+        # batch_runner and subagent delegation already provide.  Without this
+        # flag, every cron tick burns thousands of tokens re-loading user
+        # persona files even for `[SILENT] exec: ...` script-only jobs.
+        assert kwargs["skip_memory"] is True
+        assert kwargs["skip_context_files"] is True
         fake_db.end_session.assert_called_once()
         call_args = fake_db.end_session.call_args
         assert call_args[0][0].startswith("cron_test-job_")

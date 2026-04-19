@@ -897,6 +897,7 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             quiet_mode=True,
             skip_context_files=True,  # Don't inject SOUL.md/AGENTS.md from scheduler cwd
             skip_memory=True,  # Cron system prompts would corrupt user representations
+            skip_context_files=True,  # SOUL.md/AGENTS.md/.cursorrules pollute ephemeral cron prompts and waste tokens — match batch/subagent paths
             platform="cron",
             session_id=_cron_session_id,
             session_db=_session_db,
