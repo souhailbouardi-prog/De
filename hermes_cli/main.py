@@ -6410,30 +6410,11 @@ For more help on a command:
     )
     chat_parser.add_argument(
         "--provider",
-        choices=[
-            "auto",
-            "openrouter",
-            "nous",
-            "openai-codex",
-            "copilot-acp",
-            "copilot",
-            "anthropic",
-            "gemini",
-            "xai",
-            "ollama-cloud",
-            "huggingface",
-            "zai",
-            "kimi-coding",
-            "kimi-coding-cn",
-            "minimax",
-            "minimax-cn",
-            "kilocode",
-            "xiaomi",
-            "arcee",
-            "nvidia",
-        ],
         default=None,
-        help="Inference provider (default: auto)",
+        help=(
+            "Inference provider (default: auto). Accepts built-ins like openrouter/anthropic "
+            "and named custom providers from config.yaml (for example claude-max-proxy)."
+        ),
     )
     chat_parser.add_argument(
         "-v", "--verbose", action="store_true", help="Verbose output"
