@@ -2974,6 +2974,13 @@ class GatewayRunner:
             # flow with a None user_id.
             logger.debug("Ignoring message with no user_id from %s", source.platform.value)
             return None
+        elif source.chat_type == "group":
+            # Group messages already passed the adapter's group_policy gate
+            # (_should_process_message), so the sender is implicitly authorized
+            # by virtue of being in an allowed group.  Skip user-level auth to
+            # avoid blocking group participants who aren't in an explicit
+            # user allowlist.
+            pass
         elif not self._is_user_authorized(source):
             logger.warning("Unauthorized user: %s (%s) on %s", source.user_id, source.user_name, source.platform.value)
             # In DMs: offer pairing code. In groups: silently ignore.
