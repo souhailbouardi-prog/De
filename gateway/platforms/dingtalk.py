@@ -1340,10 +1340,14 @@ class _IncomingHandler(
 
             # Fire-and-forget: return ACK immediately, process in background.
             # Blocking here would prevent the SDK from sending heartbeats,
-            # eventually causing a disconnect.  _on_message is wrapped so
-            # exceptions inside the task surface in logs instead of
-            # disappearing into the event loop.
-            asyncio.create_task(self._safe_on_message(chatbot_msg))
+            # eventually causing a disconnect.  ``_spawn_bg`` adds the task
+            # to ``self._bg_tasks`` — without that, the event loop only
+            # holds a weak reference and the message-processing task can
+            # be garbage-collected mid-flight (Python docs:
+            # https://docs.python.org/3/library/asyncio-task.html#asyncio.create_task).
+            # ``_safe_on_message`` wraps _on_message so exceptions inside
+            # the task surface in logs instead of disappearing silently.
+            self._adapter._spawn_bg(self._safe_on_message(chatbot_msg))
         except Exception:
             logger.exception(
                 "[%s] Error preparing incoming message", self._adapter.name

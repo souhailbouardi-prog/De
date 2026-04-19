@@ -681,6 +681,58 @@ class TestIncomingHandlerProcess:
         processing_gate.set()
         await asyncio.sleep(0.05)
 
+    @pytest.mark.asyncio
+    async def test_process_tracks_message_task_to_prevent_gc(self):
+        """The background message-processing task must be registered with
+        the adapter's ``_bg_tasks`` set so the event loop keeps a strong
+        reference to it. Without tracking, ``asyncio.create_task`` only
+        receives a weak reference from the loop and Python can
+        garbage-collect the task mid-flight (see Python docs for
+        ``asyncio.create_task``). That would ACK the DingTalk message at
+        the SDK level while silently dropping the agent turn.
+        """
+        from gateway.platforms.dingtalk import _IncomingHandler, DingTalkAdapter
+
+        processing_started = asyncio.Event()
+        processing_gate = asyncio.Event()
+
+        async def slow_on_message(msg):
+            processing_started.set()
+            await processing_gate.wait()
+
+        adapter = DingTalkAdapter(PlatformConfig(enabled=True))
+        adapter._on_message = slow_on_message
+        handler = _IncomingHandler(adapter, asyncio.get_running_loop())
+
+        callback = MagicMock()
+        callback.data = {
+            "msgtype": "text",
+            "text": {"content": "test"},
+            "senderId": "u",
+            "conversationId": "c",
+            "sessionWebhook": "https://oapi.dingtalk.com/x",
+            "msgId": "m",
+        }
+
+        assert len(adapter._bg_tasks) == 0
+        await handler.process(callback)
+        # Wait until _on_message actually starts so we know the task
+        # is in-flight, not just scheduled but immediately discarded.
+        await asyncio.wait_for(processing_started.wait(), timeout=1.0)
+
+        # While the task is awaiting the gate, it must be tracked.
+        assert len(adapter._bg_tasks) >= 1, (
+            "message-processing task was not registered with _bg_tasks — "
+            "it may be garbage-collected before completing"
+        )
+
+        # Release the gate and let _bg_tasks' done-callback discard the task.
+        processing_gate.set()
+        await asyncio.sleep(0.05)
+        assert len(adapter._bg_tasks) == 0, (
+            "done-callback should have removed the completed task"
+        )
+
 
 # ---------------------------------------------------------------------------
 # Text extraction — mention preservation + platform sanity
