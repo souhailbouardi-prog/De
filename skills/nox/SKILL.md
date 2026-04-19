@@ -47,7 +47,22 @@ nox:
       timeout_ms: 20
 ```
 
-### Toggle NOX
+### Slash Commands
+
+NOX provides convenient slash commands for managing validation:
+
+```bash
+# Enable NOX
+/nox enable
+
+# Disable NOX
+/nox disable
+
+# Show status and metrics
+/nox status
+```
+
+### Toggle NOX (Python Script)
 ```bash
 # Enable NOX
 python ~/.hermes/skills/nox/toggle.py enable
