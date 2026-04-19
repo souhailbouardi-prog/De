@@ -134,7 +134,7 @@ class HomeAssistantAdapter(BasePlatformAdapter):
             return True
 
         except Exception as e:
-            logger.error("[%s] Failed to connect: %s", self.name, e)
+            logger.error("[%s] Failed to connect: %s", self.name, e, exc_info=True)
             return False
 
     async def _ws_connect(self) -> bool:
@@ -224,7 +224,7 @@ class HomeAssistantAdapter(BasePlatformAdapter):
             except asyncio.CancelledError:
                 return
             except Exception as e:
-                logger.warning("[%s] WebSocket error: %s", self.name, e)
+                logger.warning("[%s] WebSocket error: %s", self.name, e, exc_info=True)
 
             if not self._running:
                 return
@@ -242,7 +242,7 @@ class HomeAssistantAdapter(BasePlatformAdapter):
                     backoff_idx = 0  # Reset on successful reconnect
                     logger.info("[%s] Reconnected", self.name)
             except Exception as e:
-                logger.warning("[%s] Reconnection failed: %s", self.name, e)
+                logger.warning("[%s] Reconnection failed: %s", self.name, e, exc_info=True)
 
     async def _read_events(self) -> None:
         """Read events from WebSocket until disconnected."""
