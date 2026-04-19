@@ -382,6 +382,19 @@ class TestPlanSkillHelpers:
 
         assert path == Path(".hermes") / "plans" / "2026-03-15_093045-implement-oauth-login-refresh-tokens.md"
 
+    def test_build_plan_path_whitespace_only_falls_back_to_default_slug(self):
+        """Regression test for #7576: whitespace-only input must not raise IndexError."""
+        path = build_plan_path("   \n   ", now=datetime(2026, 3, 15, 9, 30, 45))
+        assert "conversation-plan" in path.name
+
+    def test_build_plan_path_empty_string_falls_back_to_default_slug(self):
+        path = build_plan_path("", now=datetime(2026, 3, 15, 9, 30, 45))
+        assert "conversation-plan" in path.name
+
+    def test_build_plan_path_tabs_only_falls_back_to_default_slug(self):
+        path = build_plan_path("\t\t", now=datetime(2026, 3, 15, 9, 30, 45))
+        assert "conversation-plan" in path.name
+
     def test_plan_skill_message_can_include_runtime_save_path_note(self, tmp_path):
         with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
             _make_skill(
