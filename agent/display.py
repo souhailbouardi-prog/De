@@ -600,6 +600,12 @@ class KawaiiSpinner:
         "analyzing", "computing", "synthesizing", "formulating", "brainstorming",
     ]
 
+    THINKING_VERBS_ZH = [
+        "思考中", "琢磨中", "沉吟中", "深思中", "回味中",
+        "斟酌中", "考虑中", "反思中", "处理中", "推理中",
+        "分析中", "计算中", "综合中", "构思中", "头脑风暴",
+    ]
+
     @classmethod
     def get_waiting_faces(cls) -> list:
         """Return waiting faces from the active skin, falling back to KAWAII_WAITING."""
@@ -627,8 +633,26 @@ class KawaiiSpinner:
         return cls.KAWAII_THINKING
 
     @classmethod
+    def _detect_language(cls) -> str:
+        """Detect the configured language from approvals.language setting."""
+        try:
+            from hermes_cli.config import load_config
+            config = load_config()
+            lang = (config.get("approvals") or {}).get("language", "")
+            if lang:
+                return lang.lower()
+        except Exception:
+            pass
+        return ""
+
+    @classmethod
     def get_thinking_verbs(cls) -> list:
-        """Return thinking verbs from the active skin, falling back to THINKING_VERBS."""
+        """Return thinking verbs from the active skin, falling back to THINKING_VERBS.
+
+        If approvals.language is set to 'zh' (or starts with 'zh'), returns
+        Chinese verbs (THINKING_VERBS_ZH). Otherwise returns English verbs.
+        Skin-level overrides take precedence.
+        """
         try:
             skin = _get_skin()
             if skin:
@@ -637,6 +661,10 @@ class KawaiiSpinner:
                     return verbs
         except Exception:
             pass
+        # Check language config for Chinese
+        lang = cls._detect_language()
+        if lang.startswith("zh"):
+            return cls.THINKING_VERBS_ZH
         return cls.THINKING_VERBS
 
     def __init__(self, message: str = "", spinner_type: str = 'dots', print_fn=None):

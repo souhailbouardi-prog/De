@@ -36,3 +36,27 @@ export const VERBS = [
   'formulating',
   'brainstorming'
 ]
+
+export const VERBS_ZH = [
+  '思考中',
+  '琢磨中',
+  '沉吟中',
+  '深思中',
+  '回味中',
+  '斟酌中',
+  '考虑中',
+  '反思中',
+  '处理中',
+  '推理中',
+  '分析中',
+  '计算中',
+  '综合中',
+  '构思中',
+  '头脑风暴'
+]
+
+/** Returns the verb array for the current browser locale. */
+export function getVerbs(): string[] {
+  const lang = typeof navigator !== 'undefined' ? navigator.language : ''
+  return lang.startsWith('zh') ? VERBS_ZH : VERBS
+}

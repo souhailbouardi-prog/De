@@ -20,6 +20,75 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
+# =========================================================================
+# Chinese translations for dangerous command descriptions
+# =========================================================================
+_DESCRIPTIONS_ZH: dict[str, str] = {
+    "delete in root path": "在根路径下删除文件",
+    "recursive delete": "递归删除目录",
+    "recursive delete (long flag)": "递归删除目录（长标志）",
+    "world/other-writable permissions": "设置全局/其他用户可写权限",
+    "recursive world/other-writable (long flag)": "递归设置全局/其他用户可写权限（长标志）",
+    "recursive chown to root": "递归修改文件属主为 root",
+    "recursive chown to root (long flag)": "递归修改文件属主为 root（长标志）",
+    "format filesystem": "格式化文件系统",
+    "disk copy": "磁盘复制（dd 操作）",
+    "write to block device": "向块设备写入数据",
+    "SQL DROP": "SQL 删除表/数据库",
+    "SQL DELETE without WHERE": "SQL 删除数据（无 WHERE 条件）",
+    "SQL TRUNCATE": "SQL 清空表",
+    "overwrite system config": "覆盖系统配置文件",
+    "stop/restart system service": "停止/重启系统服务",
+    "kill all processes": "杀死所有进程",
+    "force kill processes": "强制杀死进程",
+    "fork bomb": "fork 炸弹（递归创建进程）",
+    "shell command via -c/-lc flag": "通过 -c/-lc 标志执行 shell 命令",
+    "script execution via -e/-c flag": "通过 -e/-c 标志执行脚本",
+    "pipe remote content to shell": "将远程内容管道传输到 shell 执行",
+    "execute remote script via process substitution": "通过进程替换执行远程脚本",
+    "overwrite system file via tee": "通过 tee 覆盖系统文件",
+    "overwrite system file via redirection": "通过重定向覆盖系统文件",
+    "xargs with rm": "使用 xargs 执行 rm 命令",
+    "find -exec rm": "find 命令执行 rm 删除",
+    "find -delete": "find 命令直接删除文件",
+    "stop/restart hermes gateway (kills running agents)": "停止/重启 hermes gateway（会终止正在运行的 agent）",
+    "hermes update (restarts gateway, kills running agents)": "hermes 更新（会重启 gateway，终止正在运行的 agent）",
+    "start gateway outside systemd (use 'systemctl --user restart hermes-gateway')": "在 systemd 外部启动 gateway（请使用 'systemctl --user restart hermes-gateway'）",
+    "kill hermes/gateway process (self-termination)": "杀死 hermes/gateway 进程（自杀行为）",
+    "kill process via pgrep expansion (self-termination)": "通过 pgrep 扩展杀死进程（自杀行为）",
+    "kill process via backtick pgrep expansion (self-termination)": "通过反引号 pgrep 扩展杀死进程（自杀行为）",
+    "copy/move file into /etc/": "复制/移动文件到 /etc/ 目录",
+    "in-place edit of system config": "就地编辑系统配置文件",
+    "in-place edit of system config (long flag)": "就地编辑系统配置文件（长标志）",
+    "script execution via heredoc": "通过 heredoc 执行脚本",
+    "git reset --hard (destroys uncommitted changes)": "git reset --hard（会破坏未提交的更改）",
+    "git force push (rewrites remote history)": "git 强制推送（会重写远程历史）",
+    "git force push short flag (rewrites remote history)": "git 强制推送（短标志，会重写远程历史）",
+    "git clean with force (deletes untracked files)": "git clean 强制删除（会删除未跟踪的文件）",
+    "git branch force delete": "git 强制删除分支",
+    "chmod +x followed by immediate execution": "chmod +x 后立即执行脚本",
+}
+
+# Chinese translations for approval prompt UI text
+_UI_ZH = {
+    "dangerous_command": "危险命令",
+    "once": "仅这一次",
+    "session": "本次会话",
+    "always": "始终允许",
+    "deny": "拒绝",
+    "allowed_once": "✓ 已允许本次执行",
+    "allowed_session": "✓ 已允许本次会话",
+    "added_permanent": "✓ 已添加到永久白名单",
+    "denied": "✗ 已拒绝",
+    "cancelled": "✗ 已取消",
+    "timeout_deny": "⏱ 超时 - 拒绝命令",
+    "choice_prompt_always": "选择 [o/s/a/D]:",
+    "choice_prompt_no_always": "选择 [o/s/D]:",
+    "choice_always": "a",
+    "choice_deny": "d",
+    "choice_no_always_deny": "d",
+}
+
 # Per-thread/per-task gateway session identity.
 # Gateway runs agent turns concurrently in executor threads, so reading a
 # process-global env var for session identity is racy. Keep env fallback for
@@ -162,9 +231,76 @@ def _approval_key_aliases(pattern_key: str) -> set[str]:
     return _PATTERN_KEY_ALIASES.get(pattern_key, {pattern_key})
 
 
+def _get_approval_language() -> str:
+    """Get the current approval language from config.
+    
+    Returns 'zh' if configured, otherwise 'en'.
+    """
+    try:
+        from hermes_cli.config import load_config
+        config = load_config()
+        lang = (config.get("approvals") or {}).get("language", "")
+        if lang in ("zh", "zh-CN", "zh_CN", "zh-Hans"):
+            return "zh"
+    except Exception:
+        pass
+    return "en"
+
+
+def _translate_description(description: str, lang: str | None = None) -> str:
+    """Translate a dangerous command description to the target language.
+    
+    Args:
+        description: The English description string.
+        lang: Target language ('zh' or 'en'). If None, auto-detect from config.
+    
+    Returns:
+        The translated description, or the original if no translation exists.
+    """
+    if lang is None:
+        lang = _get_approval_language()
+    if lang == "zh" and description in _DESCRIPTIONS_ZH:
+        return _DESCRIPTIONS_ZH[description]
+    return description
+
+
+def _get_ui_text(key: str, lang: str | None = None) -> str:
+    """Get a localized UI text string.
+    
+    Args:
+        key: The UI text key.
+        lang: Target language ('zh' or 'en'). If None, auto-detect.
+    
+    Returns:
+        The localized string, or the English default if no translation exists.
+    """
+    if lang is None:
+        lang = _get_approval_language()
+    if lang == "zh" and key in _UI_ZH:
+        return _UI_ZH[key]
+    # English defaults
+    _defaults = {
+        "dangerous_command": "DANGEROUS COMMAND",
+        "once": "once",
+        "session": "session",
+        "always": "always",
+        "deny": "deny",
+        "allowed_once": "✓ Allowed once",
+        "allowed_session": "✓ Allowed for this session",
+        "added_permanent": "✓ Added to permanent allowlist",
+        "denied": "✗ Denied",
+        "cancelled": "✗ Cancelled",
+        "timeout_deny": "⏱ Timeout - denying command",
+        "choice_prompt_always": "Choice [o/s/a/D]: ",
+        "choice_prompt_no_always": "Choice [o/s/D]: ",
+    }
+    return _defaults.get(key, key)
+
+
 # =========================================================================
 # Detection
 # =========================================================================
+
 
 def _normalize_command_for_detection(command: str) -> str:
     """Normalize a command string before dangerous-pattern matching.
@@ -184,8 +320,13 @@ def _normalize_command_for_detection(command: str) -> str:
     return command
 
 
-def detect_dangerous_command(command: str) -> tuple:
+def detect_dangerous_command(command: str, lang: str | None = None) -> tuple:
     """Check if a command matches any dangerous patterns.
+
+    Args:
+        command: The command string to check.
+        lang: Target language for description ('zh' or 'en').
+              If None, auto-detect from config.
 
     Returns:
         (is_dangerous, pattern_key, description) or (False, None, None)
@@ -194,7 +335,8 @@ def detect_dangerous_command(command: str) -> tuple:
     for pattern, description in DANGEROUS_PATTERNS:
         if re.search(pattern, command_lower, re.IGNORECASE | re.DOTALL):
             pattern_key = description
-            return (True, pattern_key, description)
+            trans_description = _translate_description(description, lang)
+            return (True, pattern_key, trans_description)
     return (False, None, None)
 
 
@@ -682,18 +824,63 @@ def check_dangerous_command(command: str, env_type: str,
 
 
 # =========================================================================
-# Combined pre-exec guard (tirith + dangerous command detection)
+# Tirith rule translations (Chinese)
 # =========================================================================
+_TIRITH_RULES_ZH: dict[str, str] = {
+    # Pipe to interpreter / shell injection
+    "curl_pipe_shell": "将远程内容管道传输到 shell 执行",
+    "pipe_to_interpreter": "将输出管道传输到解释器执行",
+    "wget_pipe_shell": "将 wget 下载内容管道传输到 shell 执行",
+    "process_substitution_shell": "通过进程替换执行 shell 命令",
+    # URL-related
+    "homograph_url": "检测到同形异义 URL（Unicode 混淆）",
+    "shortened_url": "检测到短链接",
+    "suspicious_url": "检测到可疑 URL",
+    # File/network
+    "file_download_exec": "下载并执行远程文件",
+    "sshd_config_change": "修改 SSH 配置",
+    # Injection
+    "terminal_injection": "终端注入攻击",
+    "ansi_injection": "ANSI 转义注入",
+    "backtick_injection": "反引号命令注入",
+    # Credential
+    "credential_exfiltration": "凭证外泄风险",
+    "ssh_key_access": "SSH 密钥访问",
+    # Other
+    "dangerous_environment": "危险环境变量设置",
+    "unsafe_variable_expansion": "不安全变量展开",
+}
+
+_TIRITH_SEVERITY_ZH: dict[str, str] = {
+    "CRITICAL": "致命",
+    "critical": "致命",
+    "HIGH": "高危",
+    "high": "高危",
+    "MEDIUM": "中危",
+    "medium": "中危",
+    "LOW": "低危",
+    "low": "低危",
+    "INFO": "信息",
+    "info": "信息",
+}
+
 
 def _format_tirith_description(tirith_result: dict) -> str:
     """Build a human-readable description from tirith findings.
 
     Includes severity, title, and description for each finding so users
     can make an informed approval decision.
+
+    Translates to Chinese when approvals.language is configured as 'zh'.
     """
+    lang = _get_approval_language()
+    is_zh = (lang == "zh")
+
     findings = tirith_result.get("findings") or []
     if not findings:
         summary = tirith_result.get("summary") or "security issue detected"
+        if is_zh:
+            return f"安全扫描：{summary}"
         return f"Security scan: {summary}"
 
     parts = []
@@ -701,14 +888,49 @@ def _format_tirith_description(tirith_result: dict) -> str:
         severity = f.get("severity", "")
         title = f.get("title", "")
         desc = f.get("description", "")
+
+        # Translate severity
+        if is_zh and severity in _TIRITH_SEVERITY_ZH:
+            severity = _TIRITH_SEVERITY_ZH[severity]
+
+        # Translate title based on rule_id if available
+        if is_zh:
+            rule_id = f.get("rule_id", "")
+            if rule_id in _TIRITH_RULES_ZH:
+                title = _TIRITH_RULES_ZH[rule_id]
+            # Also try to translate common English titles as fallback
+            _title_translations = {
+                "Pipe to interpreter": "管道传输到解释器",
+                "Pipe to shell": "管道传输到 shell",
+                "Homograph URL": "同形异义 URL",
+                "Shortened URL": "短链接",
+                "Terminal injection": "终端注入",
+                "Credential exfiltration": "凭证外泄",
+                "SSH key access": "SSH 密钥访问",
+                "Dangerous environment": "危险环境变量",
+                "File download and execution": "下载并执行文件",
+            }
+            if title in _title_translations:
+                title = _title_translations[title]
+
         if title and desc:
-            parts.append(f"[{severity}] {title}: {desc}" if severity else f"{title}: {desc}")
+            if is_zh:
+                parts.append(f"[{severity}] {title}：{desc}" if severity else f"{title}：{desc}")
+            else:
+                parts.append(f"[{severity}] {title}: {desc}" if severity else f"{title}: {desc}")
         elif title:
-            parts.append(f"[{severity}] {title}" if severity else title)
+            if is_zh:
+                parts.append(f"[{severity}] {title}" if severity else title)
+            else:
+                parts.append(f"[{severity}] {title}" if severity else title)
     if not parts:
         summary = tirith_result.get("summary") or "security issue detected"
+        if is_zh:
+            return f"安全扫描：{summary}"
         return f"Security scan: {summary}"
 
+    if is_zh:
+        return "安全扫描 — " + "; ".join(parts)
     return "Security scan — " + "; ".join(parts)
 
 
