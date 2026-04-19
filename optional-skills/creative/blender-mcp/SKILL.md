@@ -1,116 +1,270 @@
 ---
 name: blender-mcp
-description: Control Blender directly from Hermes via socket connection to the blender-mcp addon. Create 3D objects, materials, animations, and run arbitrary Blender Python (bpy) code. Use when user wants to create or modify anything in Blender.
-version: 1.0.0
+description: "Control Blender directly from Hermes via socket connection to the blender-mcp addon. Create 3D objects, materials, animations, and run arbitrary Blender Python (bpy) code. Uses the blender-mcp addon (socket server on port 9876) for communication. Covers: 3D modeling, materials/shaders, modifiers, animation, rendering, PolyHaven asset integration, and Geometry Nodes."
+version: 2.0.0
 requires: Blender 4.3+ (desktop instance required, headless not supported)
 author: alireza78a
-tags: [blender, 3d, animation, modeling, bpy, mcp]
+tags: [blender, 3d, animation, modeling, bpy, mcp, rendering, materials]
 ---
 
 # Blender MCP
 
-Control a running Blender instance from Hermes via socket on TCP port 9876.
+## Architecture
 
-## Setup (one-time)
+Hermes Agent -> Python socket (port 9876) -> Blender MCP Addon -> bpy Python API.
 
-### 1. Install the Blender addon
+The agent controls a **running Blender instance** via the [blender-mcp](https://github.com/ahujasid/blender-mcp) addon, which creates a TCP socket server inside Blender listening on port 9876.
 
-    curl -sL https://raw.githubusercontent.com/ahujasid/blender-mcp/main/addon.py -o ~/Desktop/blender_mcp_addon.py
+Two communication methods (use whichever works):
+1. **MCP tools** — if configured in Hermes config, tools like `create_object`, `execute_blender_code` are available directly
+2. **Direct socket** — `blender_exec()` pattern in `execute_code` for arbitrary bpy commands (always works, no MCP config needed)
+
+## First-Time Setup
+
+### 1. Install Blender
+
+```bash
+# macOS
+brew install --cask blender
+
+# Linux (snap)
+snap install blender --classic
+
+# Or download from https://www.blender.org/download/
+```
+
+### 2. Install the Blender MCP Addon
+
+```bash
+curl -sL https://raw.githubusercontent.com/ahujasid/blender-mcp/main/addon.py -o ~/Desktop/blender_mcp_addon.py
+```
 
 In Blender:
+
     Edit > Preferences > Add-ons > Install > select blender_mcp_addon.py
     Enable "Interface: Blender MCP"
 
-### 2. Start the socket server in Blender
+### 3. Start the socket server in Blender
 
 Press N in Blender viewport to open sidebar.
-Find "BlenderMCP" tab and click "Start Server".
+Find "BlenderMCP" tab and click "Start MCP Server".
 
-### 3. Verify connection
+### 4. Verify connection
 
-    nc -z -w2 localhost 9876 && echo "OPEN" || echo "CLOSED"
+```bash
+nc -z -w2 localhost 9876 && echo "OPEN" || echo "CLOSED"
+```
+
+Or with Python:
+
+```bash
+python3 -c "
+import socket, json
+s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+s.settimeout(5)
+s.connect(('127.0.0.1', 9876))
+s.sendall(json.dumps({'type': 'get_scene_info'}).encode())
+data = s.recv(65536)
+s.close()
+print(json.loads(data))
+"
+```
+
+### 5. Optional: Configure Hermes MCP
+
+Add under `mcp_servers:` in Hermes config:
+```yaml
+blender:
+  command: uvx
+  args: ["blender-mcp"]
+  timeout: 120
+```
+
+Or with pip: `pip install blender-mcp` then:
+```yaml
+blender:
+  command: python
+  args: ["-m", "blender_mcp"]
+  timeout: 120
+```
 
 ## Protocol
 
-Plain UTF-8 JSON over TCP -- no length prefix.
+Plain UTF-8 JSON over TCP — no length prefix.
 
-Send:     {"type": "<command>", "params": {<kwargs>}}
-Receive:  {"status": "success", "result": <value>}
-          {"status": "error",   "message": "<reason>"}
+    Send:     {"type": "<command>", "params": {<kwargs>}}
+    Receive:  {"status": "success", "result": <value>}
+              {"status": "error",   "message": "<reason>"}
+
+## Talking to Blender (the blender_exec pattern)
+
+All communication uses this pattern in `execute_code`:
+
+```python
+import json, socket
+
+def blender_exec(code, timeout=30):
+    """Execute Python code in Blender via the MCP addon socket."""
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.settimeout(timeout)
+    s.connect(('127.0.0.1', 9876))
+    cmd = json.dumps({"type": "execute_code", "params": {"code": code}})
+    s.sendall(cmd.encode('utf-8'))
+    chunks = []
+    while True:
+        try:
+            chunk = s.recv(65536)
+            if not chunk:
+                break
+            chunks.append(chunk)
+            try:
+                return json.loads(b"".join(chunks).decode('utf-8'))
+            except json.JSONDecodeError:
+                continue
+        except socket.timeout:
+            break
+    s.close()
+    return json.loads(b"".join(chunks).decode('utf-8'))
+
+# Usage:
+result = blender_exec("len(bpy.data.objects)")
+# Returns: {"status": "success", "result": "3"}
+```
+
+For structured commands (create, modify, delete), use the typed commands:
+
+```python
+def blender_cmd(cmd_type, params=None):
+    """Send a typed command to Blender."""
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.settimeout(30)
+    s.connect(('127.0.0.1', 9876))
+    cmd = {"type": cmd_type}
+    if params:
+        cmd["params"] = params
+    s.sendall(json.dumps(cmd).encode('utf-8'))
+    chunks = []
+    while True:
+        try:
+            chunk = s.recv(65536)
+            if not chunk: break
+            chunks.append(chunk)
+            try:
+                return json.loads(b"".join(chunks).decode('utf-8'))
+            except json.JSONDecodeError:
+                continue
+        except socket.timeout:
+            break
+    s.close()
+    return json.loads(b"".join(chunks).decode('utf-8'))
+
+# Examples:
+blender_cmd("create_object", {"type": "cube", "name": "MyCube", "location": [0, 0, 1]})
+blender_cmd("set_material", {"object_name": "MyCube", "color": [1, 0, 0, 1], "metallic": 0.8})
+blender_cmd("get_scene_info")
+```
+
+## Workflow
+
+### Step 0: Verify Connection
+
+```python
+blender_cmd("get_scene_info")
+# Should return scene_name, object_count, objects list
+```
+
+### Step 1: Clear Scene + Build
+
+```python
+blender_exec("""
+import bpy
+bpy.ops.object.select_all(action='SELECT')
+bpy.ops.object.delete()
+
+bpy.ops.mesh.primitive_cube_add(location=(0, 0, 0))
+cube = bpy.context.active_object
+cube.name = 'MyCube'
+""")
+```
+
+### Step 2: Materials
+
+```python
+blender_exec("""
+import bpy
+obj = bpy.data.objects['MyCube']
+mat = bpy.data.materials.new('MyMaterial')
+mat.use_nodes = True
+principled = mat.node_tree.nodes['Principled BSDF']
+principled.inputs['Base Color'].default_value = (0.8, 0.1, 0.1, 1.0)
+principled.inputs['Metallic'].default_value = 0.9
+principled.inputs['Roughness'].default_value = 0.1
+obj.data.materials.append(mat)
+""")
+```
+
+### Step 3: Render
+
+```python
+blender_exec("""
+import bpy
+scene = bpy.context.scene
+scene.render.resolution_x = 1920
+scene.render.resolution_y = 1080
+scene.render.filepath = '/tmp/render_output.png'
+scene.render.image_settings.file_format = 'PNG'
+bpy.ops.render.render(write_still=True)
+""")
+```
 
 ## Available Commands
 
-| type                    | params            | description                     |
-|-------------------------|-------------------|---------------------------------|
-| execute_code            | code (str)        | Run arbitrary bpy Python code   |
-| get_scene_info          | (none)            | List all objects in scene       |
-| get_object_info         | object_name (str) | Details on a specific object    |
-| get_viewport_screenshot | (none)            | Screenshot of current viewport  |
+| Command | Params | Description |
+|---------|--------|-------------|
+| `get_scene_info` | — | Scene hierarchy, all objects with transforms |
+| `get_object_info` | `object_name` | Detailed object: verts, faces, materials, children |
+| `create_object` | `type, name, location, rotation, scale` | Create mesh, light, camera, empty |
+| `modify_object` | `name, location, rotation, scale, visible` | Transform/visibility |
+| `delete_object` | `name` | Remove object |
+| `execute_code` | `code` | Run arbitrary Python (bpy + math available) |
+| `set_material` | `object_name, color, metallic, roughness` | Principled BSDF material |
+| `get_viewport_screenshot` | — | Screenshot of current viewport |
+| `search_polyhaven` | `type, categories, search` | Search free 3D assets |
+| `download_polyhaven` | `asset_id, type, resolution, format` | Import PolyHaven models/HDRIs/textures |
 
-## Python Helper
+## Object Types
 
-Use this inside execute_code tool calls:
+| Type | bpy.ops | Notes |
+|------|---------|-------|
+| `CUBE` | `mesh.primitive_cube_add` | Default 2m cube |
+| `SPHERE` | `mesh.primitive_uv_sphere_add` | UV sphere, 32 segments |
+| `CYLINDER` | `mesh.primitive_cylinder_add` | 32 vertices |
+| `PLANE` | `mesh.primitive_plane_add` | Single face |
+| `CONE` | `mesh.primitive_cone_add` | 32 vertices |
+| `TORUS` | `mesh.primitive_torus_add` | Major/minor radii |
+| `EMPTY` | `object.empty_add` | Transform-only |
+| `CAMERA` | `object.camera_add` | Perspective camera |
+| `LIGHT` | `object.light_add(type='POINT')` | Point light |
+| `SUN_LIGHT` | `object.light_add(type='SUN')` | Directional |
+| `SPOT_LIGHT` | `object.light_add(type='SPOT')` | Cone light |
+| `AREA_LIGHT` | `object.light_add(type='AREA')` | Rectangular |
 
-    import socket, json
+## Key Implementation Rules
 
-    def blender_exec(code: str, host="localhost", port=9876, timeout=15):
-        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        s.connect((host, port))
-        s.settimeout(timeout)
-        payload = json.dumps({"type": "execute_code", "params": {"code": code}})
-        s.sendall(payload.encode("utf-8"))
-        buf = b""
-        while True:
-            try:
-                chunk = s.recv(4096)
-                if not chunk:
-                    break
-                buf += chunk
-                try:
-                    json.loads(buf.decode("utf-8"))
-                    break
-                except json.JSONDecodeError:
-                    continue
-            except socket.timeout:
-                break
-        s.close()
-        return json.loads(buf.decode("utf-8"))
+**All bpy operations must run on the main thread.** The addon handles this via `bpy.app.timers` — commands queued from the socket thread are executed on the main thread at 0.1s intervals.
 
-## Common bpy Patterns
+**Use `execute_code` for anything complex.** The structured commands cover basics, but for modifiers, constraints, Geometry Nodes, animation, or complex node graphs, send raw Python.
 
-### Clear scene
-    bpy.ops.object.select_all(action='SELECT')
-    bpy.ops.object.delete()
+**Blender's Python namespace in execute_code:** Only `bpy` and `math` are available. Import anything else inside your code string: `"import bmesh; ..."`.
 
-### Add mesh objects
-    bpy.ops.mesh.primitive_uv_sphere_add(radius=1, location=(0, 0, 0))
-    bpy.ops.mesh.primitive_cube_add(size=2, location=(3, 0, 0))
-    bpy.ops.mesh.primitive_cylinder_add(radius=0.5, depth=2, location=(-3, 0, 0))
+**Default port is 9876.** If it conflicts, change in both the addon UI and the `blender_exec` function.
 
-### Create and assign material
-    mat = bpy.data.materials.new(name="MyMat")
-    mat.use_nodes = True
-    bsdf = mat.node_tree.nodes.get("Principled BSDF")
-    bsdf.inputs["Base Color"].default_value = (R, G, B, 1.0)
-    bsdf.inputs["Roughness"].default_value = 0.3
-    bsdf.inputs["Metallic"].default_value = 0.0
-    obj.data.materials.append(mat)
+**Connection is per-command.** Each `blender_exec()` call opens and closes a socket. This is reliable but adds ~5ms overhead per call. Batch operations in a single `execute_code` call when possible.
 
-### Keyframe animation
-    obj.location = (0, 0, 0)
-    obj.keyframe_insert(data_path="location", frame=1)
-    obj.location = (0, 0, 3)
-    obj.keyframe_insert(data_path="location", frame=60)
+## References
 
-### Render to file
-    bpy.context.scene.render.filepath = "/tmp/render.png"
-    bpy.context.scene.render.engine = 'CYCLES'
-    bpy.ops.render.render(write_still=True)
-
-## Pitfalls
-
-- Must check socket is open before running (nc -z localhost 9876)
-- Addon server must be started inside Blender each session (N-panel > BlenderMCP > Connect)
-- Break complex scenes into multiple smaller execute_code calls to avoid timeouts
-- Render output path must be absolute (/tmp/...) not relative
-- shade_smooth() requires object to be selected and in object mode
+| File | Contents |
+|------|----------|
+| `references/pitfalls.md` | Hard-won lessons from real Blender sessions |
+| `references/bpy-api.md` | Essential bpy operations: modeling, materials, modifiers, rendering |
+| `references/recipes.md` | Common recipes: procedural modeling, HDRI lighting, animation |
