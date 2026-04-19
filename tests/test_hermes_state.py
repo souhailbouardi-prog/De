@@ -1070,7 +1070,7 @@ class TestSchemaInit:
     def test_schema_version(self, db):
         cursor = db._conn.execute("SELECT version FROM schema_version")
         version = cursor.fetchone()[0]
-        assert version == 6
+        assert version == 7
 
     def test_title_column_exists(self, db):
         """Verify the title column was created in the sessions table."""
@@ -1126,12 +1126,12 @@ class TestSchemaInit:
         conn.commit()
         conn.close()
 
-        # Open with SessionDB — should migrate to v6
+        # Open with SessionDB — should migrate to v7
         migrated_db = SessionDB(db_path=db_path)
 
         # Verify migration
         cursor = migrated_db._conn.execute("SELECT version FROM schema_version")
-        assert cursor.fetchone()[0] == 6
+        assert cursor.fetchone()[0] == 7
 
         # Verify title column exists and is NULL for existing sessions
         session = migrated_db.get_session("existing")
@@ -1144,6 +1144,22 @@ class TestSchemaInit:
         assert session["title"] == "Migrated Title"
 
         migrated_db.close()
+
+
+class TestRepoPinning:
+    def test_set_and_get_repo_pin(self, db):
+        db.create_session("s1", "cli")
+        assert db.set_session_repo("s1", "/tmp/project", "project") is True
+        assert db.get_session_repo("s1") == {
+            "repo_root": "/tmp/project",
+            "repo_name": "project",
+        }
+
+    def test_clear_repo_pin(self, db):
+        db.create_session("s1", "cli")
+        db.set_session_repo("s1", "/tmp/project", "project")
+        assert db.set_session_repo("s1", None, None) is True
+        assert db.get_session_repo("s1") is None
 
 
 class TestTitleUniqueness:

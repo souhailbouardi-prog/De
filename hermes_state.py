@@ -31,7 +31,7 @@ T = TypeVar("T")
 
 DEFAULT_DB_PATH = get_hermes_home() / "state.db"
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -65,6 +65,8 @@ CREATE TABLE IF NOT EXISTS sessions (
     cost_source TEXT,
     pricing_version TEXT,
     title TEXT,
+    repo_root TEXT,
+    repo_name TEXT,
     FOREIGN KEY (parent_session_id) REFERENCES sessions(id)
 );
 
@@ -329,6 +331,16 @@ class SessionDB:
                     except sqlite3.OperationalError:
                         pass  # Column already exists
                 cursor.execute("UPDATE schema_version SET version = 6")
+            if current_version < 7:
+                for col_name in ("repo_root", "repo_name"):
+                    try:
+                        safe = col_name.replace('"', '""')
+                        cursor.execute(
+                            f'ALTER TABLE sessions ADD COLUMN "{safe}" TEXT'
+                        )
+                    except sqlite3.OperationalError:
+                        pass
+                cursor.execute("UPDATE schema_version SET version = 7")
 
         # Unique title index — always ensure it exists (safe to run after migrations
         # since the title column is guaranteed to exist at this point)
@@ -361,13 +373,15 @@ class SessionDB:
         system_prompt: str = None,
         user_id: str = None,
         parent_session_id: str = None,
+        repo_root: str = None,
+        repo_name: str = None,
     ) -> str:
         """Create a new session record. Returns the session_id."""
         def _do(conn):
             conn.execute(
                 """INSERT OR IGNORE INTO sessions (id, source, user_id, model, model_config,
-                   system_prompt, parent_session_id, started_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                   system_prompt, parent_session_id, started_at, repo_root, repo_name)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     session_id,
                     source,
@@ -377,6 +391,8 @@ class SessionDB:
                     system_prompt,
                     parent_session_id,
                     time.time(),
+                    repo_root,
+                    repo_name,
                 ),
             )
         self._execute_write(_do)
@@ -528,6 +544,45 @@ class SessionDB:
             )
             row = cursor.fetchone()
         return dict(row) if row else None
+
+    def set_session_repo(
+        self,
+        session_id: str,
+        repo_root: Optional[str],
+        repo_name: Optional[str] = None,
+    ) -> bool:
+        """Set or clear a session's pinned repo/workspace."""
+        clean_root = str(repo_root or "").strip() or None
+        clean_name = str(repo_name or "").strip() or None
+
+        def _do(conn):
+            cursor = conn.execute(
+                "UPDATE sessions SET repo_root = ?, repo_name = ? WHERE id = ?",
+                (clean_root, clean_name, session_id),
+            )
+            return cursor.rowcount
+
+        rowcount = self._execute_write(_do)
+        return rowcount > 0
+
+    def get_session_repo(self, session_id: str) -> Optional[Dict[str, str]]:
+        """Return repo pin info for a session, or None when unset."""
+        with self._lock:
+            cursor = self._conn.execute(
+                "SELECT repo_root, repo_name FROM sessions WHERE id = ?",
+                (session_id,),
+            )
+            row = cursor.fetchone()
+        if not row:
+            return None
+        repo_root = row["repo_root"]
+        repo_name = row["repo_name"]
+        if not repo_root:
+            return None
+        return {
+            "repo_root": repo_root,
+            "repo_name": repo_name or Path(repo_root).name,
+        }
 
     def resolve_session_id(self, session_id_or_prefix: str) -> Optional[str]:
         """Resolve an exact or uniquely prefixed session ID to the full ID.

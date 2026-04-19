@@ -348,6 +348,10 @@ class SessionEntry:
     display_name: Optional[str] = None
     platform: Optional[Platform] = None
     chat_type: str = "dm"
+
+    # Session-scoped repo/workspace pin
+    repo_root: Optional[str] = None
+    repo_name: Optional[str] = None
     
     # Token tracking
     input_tokens: int = 0
@@ -399,6 +403,8 @@ class SessionEntry:
             "display_name": self.display_name,
             "platform": self.platform.value if self.platform else None,
             "chat_type": self.chat_type,
+            "repo_root": self.repo_root,
+            "repo_name": self.repo_name,
             "input_tokens": self.input_tokens,
             "output_tokens": self.output_tokens,
             "cache_read_tokens": self.cache_read_tokens,
@@ -451,6 +457,8 @@ class SessionEntry:
             display_name=data.get("display_name"),
             platform=platform,
             chat_type=data.get("chat_type", "dm"),
+            repo_root=data.get("repo_root"),
+            repo_name=data.get("repo_name"),
             input_tokens=data.get("input_tokens", 0),
             output_tokens=data.get("output_tokens", 0),
             cache_read_tokens=data.get("cache_read_tokens", 0),
@@ -798,6 +806,8 @@ class SessionStore:
                 "session_id": session_id,
                 "source": source.platform.value,
                 "user_id": source.user_id,
+                "repo_root": entry.repo_root,
+                "repo_name": entry.repo_name,
             }
 
         # SQLite operations outside the lock
@@ -830,6 +840,33 @@ class SessionStore:
                 if last_prompt_tokens is not None:
                     entry.last_prompt_tokens = last_prompt_tokens
                 self._save()
+
+    def set_session_repo(
+        self,
+        session_key: str,
+        repo_root: Optional[str],
+        repo_name: Optional[str] = None,
+    ) -> bool:
+        """Set or clear a session's pinned repo/workspace."""
+        db_session_id = None
+        clean_root = str(repo_root or "").strip() or None
+        clean_name = str(repo_name or "").strip() or None
+        with self._lock:
+            self._ensure_loaded_locked()
+            entry = self._entries.get(session_key)
+            if not entry:
+                return False
+            entry.repo_root = clean_root
+            entry.repo_name = clean_name
+            db_session_id = entry.session_id
+            self._save()
+
+        if self._db and db_session_id:
+            try:
+                self._db.set_session_repo(db_session_id, clean_root, clean_name)
+            except Exception as e:
+                logger.debug("Session DB operation failed: %s", e)
+        return True
 
     def suspend_session(self, session_key: str) -> bool:
         """Mark a session as suspended so it auto-resets on next access.
@@ -1012,6 +1049,8 @@ class SessionStore:
                 "session_id": session_id,
                 "source": old_entry.platform.value if old_entry.platform else "unknown",
                 "user_id": old_entry.origin.user_id if old_entry.origin else None,
+                "repo_root": None,
+                "repo_name": None,
             }
 
         if self._db and db_end_session_id:
@@ -1039,6 +1078,8 @@ class SessionStore:
         """
         db_end_session_id = None
         new_entry = None
+        repo_root = None
+        repo_name = None
 
         with self._lock:
             self._ensure_loaded_locked()
@@ -1054,6 +1095,16 @@ class SessionStore:
 
             db_end_session_id = old_entry.session_id
 
+            if self._db:
+                try:
+                    repo_info = self._db.get_session_repo(target_session_id)
+                except Exception as e:
+                    logger.debug("Session DB get_session_repo failed: %s", e)
+                    repo_info = None
+                if repo_info:
+                    repo_root = repo_info.get("repo_root")
+                    repo_name = repo_info.get("repo_name")
+
             now = _now()
             new_entry = SessionEntry(
                 session_key=session_key,
@@ -1064,6 +1115,8 @@ class SessionStore:
                 display_name=old_entry.display_name,
                 platform=old_entry.platform,
                 chat_type=old_entry.chat_type,
+                repo_root=repo_root,
+                repo_name=repo_name,
             )
 
             self._entries[session_key] = new_entry

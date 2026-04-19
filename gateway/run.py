@@ -3452,6 +3452,9 @@ class GatewayRunner:
         if canonical == "title":
             return await self._handle_title_command(event)
 
+        if canonical == "repo":
+            return await self._handle_repo_command(event)
+
         if canonical == "resume":
             return await self._handle_resume_command(event)
 
@@ -3845,6 +3848,14 @@ class GatewayRunner:
 
         # Build the context prompt to inject
         context_prompt = build_session_context_prompt(context, redact_pii=_redact_pii)
+        if session_entry.repo_root:
+            try:
+                from agent.repo_context import build_repo_pin_prompt
+                repo_prompt = build_repo_pin_prompt(session_entry.repo_root, session_entry.repo_name)
+            except Exception:
+                repo_prompt = ""
+            if repo_prompt:
+                context_prompt = (repo_prompt + "\n\n" + context_prompt).strip()
         
         # If the previous session expired and was auto-reset, prepend a notice
         # so the agent knows this is a fresh conversation (not an intentional /reset).
@@ -4867,6 +4878,9 @@ class GatewayRunner:
         ]
         if title:
             lines.append(f"**Title:** {title}")
+        if session_entry.repo_root:
+            repo_label = session_entry.repo_name or Path(session_entry.repo_root).name
+            lines.append(f"**Repo:** `{repo_label}` — `{session_entry.repo_root}`")
         lines.extend([
             f"**Created:** {session_entry.created_at.strftime('%Y-%m-%d %H:%M')}",
             f"**Last Activity:** {session_entry.updated_at.strftime('%Y-%m-%d %H:%M')}",
@@ -6950,6 +6964,48 @@ class GatewayRunner:
             else:
                 return f"📌 Session: `{session_id}`\nNo title set. Usage: `/title My Session Name`"
 
+    async def _handle_repo_command(self, event: MessageEvent) -> str:
+        """Handle /repo command — show, set, or clear the session repo pin."""
+        source = event.source
+        session_entry = self.session_store.get_or_create_session(source)
+        session_id = session_entry.session_id
+        session_key = session_entry.session_key
+        arg = event.get_command_args().strip()
+
+        if not arg or arg.lower() == "status":
+            if session_entry.repo_root:
+                repo_label = session_entry.repo_name or Path(session_entry.repo_root).name
+                return (
+                    f"📌 Session: `{session_id}`\n"
+                    f"Repo pin: **{repo_label}**\n"
+                    f"Path: `{session_entry.repo_root}`"
+                )
+            return f"📌 Session: `{session_id}`\nNo repo pinned. Usage: `/repo /path/to/repo`"
+
+        if arg.lower() in {"clear", "unset", "none", "off"}:
+            if not self.session_store.set_session_repo(session_key, None, None):
+                return "⚠️ Session not found."
+            self._evict_cached_agent(session_key)
+            return f"🧹 Cleared repo pin for session `{session_id}`"
+
+        try:
+            from agent.repo_context import RepoContextError, resolve_repo_target
+
+            base_dir = os.getenv("TERMINAL_CWD") or os.getenv("MESSAGING_CWD") or str(Path.home())
+            repo_root, repo_name, is_git_repo = resolve_repo_target(arg, base_dir=base_dir)
+        except RepoContextError as e:
+            return f"⚠️ {e}"
+
+        if not self.session_store.set_session_repo(session_key, repo_root, repo_name):
+            return "⚠️ Session not found."
+
+        self._evict_cached_agent(session_key)
+        repo_kind = "repository" if is_git_repo else "workspace"
+        return (
+            f"📌 Pinned this session to {repo_kind} **{repo_name}**\n"
+            f"Path: `{repo_root}`"
+        )
+
     async def _handle_resume_command(self, event: MessageEvent) -> str:
         """Handle /resume command — switch to a previously-named session."""
         if not self._session_db:
@@ -7073,6 +7129,8 @@ class GatewayRunner:
                 source=source.platform.value if source.platform else "gateway",
                 model=(self.config.get("model", {}) or {}).get("default") if isinstance(self.config, dict) else None,
                 parent_session_id=parent_session_id,
+                repo_root=current_entry.repo_root,
+                repo_name=current_entry.repo_name,
             )
         except Exception as e:
             logger.error("Failed to create branch session: %s", e)

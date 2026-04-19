@@ -99,6 +99,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
                gateway_only=True, aliases=("set-home",)),
     CommandDef("resume", "Resume a previously-named session", "Session",
                args_hint="[name]"),
+    CommandDef("repo", "Show or pin the current session's repository/workspace", "Session",
+               gateway_only=True, args_hint="[path|clear]"),
 
     # Configuration
     CommandDef("config", "Show current configuration", "Configuration",
