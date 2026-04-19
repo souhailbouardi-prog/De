@@ -9915,9 +9915,30 @@ class AIAgent:
                         prompt_tokens = canonical_usage.prompt_tokens
                         completion_tokens = canonical_usage.output_tokens
                         total_tokens = canonical_usage.total_tokens
+                        # For the context compressor, subtract reasoning
+                        # tokens from completion_tokens.  Reasoning tokens
+                        # (from completion_tokens_details.reasoning_tokens)
+                        # are internal chain-of-thought that the provider
+                        # bills as output but that do NOT appear in the
+                        # context window on the next turn.  Including them
+                        # inflates last_completion_tokens and causes
+                        # premature compression for thinking models
+                        # (GLM-5.1, QwQ, DeepSeek-R1).  Fixes #12026.
+                        _reasoning_toks = canonical_usage.reasoning_tokens
+                        _content_completion = max(
+                            0, completion_tokens - _reasoning_toks
+                        )
+                        if _reasoning_toks > 0:
+                            logger.info(
+                                "Reasoning tokens excluded from compression: "
+                                "%d reasoning of %d total completion → "
+                                "%d content tokens for compressor",
+                                _reasoning_toks, completion_tokens,
+                                _content_completion,
+                            )
                         usage_dict = {
                             "prompt_tokens": prompt_tokens,
-                            "completion_tokens": completion_tokens,
+                            "completion_tokens": _content_completion,
                             "total_tokens": total_tokens,
                         }
                         self.context_compressor.update_from_response(usage_dict)
@@ -10013,6 +10034,44 @@ class AIAgent:
                             hit_pct = (cached / prompt * 100) if prompt > 0 else 0
                             if not self.quiet_mode:
                                 self._vprint(f"{self.log_prefix}   💾 Cache: {cached:,}/{prompt:,} tokens ({hit_pct:.0f}% hit, {written:,} written)")
+                    else:
+                        # Provider returned no usage data (e.g. MiniMax via
+                        # OpenRouter ignores stream_options.include_usage).
+                        # Fall back to rough token estimation so sessions
+                        # don't permanently record 0/0 tokens.  Fixes #12023.
+                        _est_in = estimate_messages_tokens_rough(messages)
+                        _est_out = estimate_tokens_rough(
+                            (response.choices[0].message.content or "")
+                            if response.choices else ""
+                        )
+                        _est_total = _est_in + _est_out
+                        logger.warning(
+                            "No usage data in response for model=%s provider=%s "
+                            "— using rough estimates (in≈%d, out≈%d)",
+                            self.model, self.provider or "unknown",
+                            _est_in, _est_out,
+                        )
+                        self.context_compressor.update_from_response({
+                            "prompt_tokens": _est_in,
+                            "completion_tokens": _est_out,
+                            "total_tokens": _est_total,
+                        })
+                        self.session_prompt_tokens += _est_in
+                        self.session_completion_tokens += _est_out
+                        self.session_total_tokens += _est_total
+                        self.session_api_calls += 1
+                        self.session_input_tokens += _est_in
+                        self.session_output_tokens += _est_out
+                        if self._session_db and self.session_id:
+                            try:
+                                self._session_db.update_token_counts(
+                                    self.session_id,
+                                    input_tokens=_est_in,
+                                    output_tokens=_est_out,
+                                    model=self.model,
+                                )
+                            except Exception:
+                                pass  # never block the agent loop
                     
                     has_retried_429 = False  # Reset on success
                     # Clear Nous rate limit state on successful request —
