@@ -94,6 +94,59 @@ class TestTerminalToolConfig:
         assert _get_env_config()["ssh_persistent"] is False
 
 
+class TestSocketPathLength:
+    """Regression tests for macOS 104-char Unix socket path limit."""
+
+    def test_socket_path_under_macos_limit(self, monkeypatch):
+        """Socket path must be under macOS's 104-char limit even with IPv6 addresses."""
+        monkeypatch.setattr(ssh_env.shutil, "which", lambda _name: "/usr/bin/ssh")
+        monkeypatch.setattr(ssh_env.SSHEnvironment, "_establish_connection", lambda self: None)
+        monkeypatch.setattr(ssh_env.SSHEnvironment, "_detect_remote_home", lambda self: "/home/alice")
+        monkeypatch.setattr(ssh_env.SSHEnvironment, "_ensure_remote_dirs", lambda self: None)
+        monkeypatch.setattr(ssh_env.SSHEnvironment, "init_session", lambda self: None)
+        monkeypatch.setattr(ssh_env, "FileSyncManager", lambda **kw: type("M", (), {"sync": lambda self, **k: None})())
+
+        # IPv6 address with long temp path (macOS-like scenario)
+        ipv6_host = "9373:9b91:4480:558d:708e:e601:24e8:d8d0"
+        env = ssh_env.SSHEnvironment(host=ipv6_host, user="hermes", port=22)
+
+        # macOS limit is 104 chars; socket path should be well under
+        socket_path = str(env.control_socket)
+        assert len(socket_path) < 104, f"Socket path too long: {socket_path} ({len(socket_path)} chars)"
+
+    def test_socket_path_deterministic_for_same_connection(self, monkeypatch):
+        """Same connection params should produce the same socket path."""
+        monkeypatch.setattr(ssh_env.shutil, "which", lambda _name: "/usr/bin/ssh")
+        monkeypatch.setattr(ssh_env.SSHEnvironment, "_establish_connection", lambda self: None)
+        monkeypatch.setattr(ssh_env.SSHEnvironment, "_detect_remote_home", lambda self: "/home/alice")
+        monkeypatch.setattr(ssh_env.SSHEnvironment, "_ensure_remote_dirs", lambda self: None)
+        monkeypatch.setattr(ssh_env.SSHEnvironment, "init_session", lambda self: None)
+        monkeypatch.setattr(ssh_env, "FileSyncManager", lambda **kw: type("M", (), {"sync": lambda self, **k: None})())
+
+        env1 = ssh_env.SSHEnvironment(host="example.com", user="alice", port=22)
+        env2 = ssh_env.SSHEnvironment(host="example.com", user="alice", port=22)
+
+        assert env1.control_socket == env2.control_socket
+
+    def test_socket_path_unique_for_different_connections(self, monkeypatch):
+        """Different connection params should produce different socket paths."""
+        monkeypatch.setattr(ssh_env.shutil, "which", lambda _name: "/usr/bin/ssh")
+        monkeypatch.setattr(ssh_env.SSHEnvironment, "_establish_connection", lambda self: None)
+        monkeypatch.setattr(ssh_env.SSHEnvironment, "_detect_remote_home", lambda self: "/home/alice")
+        monkeypatch.setattr(ssh_env.SSHEnvironment, "_ensure_remote_dirs", lambda self: None)
+        monkeypatch.setattr(ssh_env.SSHEnvironment, "init_session", lambda self: None)
+        monkeypatch.setattr(ssh_env, "FileSyncManager", lambda **kw: type("M", (), {"sync": lambda self, **k: None})())
+
+        env1 = ssh_env.SSHEnvironment(host="host1.com", user="alice", port=22)
+        env2 = ssh_env.SSHEnvironment(host="host2.com", user="alice", port=22)
+        env3 = ssh_env.SSHEnvironment(host="host1.com", user="bob", port=22)
+        env4 = ssh_env.SSHEnvironment(host="host1.com", user="alice", port=2222)
+
+        assert env1.control_socket != env2.control_socket
+        assert env1.control_socket != env3.control_socket
+        assert env1.control_socket != env4.control_socket
+
+
 class TestSSHPreflight:
     def test_ensure_ssh_available_raises_clear_error_when_missing(self, monkeypatch):
         monkeypatch.setattr(ssh_env.shutil, "which", lambda _name: None)
