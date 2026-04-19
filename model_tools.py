@@ -451,14 +451,14 @@ def handle_function_call(
         if function_name in _AGENT_LOOP_TOOLS:
             return json.dumps({"error": f"{function_name} must be handled by the agent loop"})
 
-        # Check plugin hooks for a block directive (unless caller already
+        # Check plugin hooks for intercept directives (unless caller already
         # checked — e.g. run_agent._invoke_tool passes skip=True to
         # avoid double-firing the hook).
         if not skip_pre_tool_call_hook:
-            block_message: Optional[str] = None
+            intercept: Optional[Dict[str, Any]] = None
             try:
-                from hermes_cli.plugins import get_pre_tool_call_block_message
-                block_message = get_pre_tool_call_block_message(
+                from hermes_cli.plugins import get_pre_tool_call_intercept
+                intercept = get_pre_tool_call_intercept(
                     function_name,
                     function_args,
                     task_id=task_id or "",
@@ -468,8 +468,11 @@ def handle_function_call(
             except Exception:
                 pass
 
-            if block_message is not None:
-                return json.dumps({"error": block_message}, ensure_ascii=False)
+            if intercept is not None:
+                if intercept["kind"] == "block":
+                    return json.dumps({"error": intercept["message"]}, ensure_ascii=False)
+                elif intercept["kind"] == "redirect":
+                    return intercept["result"]
         else:
             # Still fire the hook for observers — just don't check for blocking
             # (the caller already did that).

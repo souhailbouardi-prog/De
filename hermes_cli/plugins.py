@@ -62,6 +62,8 @@ VALID_HOOKS: Set[str] = {
     "on_session_end",
     "on_session_finalize",
     "on_session_reset",
+    "pre_compress",
+    "post_compress",
 }
 
 ENTRY_POINTS_GROUP = "hermes_agent.plugins"
@@ -775,6 +777,51 @@ def get_pre_tool_call_block_message(
         message = result.get("message")
         if isinstance(message, str) and message:
             return message
+
+    return None
+
+
+def get_pre_tool_call_intercept(
+    tool_name: str,
+    args: Optional[Dict[str, Any]],
+    task_id: str = "",
+    session_id: str = "",
+    tool_call_id: str = "",
+) -> Optional[Dict[str, Any]]:
+    """Check ``pre_tool_call`` hooks for block or redirect directives.
+
+    Plugins can return:
+
+    * ``{"action": "block", "message": "reason"}`` — prevent execution,
+      return an error to the model.
+    * ``{"action": "redirect", "result": "<json string>"}`` — skip execution,
+      return *result* as the successful tool output (used by context-mode
+      to sandbox large-output commands).
+
+    Returns a dict with ``"kind"`` set to ``"block"`` or ``"redirect"``
+    plus the relevant payload, or ``None`` if no hook intercepted.
+    """
+    hook_results = invoke_hook(
+        "pre_tool_call",
+        tool_name=tool_name,
+        args=args if isinstance(args, dict) else {},
+        task_id=task_id,
+        session_id=session_id,
+        tool_call_id=tool_call_id,
+    )
+
+    for result in hook_results:
+        if not isinstance(result, dict):
+            continue
+        action = result.get("action")
+        if action == "block":
+            message = result.get("message")
+            if isinstance(message, str) and message:
+                return {"kind": "block", "message": message}
+        elif action == "redirect":
+            redirect_result = result.get("result")
+            if isinstance(redirect_result, str) and redirect_result:
+                return {"kind": "redirect", "result": redirect_result}
 
     return None
 
