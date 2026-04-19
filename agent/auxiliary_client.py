@@ -900,6 +900,10 @@ def _read_main_model() -> str:
 def _read_main_provider() -> str:
     """Read the user's configured main provider from config.yaml.
 
+    Falls back to the active_provider in auth.json when config.yaml does not
+    specify a provider (e.g. when the user authenticated via ``hermes auth``
+    but never ran ``hermes setup``).
+
     Returns the lowercase provider id (e.g. "alibaba", "openrouter") or ""
     if not configured.
     """
@@ -913,6 +917,16 @@ def _read_main_provider() -> str:
                 return provider.strip().lower()
     except Exception:
         pass
+
+    # Fallback: check active_provider in auth.json
+    try:
+        from hermes_cli.auth import get_active_provider
+        active = get_active_provider()
+        if isinstance(active, str) and active.strip():
+            return active.strip().lower()
+    except Exception:
+        pass
+
     return ""
 
 
