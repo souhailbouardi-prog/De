@@ -184,10 +184,42 @@ that requires raw IDs).  Discord is excluded because mentions use ``<@user_id>``
 and the LLM needs the real ID to tag users."""
 
 
+def _has_scoped_slack_tools(available_tool_names: Optional[set[str]]) -> bool:
+    """Return True when this session exposes dedicated Slack-scoped tools."""
+    if not available_tool_names:
+        return False
+
+    return any(
+        name.startswith(("mcp_slack_", "slack_"))
+        for name in available_tool_names
+    )
+
+
+def _build_slack_platform_note(has_scoped_tools: bool) -> str:
+    """Build the Slack platform note for the current tool surface."""
+    if not has_scoped_tools:
+        return (
+            "**Platform notes:** You are running inside Slack. "
+            "You do NOT have access to Slack-specific APIs — you cannot search "
+            "channel history, pin/unpin messages, manage channels, or list users. "
+            "Do not promise to perform these actions. If the user asks, explain "
+            "that you can only read messages sent directly to you and respond."
+        )
+
+    return (
+        "**Platform notes:** You are running inside Slack. "
+        "Dedicated Slack tools may be available in this session for Slack-specific "
+        "requests such as permalink, thread, and history lookups. Use those "
+        "scoped tools when they are available, and do not promise Slack actions "
+        "beyond the capabilities exposed by those tools."
+    )
+
+
 def build_session_context_prompt(
     context: SessionContext,
     *,
     redact_pii: bool = False,
+    available_tool_names: Optional[set[str]] = None,
 ) -> str:
     """
     Build the dynamic system prompt section that tells the agent about its context.
@@ -266,11 +298,9 @@ def build_session_context_prompt(
     if context.source.platform == Platform.SLACK:
         lines.append("")
         lines.append(
-            "**Platform notes:** You are running inside Slack. "
-            "You do NOT have access to Slack-specific APIs — you cannot search "
-            "channel history, pin/unpin messages, manage channels, or list users. "
-            "Do not promise to perform these actions. If the user asks, explain "
-            "that you can only read messages sent directly to you and respond."
+            _build_slack_platform_note(
+                _has_scoped_slack_tools(available_tool_names)
+            )
         )
     elif context.source.platform == Platform.DISCORD:
         lines.append("")

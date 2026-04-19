@@ -205,7 +205,7 @@ class TestBuildSessionContextPrompt:
         assert "Discord" in prompt
         assert "cannot search" in prompt.lower() or "do not have access" in prompt.lower()
 
-    def test_slack_prompt_includes_platform_notes(self):
+    def test_slack_prompt_preserves_conservative_note_without_scoped_tools(self):
         config = GatewayConfig(
             platforms={
                 Platform.SLACK: PlatformConfig(enabled=True, token="fake"),
@@ -219,11 +219,42 @@ class TestBuildSessionContextPrompt:
             user_name="bob",
         )
         ctx = build_session_context(source, config)
-        prompt = build_session_context_prompt(ctx)
+        prompt = build_session_context_prompt(ctx, available_tool_names=set())
 
         assert "Slack" in prompt
         assert "cannot search" in prompt.lower()
         assert "pin" in prompt.lower()
+        assert "only read messages sent directly to you" in prompt
+
+    def test_slack_prompt_mentions_scoped_tools_when_available(self):
+        config = GatewayConfig(
+            platforms={
+                Platform.SLACK: PlatformConfig(enabled=True, token="fake"),
+            },
+        )
+        source = SessionSource(
+            platform=Platform.SLACK,
+            chat_id="C123",
+            chat_name="general",
+            chat_type="group",
+            user_name="bob",
+        )
+        ctx = build_session_context(source, config)
+        prompt = build_session_context_prompt(
+            ctx,
+            available_tool_names={
+                "mcp_slack_conversations_history",
+                "mcp_slack_conversations_replies",
+            },
+        )
+
+        assert "Slack" in prompt
+        assert "dedicated slack tools may be available" in prompt.lower()
+        assert "permalink, thread, and history lookups" in prompt.lower()
+        assert "only read messages sent directly to you" not in prompt
+        assert "cannot search channel history" not in prompt.lower()
+        assert "token" not in prompt.lower()
+        assert "curl" not in prompt.lower()
 
     def test_discord_prompt_with_channel_topic(self):
         """Channel topic should appear in the session context prompt."""

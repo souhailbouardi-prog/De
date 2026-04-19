@@ -3843,8 +3843,34 @@ class GatewayRunner:
         except Exception:
             pass
 
+        available_tool_names = None
+        try:
+            user_config = _load_gateway_config()
+            platform_key = _platform_config_key(source.platform)
+
+            from hermes_cli.tools_config import _get_platform_tools
+            from tools.registry import registry
+            from toolsets import resolve_toolset, validate_toolset
+
+            enabled_toolsets = sorted(_get_platform_tools(user_config, platform_key))
+            tools_to_include: set[str] = set()
+            for toolset_name in enabled_toolsets:
+                if validate_toolset(toolset_name):
+                    tools_to_include.update(resolve_toolset(toolset_name))
+
+            available_tool_names = {
+                tool_def["function"]["name"]
+                for tool_def in registry.get_definitions(tools_to_include, quiet=True)
+            }
+        except Exception:
+            available_tool_names = None
+
         # Build the context prompt to inject
-        context_prompt = build_session_context_prompt(context, redact_pii=_redact_pii)
+        context_prompt = build_session_context_prompt(
+            context,
+            redact_pii=_redact_pii,
+            available_tool_names=available_tool_names,
+        )
         
         # If the previous session expired and was auto-reset, prepend a notice
         # so the agent knows this is a fresh conversation (not an intentional /reset).
