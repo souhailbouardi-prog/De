@@ -2000,6 +2000,15 @@ class HermesCLI:
         }
 
         if not agent:
+            # Agent not yet initialized (lazy init) — use cached estimates
+            # from resume so the status bar shows a non-zero value.
+            if getattr(self, "_estimated_context_tokens", 0):
+                snapshot["context_tokens"] = self._estimated_context_tokens
+                if getattr(self, "_estimated_context_length", 0):
+                    snapshot["context_length"] = self._estimated_context_length
+                    snapshot["context_percent"] = max(0, min(100, round(
+                        (self._estimated_context_tokens / self._estimated_context_length) * 100
+                    )))
             return snapshot
 
         snapshot["session_input_tokens"] = getattr(agent, "session_input_tokens", 0) or 0
@@ -2020,6 +2029,15 @@ class HermesCLI:
             snapshot["compressions"] = getattr(compressor, "compression_count", 0) or 0
             if context_length:
                 snapshot["context_percent"] = max(0, min(100, round((context_tokens / context_length) * 100)))
+        elif getattr(self, "_estimated_context_tokens", 0):
+            # Agent not yet initialized (lazy init) but we have cached estimates
+            # from resume — show them so the status bar is useful before first message.
+            snapshot["context_tokens"] = self._estimated_context_tokens
+            if getattr(self, "_estimated_context_length", 0):
+                snapshot["context_length"] = self._estimated_context_length
+                snapshot["context_percent"] = max(0, min(100, round(
+                    (self._estimated_context_tokens / self._estimated_context_length) * 100
+                )))
 
         return snapshot
 
@@ -3029,6 +3047,17 @@ class HermesCLI:
             # Store reference for atexit memory provider shutdown
             global _active_agent_ref
             _active_agent_ref = self.agent
+
+            # When resuming, estimate context tokens so the status bar shows
+            # a non-zero value before the first API call updates it precisely.
+            if self._resumed and self.conversation_history:
+                try:
+                    from agent.model_metadata import estimate_messages_tokens_rough
+                    estimated = estimate_messages_tokens_rough(self.conversation_history)
+                    if estimated > 0:
+                        self.agent.context_compressor.last_prompt_tokens = estimated
+                except Exception:
+                    pass
             # Route agent status output through prompt_toolkit so ANSI escape
             # sequences aren't garbled by patch_stdout's StdoutProxy (#2262).
             self.agent._print_fn = _cprint
@@ -4389,6 +4418,16 @@ class HermesCLI:
                     pass
             if hasattr(self.agent, "_invalidate_system_prompt"):
                 self.agent._invalidate_system_prompt()
+            # Re-estimate context tokens so the status bar shows a non-zero
+            # value before the next API call updates it precisely.
+            if self.conversation_history:
+                try:
+                    from agent.model_metadata import estimate_messages_tokens_rough
+                    estimated = estimate_messages_tokens_rough(self.conversation_history)
+                    if estimated > 0:
+                        self.agent.context_compressor.last_prompt_tokens = estimated
+                except Exception:
+                    pass
 
         title_part = f" \"{session_meta['title']}\"" if session_meta.get("title") else ""
         msg_count = len([m for m in self.conversation_history if m.get("role") == "user"])
@@ -8601,6 +8640,18 @@ class HermesCLI:
         if self._resumed:
             if self._preload_resumed_session():
                 self._display_resumed_history()
+        # Cache estimated context tokens for the status bar before agent init.
+        # Agent is lazily created on first message; this lets the status bar
+        # show a non-zero context estimate while waiting for user input.
+        if self._resumed and self.conversation_history and self.agent is None:
+            try:
+                from agent.model_metadata import estimate_messages_tokens_rough, get_model_context_length
+                self._estimated_context_tokens = estimate_messages_tokens_rough(self.conversation_history)
+                self._estimated_context_length = get_model_context_length(
+                    self.model, base_url=self.base_url, provider=self.provider,
+                )
+            except Exception:
+                pass
 
         try:
             from hermes_cli.skin_engine import get_active_skin
