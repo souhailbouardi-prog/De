@@ -39,6 +39,7 @@ import subprocess
 import threading
 import time
 import uuid
+import weakref
 
 _IS_WINDOWS = platform.system() == "Windows"
 from tools.environments.local import _find_shell, _sanitize_subprocess_env
@@ -84,7 +85,6 @@ class ProcessSession:
     session_key: str = ""                       # Gateway session key (for reset protection)
     pid: Optional[int] = None                   # OS process ID
     process: Optional[subprocess.Popen] = None  # Popen handle (local only)
-    env_ref: Any = None                         # Reference to the environment object
     cwd: Optional[str] = None                   # Working directory
     started_at: float = 0.0                     # time.time() of spawn
     exited: bool = False                        # Whether the process has finished
@@ -112,6 +112,23 @@ class ProcessSession:
     _lock: threading.Lock = field(default_factory=threading.Lock)
     _reader_thread: Optional[threading.Thread] = field(default=None, repr=False)
     _pty: Any = field(default=None, repr=False)  # ptyprocess handle (when use_pty=True)
+    _env_weak: Any = field(default=None, repr=False, init=False)  # weakref to environment
+
+    @property
+    def env_ref(self) -> Any:
+        """Return the environment object if it is still alive, else None."""
+        ref = self._env_weak
+        if ref is not None:
+            return ref()
+        return None
+
+    @env_ref.setter
+    def env_ref(self, env: Any) -> None:
+        """Store environment as a weakref to allow GC of heavyweight resources."""
+        if env is not None:
+            self._env_weak = weakref.ref(env)
+        else:
+            self._env_weak = None
 
 
 class ProcessRegistry:
@@ -445,9 +462,9 @@ class ProcessRegistry:
             session_key=session_key,
             cwd=cwd,
             started_at=time.time(),
-            env_ref=env,
             pid_scope="sandbox",
         )
+        session.env_ref = env
 
         # Run the command in the sandbox with output capture
         temp_dir = self._env_temp_dir(env)

@@ -635,3 +635,112 @@ class TestProcessToolHandler:
         from tools.process_registry import _handle_process
         result = json.loads(_handle_process({"action": "unknown_action"}))
         assert "error" in result
+
+
+# =========================================================================
+# env_ref weakref behavior
+# =========================================================================
+
+class TestEnvRefWeakref:
+    """Verify that ProcessSession.env_ref uses a weakref so that finished
+    processes do not prevent GC of heavyweight environment objects."""
+
+    def test_env_ref_returns_object_while_alive(self):
+        """env_ref returns the environment object when it is still referenced."""
+        class FakeEnv:
+            pass
+
+        env = FakeEnv()
+        session = ProcessSession(
+            id="proc_weakref1",
+            command="echo test",
+        )
+        session.env_ref = env
+
+        assert session.env_ref is env
+
+    def test_env_ref_returns_none_after_gc(self):
+        """env_ref returns None after all other references to the env are dropped."""
+        import gc
+
+        class FakeEnv:
+            pass
+
+        env = FakeEnv()
+        session = ProcessSession(
+            id="proc_weakref2",
+            command="echo test",
+        )
+        session.env_ref = env
+
+        # Drop the only strong reference
+        del env
+        gc.collect()
+
+        assert session.env_ref is None
+
+    def test_env_ref_none_by_default(self):
+        """env_ref is None when no environment was set."""
+        session = ProcessSession(
+            id="proc_weakref3",
+            command="echo test",
+        )
+        assert session.env_ref is None
+
+    def test_env_ref_setter_replaces_previous(self):
+        """Setting env_ref to a new object replaces the previous weakref."""
+        class FakeEnv:
+            def __init__(self, name):
+                self.name = name
+
+        env_a = FakeEnv("a")
+        env_b = FakeEnv("b")
+        session = ProcessSession(
+            id="proc_weakref4",
+            command="echo test",
+        )
+        session.env_ref = env_a
+        assert session.env_ref is env_a
+
+        session.env_ref = env_b
+        assert session.env_ref is env_b
+
+    def test_env_ref_setter_accepts_none(self):
+        """Setting env_ref to None clears the weakref."""
+        class FakeEnv:
+            pass
+
+        env = FakeEnv()
+        session = ProcessSession(
+            id="proc_weakref5",
+            command="echo test",
+        )
+        session.env_ref = env
+        assert session.env_ref is env
+
+        session.env_ref = None
+        assert session.env_ref is None
+
+    def test_finished_session_does_not_prevent_env_gc(self, registry):
+        """A session moved to _finished does not prevent the env from being GC'd."""
+        import gc
+
+        class FakeEnv:
+            pass
+
+        env = FakeEnv()
+        session = _make_session(sid="proc_weakref_finished", exited=True, exit_code=0)
+        session.env_ref = env
+        registry._finished[session.id] = session
+
+        # Verify it's accessible while alive
+        assert registry.get(session.id).env_ref is env
+
+        # Drop the strong reference, force GC
+        del env
+        gc.collect()
+
+        # The registry still has the session, but env_ref is gone
+        retrieved = registry.get(session.id)
+        assert retrieved is not None
+        assert retrieved.env_ref is None
