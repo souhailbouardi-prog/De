@@ -157,11 +157,19 @@ TOOL_CATEGORIES = {
             {
                 "name": "ElevenLabs",
                 "badge": "paid",
-                "tag": "Most natural voices",
+                "tag": "Premium TTS + STT",
                 "env_vars": [
-                    {"key": "ELEVENLABS_API_KEY", "prompt": "ElevenLabs API key", "url": "https://elevenlabs.io/app/settings/api-keys"},
+                    {"key": "ELEVENLABS_API_KEY", "prompt": "ElevenLabs API key", "url": "https://elevenlabs.io/"},
                 ],
                 "tts_provider": "elevenlabs",
+            },
+            {
+                "name": "Naga.ac",
+                "tag": "OpenAI-compatible TTS/STT",
+                "env_vars": [
+                    {"key": "NAGA_API_KEY", "prompt": "Naga.ac API key", "url": "https://naga.ac/"},
+                ],
+                "tts_provider": "naga",
             },
             {
                 "name": "Mistral (Voxtral TTS)",
