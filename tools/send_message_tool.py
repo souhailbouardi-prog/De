@@ -317,6 +317,14 @@ def _parse_target_ref(platform_name: str, target_ref: str):
         match = _WEIXIN_TARGET_RE.fullmatch(target_ref)
         if match:
             return match.group(1), None, True
+    if platform_name == "whatsapp":
+        # Already a full WhatsApp JID — treat as explicit
+        if "@s.whatsapp.net" in target_ref.lower():
+            return target_ref, None, True
+        # Phone number → convert to full WhatsApp JID (e.g. 85261988037 → 85261988037@s.whatsapp.net)
+        stripped = target_ref.lstrip("+")
+        if stripped.isdigit():
+            return target_ref + "@s.whatsapp.net", None, True
     if target_ref.lstrip("-").isdigit():
         return target_ref, None, True
     # Matrix room IDs (start with !) and user IDs (start with @) are explicit

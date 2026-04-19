@@ -20,7 +20,25 @@ DIRECTORY_PATH = get_hermes_home() / "channel_directory.json"
 
 
 def _normalize_channel_query(value: str) -> str:
-    return value.lstrip("#").strip().lower()
+    # Strip leading #, trim, lowercase
+    v = value.lstrip("#").strip().lower()
+    # Unescape common markdown/WhatsApp backslash-escaped characters.
+    # Stored channel names may contain literal backslashes (e.g. "*\\(^o^)/*" from WhatsApp
+    # markdown escaping) while user queries typically omit them. Unescape both sides so
+    # "*\\(^o^)/*" and "*(^o^)/*" compare equal.
+    _UNESCAPE_MAP = {
+        r"\*": "*",
+        r"\(": "(",
+        r"\)": ")",
+        r"\_": "_",
+        r"\#": "#",
+        r"\+": "+",
+        r"\-": "-",
+        r"\.": ".",
+    }
+    for esc, raw in _UNESCAPE_MAP.items():
+        v = v.replace(esc, raw)
+    return v
 
 
 def _channel_target_name(platform_name: str, channel: Dict[str, Any]) -> str:

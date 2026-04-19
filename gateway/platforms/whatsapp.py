@@ -199,8 +199,13 @@ class WhatsAppAdapter(BasePlatformAdapter):
         if not value:
             return ""
         normalized = str(value).strip()
+        # Convert legacy Baileys format `user:server` → `user@server`
         if ":" in normalized and "@" in normalized:
             normalized = normalized.replace(":", "@", 1)
+        # Convert bare phone numbers to full WhatsApp JIDs
+        stripped = normalized.lstrip("+")
+        if normalized and not "@" in normalized and stripped.isdigit():
+            normalized = normalized + "@s.whatsapp.net"
         return normalized
 
     def _bot_ids_from_message(self, data: Dict[str, Any]) -> set[str]:
