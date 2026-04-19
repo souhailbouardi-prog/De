@@ -169,6 +169,7 @@ _LEGACY_TOOLSET_MAP = {
     "vision_tools": ["vision_analyze"],
     "moa_tools": ["mixture_of_agents"],
     "image_tools": ["image_generate"],
+    "data_viz_tools": ["manim_data_viz_bridge"],
     "skills_tools": ["skills_list", "skill_view", "skill_manage"],
     "browser_tools": [
         "browser_navigate", "browser_snapshot", "browser_click",
