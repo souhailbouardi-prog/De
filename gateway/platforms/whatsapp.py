@@ -293,7 +293,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
             if not self._acquire_platform_lock('whatsapp-session', str(self._session_path), 'WhatsApp session'):
                 return False
         except Exception as e:
-            logger.warning("[%s] Could not acquire session lock (non-fatal): %s", self.name, e)
+            logger.warning("[%s] Could not acquire session lock (non-fatal): %s", self.name, e, exc_info=True)
 
         # Auto-install npm dependencies if node_modules doesn't exist
         bridge_dir = bridge_path.parent
