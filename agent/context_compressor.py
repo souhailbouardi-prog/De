@@ -819,6 +819,39 @@ The user has requested that this compaction PRIORITISE preserving all informatio
                 break
         return f"{SUMMARY_PREFIX}\n{text}" if text else SUMMARY_PREFIX
 
+    def rehydrate_previous_summary(self, messages: List[Dict[str, Any]]) -> bool:
+        """Restore ``_previous_summary`` from a compaction marker in ``messages``.
+
+        The gateway creates a fresh ``AIAgent`` (and therefore a fresh
+        ``ContextCompressor``) per turn or after a process restart, so
+        ``_previous_summary`` is otherwise ``None`` on the first compaction
+        of a reloaded session — forcing the iterative-update path to fall
+        back to summarize-from-scratch.  That re-runs the prior compaction
+        summary through the LLM as raw turn content, which is exactly how
+        fidelity degrades across the "compressed N times" warning.
+
+        This scans the transcript from newest to oldest for a message whose
+        content starts with ``SUMMARY_PREFIX`` (or the legacy prefix),
+        strips the prefix, and seeds ``_previous_summary`` with the body so
+        the next compaction uses the UPDATE prompt.
+
+        Returns ``True`` if a summary was rehydrated.
+        """
+        if self._previous_summary:
+            return False
+        for msg in reversed(messages):
+            content = msg.get("content") if isinstance(msg, dict) else None
+            if not isinstance(content, str):
+                continue
+            for prefix in (SUMMARY_PREFIX, LEGACY_SUMMARY_PREFIX):
+                if content.startswith(prefix):
+                    body = content[len(prefix):].lstrip("\n")
+                    if body:
+                        self._previous_summary = body
+                        return True
+                    return False
+        return False
+
     # ------------------------------------------------------------------
     # Tool-call / tool-result pair integrity helpers
     # ------------------------------------------------------------------

@@ -252,6 +252,69 @@ class TestSummaryPrefixNormalization:
         assert summary == f"{SUMMARY_PREFIX}\ndid work"
 
 
+class TestRehydratePreviousSummary:
+    def test_rehydrate_from_latest_marker(self, compressor):
+        body = "## Goal\nbuild the thing\n## Progress\ndone"
+        history = [
+            {"role": "user", "content": "first user turn"},
+            {"role": "assistant", "content": "first reply"},
+            {"role": "user", "content": f"{SUMMARY_PREFIX}\n{body}"},
+            {"role": "user", "content": "follow-up after compaction"},
+        ]
+        assert compressor._previous_summary is None
+        assert compressor.rehydrate_previous_summary(history) is True
+        assert compressor._previous_summary == body
+
+    def test_rehydrate_picks_most_recent_when_multiple(self, compressor):
+        old = "older summary body"
+        new = "newer summary body"
+        history = [
+            {"role": "user", "content": f"{SUMMARY_PREFIX}\n{old}"},
+            {"role": "assistant", "content": "work happened"},
+            {"role": "user", "content": f"{SUMMARY_PREFIX}\n{new}"},
+            {"role": "user", "content": "latest user turn"},
+        ]
+        compressor.rehydrate_previous_summary(history)
+        assert compressor._previous_summary == new
+
+    def test_rehydrate_accepts_legacy_prefix(self, compressor):
+        from agent.context_compressor import LEGACY_SUMMARY_PREFIX
+        body = "legacy summary body"
+        history = [{"role": "user", "content": f"{LEGACY_SUMMARY_PREFIX}\n{body}"}]
+        assert compressor.rehydrate_previous_summary(history) is True
+        assert compressor._previous_summary == body
+
+    def test_rehydrate_noop_when_already_set(self, compressor):
+        compressor._previous_summary = "in-memory value"
+        history = [{"role": "user", "content": f"{SUMMARY_PREFIX}\nother"}]
+        assert compressor.rehydrate_previous_summary(history) is False
+        assert compressor._previous_summary == "in-memory value"
+
+    def test_rehydrate_noop_when_no_marker(self, compressor):
+        history = [
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "hi"},
+        ]
+        assert compressor.rehydrate_previous_summary(history) is False
+        assert compressor._previous_summary is None
+
+    def test_rehydrate_ignores_non_string_content(self, compressor):
+        # Multimodal content arrives as a list of parts; must not crash
+        history = [
+            {"role": "user", "content": [{"type": "text", "text": "hi"}]},
+            {"role": "assistant", "content": None},
+        ]
+        assert compressor.rehydrate_previous_summary(history) is False
+        assert compressor._previous_summary is None
+
+    def test_rehydrate_empty_body_returns_false(self, compressor):
+        # A bare SUMMARY_PREFIX with no body is the failure-fallback marker —
+        # don't seed iterative-update state from it.
+        history = [{"role": "user", "content": SUMMARY_PREFIX}]
+        assert compressor.rehydrate_previous_summary(history) is False
+        assert compressor._previous_summary is None
+
+
 class TestCompressWithClient:
     def test_summarization_path(self):
         mock_client = MagicMock()

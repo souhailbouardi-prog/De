@@ -8922,7 +8922,23 @@ class AIAgent:
         # recover the todo state from the most recent todo tool response in history)
         if conversation_history and not self._todo_store.has_items():
             self._hydrate_todo_store(conversation_history)
-        
+
+        # Same problem for the context compressor's iterative-update state:
+        # ``_previous_summary`` lives only on the in-memory ContextCompressor,
+        # so a fresh AIAgent starts with it set to ``None`` and the next
+        # compaction falls back to summarize-from-scratch — which re-runs
+        # the prior [CONTEXT COMPACTION] marker through the LLM as raw turn
+        # content and blurs it. Seed from the most recent marker so the
+        # UPDATE prompt path stays active across process restarts.
+        if conversation_history and getattr(self, "context_compressor", None):
+            try:
+                self.context_compressor.rehydrate_previous_summary(conversation_history)
+            except Exception as _rehydrate_err:
+                logger.debug(
+                    "context_compressor rehydrate_previous_summary failed: %s",
+                    _rehydrate_err,
+                )
+
         # Prefill messages (few-shot priming) are injected at API-call time only,
         # never stored in the messages list. This keeps them ephemeral: they won't
         # be saved to session DB, session logs, or batch trajectories, but they're
