@@ -9,6 +9,7 @@ This module is the single source of truth for the dangerous command system:
 """
 
 import contextvars
+import hashlib
 import logging
 import os
 import re
@@ -70,6 +71,78 @@ _SENSITIVE_WRITE_TARGET = (
 )
 
 # =========================================================================
+# Safer alternative hints — shown to the agent before escalating to user
+# =========================================================================
+
+_SAFER_ALTERNATIVES: dict[str, str] = {
+    "pipe remote content to shell":
+        "Save to a file first, inspect it, then execute. Example: curl -o /tmp/script.sh URL && less /tmp/script.sh && bash /tmp/script.sh",
+    "pipe remote content to interpreter":
+        "Save curl output to a file first, then process it separately. Example: curl -o /tmp/data.json URL && python3 -c \"import json; data=json.load(open('/tmp/data.json')); print(data)\"",
+    "execute remote script via process substitution":
+        "Save to a file first, inspect it, then execute. Example: curl -o /tmp/script.sh URL && less /tmp/script.sh && bash /tmp/script.sh",
+    "script execution via -e/-c flag":
+        "Save the script to a file with write_file, then execute it via terminal.",
+    "shell command via -c/-lc flag":
+        "Run the command directly in terminal without wrapping in bash -c. Use hermes_tools (read_file, write_file, search_files) when possible.",
+    "recursive delete":
+        "Use targeted file deletion instead of recursive rm. Consider: are you deleting build artifacts? Use a .gitignore or clean target instead.",
+    "recursive delete (long flag)":
+        "Use targeted file deletion instead of recursive rm. Consider: are you deleting build artifacts? Use a .gitignore or clean target instead.",
+    "kill hermes/gateway process (self-termination)":
+        "Use systemctl --user restart hermes-gateway to restart the gateway safely.",
+    "start gateway outside systemd (use 'systemctl --user restart hermes-gateway')":
+        "Use systemctl --user start hermes-gateway instead of running gateway directly.",
+    "force kill processes":
+        "Try killing without -9 first (graceful shutdown). If the process is truly stuck, this may be unavoidable.",
+    "delete in root path":
+        "Verify the exact path. Use absolute paths and double-check before rm with / in the path. Prefer hermes_tools for file operations.",
+    "overwrite system config":
+        "Use hermes_tools (patch function) for targeted edits instead of overwriting entire files. Always read the file first.",
+    "in-place edit of system config":
+        "Use hermes_tools (patch function) for targeted edits instead of sed -i. Safer and more precise.",
+    "script execution via heredoc":
+        "Write the script to a temp file with write_file, then execute via terminal.",
+    "git reset --hard (destroys uncommitted changes)":
+        "Use 'git stash' to save work before resetting.",
+    "git force push (rewrites remote history)":
+        "Use 'git push --force-with-lease' instead (safer force push).",
+    "git force push short flag (rewrites remote history)":
+        "Use 'git push --force-with-lease' instead.",
+    "git clean with force (deletes untracked files)":
+        "Use 'git clean -n' (dry-run) first to preview what will be deleted.",
+    "git branch force delete":
+        "Merge or cherry-pick to another branch first if the work is needed elsewhere.",
+    "kill process via pgrep expansion (self-termination)":
+        "Use 'systemctl restart <service>' instead of manually killing processes.",
+    "kill process via backtick pgrep expansion (self-termination)":
+        "Use 'systemctl restart <service>' instead of manually killing processes.",
+    "chmod +x followed by immediate execution":
+        "Run the script explicitly with 'bash script.sh' instead of chmod +x.",
+}
+
+
+_TIRITH_HINT_OVERRIDES: dict[str, str] = {
+    "pipe_to_interpreter":
+        "Save curl output to a file first, then process it separately. "
+        "Example: curl -o /tmp/data.json URL && python3 -c \"import json; data=json.load(open('/tmp/data.json')); print(data)\"",
+    "pipe_to_shell":
+        "Save to a file first, inspect it, then execute. "
+        "Example: curl -o /tmp/script.sh URL && less /tmp/script.sh && bash /tmp/script.sh",
+}
+
+
+def _get_safer_hint(pattern_key: str) -> str | None:
+    """Return a safer-alternative hint for a dangerous pattern key, if available."""
+    # Tirith keys are prefixed with "tirith:" — check overrides first
+    if pattern_key.startswith("tirith:"):
+        rule_id = pattern_key.split(":", 1)[1]
+        if rule_id in _TIRITH_HINT_OVERRIDES:
+            return _TIRITH_HINT_OVERRIDES[rule_id]
+    return _SAFER_ALTERNATIVES.get(pattern_key)
+
+
+# =========================================================================
 # Dangerous command patterns
 # =========================================================================
 
@@ -96,6 +169,8 @@ DANGEROUS_PATTERNS = [
     (r'\b(bash|sh|zsh|ksh)\s+-[^\s]*c(\s+|$)', "shell command via -c/-lc flag"),
     (r'\b(python[23]?|perl|ruby|node)\s+-[ec]\s+', "script execution via -e/-c flag"),
     (r'\b(curl|wget)\b.*\|\s*(ba)?sh\b', "pipe remote content to shell"),
+    (r'\b(curl|wget)\b.*\|\s*python[23]?\b', "pipe remote content to interpreter"),
+    (r'\b(curl|wget)\b.*\|\s*(perl|ruby|node)\b', "pipe remote content to interpreter"),
     (r'\b(bash|sh|zsh|ksh)\s+<\s*<?\s*\(\s*(curl|wget)\b', "execute remote script via process substitution"),
     (rf'\btee\b.*["\']?{_SENSITIVE_WRITE_TARGET}', "overwrite system file via tee"),
     (rf'>>?\s*["\']?{_SENSITIVE_WRITE_TARGET}', "overwrite system file via redirection"),
@@ -208,6 +283,42 @@ _session_approved: dict[str, set] = {}
 _session_yolo: set[str] = set()
 _permanent_approved: set = set()
 
+# Justification state: tracks commands awaiting justification before approval.
+# (session_key, cmd_hash) -> {"command": str, "pattern_key": str, "pattern_keys": list,
+#                             "description": str, "command_hash": str, "retries": int}
+_pending_approvals: dict[tuple, dict] = {}
+# (session_key, cmd_hash) -> justification text (set by agent via param, consumed on retry)
+_pending_justifications: dict[tuple, str] = {}
+# Max retries before auto-blocking a command stuck in justification_required loop
+_MAX_JUSTIFICATION_RETRIES = 3
+
+
+def provide_command_justification(
+    session_key: str, cmd_hash: str, justification: str
+) -> bool:
+    """Store justification for a pending approval. Returns True if there was
+    a pending approval waiting for justification."""
+    key = (session_key, cmd_hash)
+    with _lock:
+        if key in _pending_approvals:
+            _pending_justifications[key] = justification
+            return True
+        return False
+
+
+def _get_pending_justification(session_key: str, cmd_hash: str) -> tuple:
+    """Check if justification exists for this command.
+    Returns (has_justification, justification_text, is_same_command, retry_count)."""
+    key = (session_key, cmd_hash)
+    pending = _pending_approvals.get(key)
+    if not pending:
+        return (False, None, False, 0)
+    retries = pending.get("retries", 0)
+    justification = _pending_justifications.get(key)
+    if justification:
+        return (True, justification, True, retries)
+    return (False, None, False, retries)
+
 # =========================================================================
 # Blocking gateway approval (mirrors CLI's synchronous input() flow)
 # =========================================================================
@@ -254,6 +365,11 @@ def unregister_gateway_notify(session_key: str) -> None:
         entries = _gateway_queues.pop(session_key, [])
         for entry in entries:
             entry.event.set()
+        # Clean up any pending justification state for this session
+        stale_keys = [k for k in _pending_approvals if k[0] == session_key]
+        for k in stale_keys:
+            _pending_approvals.pop(k, None)
+            _pending_justifications.pop(k, None)
 
 
 def resolve_gateway_approval(session_key: str, choice: str,
@@ -555,7 +671,12 @@ def _smart_approve(command: str, description: str) -> str:
     (openai/codex#13860).
     """
     try:
-        from agent.auxiliary_client import call_llm
+        from agent.auxiliary_client import get_text_auxiliary_client, auxiliary_max_tokens_param
+
+        client, model = get_text_auxiliary_client(task="approval")
+        if not client or not model:
+            logger.debug("Smart approvals: no aux client available, escalating")
+            return "escalate"
 
         prompt = f"""You are a security reviewer for an AI coding agent. A terminal command was flagged by pattern matching as potentially dangerous.
 
@@ -571,11 +692,11 @@ Rules:
 
 Respond with exactly one word: APPROVE, DENY, or ESCALATE"""
 
-        response = call_llm(
-            task="approval",
+        response = client.chat.completions.create(
+            model=model,
             messages=[{"role": "user", "content": prompt}],
+            **auxiliary_max_tokens_param(16),
             temperature=0,
-            max_tokens=16,
         )
 
         answer = (response.choices[0].message.content or "").strip().upper()
@@ -648,27 +769,49 @@ def check_dangerous_command(command: str, env_type: str,
             "pattern_key": pattern_key,
             "description": description,
         })
+        hint = _get_safer_hint(pattern_key)
+        self_correct_msg = (
+            f"⚠️ This command is potentially dangerous ({description}). "
+            "Asking the user for approval.\n\n"
+        )
+        if hint:
+            self_correct_msg += (
+                f"💡 SAFER ALTERNATIVE: {hint}\n\n"
+                "Try a safer approach first. Only request user approval if no safe "
+                "alternative exists for your goal.\n\n"
+            )
+        self_correct_msg += (
+            f"**Command:**\n```\n{command}\n```\n\n"
+            "If a safe alternative is not possible, the user will be asked to approve."
+        )
         return {
             "approved": False,
             "pattern_key": pattern_key,
             "status": "approval_required",
             "command": command,
             "description": description,
-            "message": (
-                f"⚠️ This command is potentially dangerous ({description}). "
-                f"Asking the user for approval.\n\n**Command:**\n```\n{command}\n```"
-            ),
+            "message": self_correct_msg,
+            "safer_hint": hint,
         }
 
     choice = prompt_dangerous_approval(command, description,
                                        approval_callback=approval_callback)
 
     if choice == "deny":
+        hint = _get_safer_hint(pattern_key)
+        deny_msg = (
+            f"BLOCKED: User denied this potentially dangerous command "
+            f"(matched '{description}' pattern). Do NOT retry this command — "
+            "the user has explicitly rejected it. Try a safer alternative instead."
+        )
+        if hint:
+            deny_msg += f"\n\n💡 SAFER ALTERNATIVE: {hint}"
         return {
             "approved": False,
-            "message": f"BLOCKED: User denied this potentially dangerous command (matched '{description}' pattern). Do NOT retry this command - the user has explicitly rejected it.",
+            "message": deny_msg,
             "pattern_key": pattern_key,
             "description": description,
+            "safer_hint": hint,
         }
 
     if choice == "session":
@@ -713,13 +856,23 @@ def _format_tirith_description(tirith_result: dict) -> str:
 
 
 def check_all_command_guards(command: str, env_type: str,
-                             approval_callback=None) -> dict:
+                             approval_callback=None,
+                             justification: str = None) -> dict:
     """Run all pre-exec security checks and return a single approval decision.
 
     Gathers findings from tirith and dangerous-command detection, then
     presents them as a single combined approval request. This prevents
     a gateway force=True replay from bypassing one check when only the
     other was shown to the user.
+
+    Args:
+        command: The shell command to check.
+        env_type: Terminal backend type ('local', 'ssh', 'docker', etc.).
+        approval_callback: Optional CLI callback for interactive prompts.
+        justification: Agent's justification for why this command is needed.
+            When provided on retry, proceeds directly to user approval with
+            the justification included. When omitted on a flagged command,
+            returns justification_required first.
     """
     # Skip containers for both checks
     if env_type in ("docker", "singularity", "modal", "daytona"):
@@ -840,7 +993,78 @@ def check_all_command_guards(command: str, env_type: str,
         with _lock:
             notify_cb = _gateway_notify_cbs.get(session_key)
 
+        # Effective justification (from param or pending state)
+        cmd_hash = hashlib.sha256(command.encode()).hexdigest()[:16]
+        pending_key = (session_key, cmd_hash)
+        effective_justification = justification
+        if not effective_justification:
+            with _lock:
+                _, effective_justification, _, _ = _get_pending_justification(
+                    session_key, cmd_hash)
+
         if notify_cb is not None:
+            # --- Phase 3a: Justification gate (blocking gateway only) ---
+            # Before notifying the user, require the agent to justify why
+            # this command is necessary.  If justification is provided in the
+            # call, proceed directly.  Otherwise, return justification_required.
+            if not effective_justification:
+                # Check retry count to prevent infinite loops
+                with _lock:
+                    existing = _pending_approvals.get(pending_key)
+                    retries = (existing.get("retries", 0) + 1) if existing else 1
+                    # Atomically: check limit AND store — no TOCTOU between threads
+                    if retries > _MAX_JUSTIFICATION_RETRIES:
+                        _pending_approvals.pop(pending_key, None)
+                        _pending_justifications.pop(pending_key, None)
+                        _blocked = True
+                    else:
+                        _pending_approvals[pending_key] = {
+                            "command": command,
+                            "pattern_key": primary_key,
+                            "pattern_keys": all_keys,
+                            "description": combined_desc,
+                            "command_hash": cmd_hash,
+                            "retries": retries,
+                        }
+                        _blocked = False
+
+                if _blocked:
+                    return {
+                        "approved": False,
+                        "message": (
+                            f"BLOCKED: Command rejected after {_MAX_JUSTIFICATION_RETRIES} "
+                            f"attempts without justification. "
+                            f"You MUST provide a justification using the `justification` parameter "
+                            f"before retrying. Example: terminal(command=\"...\", justification=\"...\")"
+                        ),
+                        "pattern_key": primary_key,
+                        "description": combined_desc,
+                    }
+
+                # Not blocked — return justification_required with retry count
+                return {
+                    "approved": False,
+                    "status": "justification_required",
+                    "command": command,
+                    "description": combined_desc,
+                    "pattern_key": primary_key,
+                    "pattern_keys": all_keys,
+                    "message": (
+                        f"\u26d4 This command needs approval ({combined_desc}).\n\n"
+                        f"**Command:**\n```\n{command}\n```\n\n"
+                        f"Before this can be sent to the user for approval, you MUST provide a justification. "
+                        f"Retry this command with the `justification` parameter explaining:\n"
+                        f"1. Why this command is necessary for the current task\n"
+                        f"2. Why it's safe (if applicable)\n\n"
+                        f"(Attempt {retries}/{_MAX_JUSTIFICATION_RETRIES})"
+                    ),
+                }
+
+            # Justification provided — clean up state and proceed to notify user
+            with _lock:
+                _pending_approvals.pop(pending_key, None)
+                _pending_justifications.pop(pending_key, None)
+
             # --- Blocking gateway approval (queue-based) ---
             # Each call gets its own _ApprovalEntry so parallel subagents
             # and execute_code threads can block concurrently.
@@ -849,6 +1073,7 @@ def check_all_command_guards(command: str, env_type: str,
                 "pattern_key": primary_key,
                 "pattern_keys": all_keys,
                 "description": combined_desc,
+                "justification": effective_justification,
             }
             entry = _ApprovalEntry(approval_data)
             with _lock:
@@ -921,11 +1146,23 @@ def check_all_command_guards(command: str, env_type: str,
             choice = entry.result
             if not resolved or choice is None or choice == "deny":
                 reason = "timed out" if not resolved else "denied by user"
+                deny_msg = (
+                    f"BLOCKED: Command {reason}. Do NOT retry this command. "
+                    "Try a safer alternative instead."
+                )
+                # Append hints for the first warning with a safer alternative
+                first_hint = None
+                for key, desc, is_t in warnings:
+                    first_hint = _get_safer_hint(key)
+                    if first_hint:
+                        deny_msg += f"\n\n💡 SAFER ALTERNATIVE: {first_hint}"
+                        break
                 return {
                     "approved": False,
-                    "message": f"BLOCKED: Command {reason}. Do NOT retry this command.",
+                    "message": deny_msg,
                     "pattern_key": primary_key,
                     "description": combined_desc,
+                    "safer_hint": first_hint,
                 }
 
             # User approved — persist based on scope (same logic as CLI)
@@ -950,15 +1187,32 @@ def check_all_command_guards(command: str, env_type: str,
             "pattern_keys": all_keys,
             "description": combined_desc,
         })
+        # Build self-correction hint
+        self_correct_msg = (
+            f"⚠️ {combined_desc}. Asking the user for approval.\n\n"
+        )
+        first_hint = None
+        for key, desc, is_t in warnings:
+            first_hint = _get_safer_hint(key)
+            if first_hint:
+                self_correct_msg += (
+                    f"💡 SAFER ALTERNATIVE: {first_hint}\n\n"
+                    "Try a safer approach first. Only request user approval if no safe "
+                    "alternative exists for your goal.\n\n"
+                )
+                break
+        self_correct_msg += (
+            f"**Command:**\n```\n{command}\n```\n\n"
+            "If a safe alternative is not possible, the user will be asked to approve."
+        )
         return {
             "approved": False,
             "pattern_key": primary_key,
             "status": "approval_required",
             "command": command,
             "description": combined_desc,
-            "message": (
-                f"⚠️ {combined_desc}. Asking the user for approval.\n\n**Command:**\n```\n{command}\n```"
-            ),
+            "message": self_correct_msg,
+            "safer_hint": first_hint,
         }
 
     # CLI interactive: single combined prompt
@@ -968,11 +1222,20 @@ def check_all_command_guards(command: str, env_type: str,
                                        approval_callback=approval_callback)
 
     if choice == "deny":
+        deny_msg = "BLOCKED: User denied. Do NOT retry. Try a safer alternative instead."
+        first_hint = None
+        for key, desc, is_t in warnings:
+            if not is_t:
+                first_hint = _get_safer_hint(key)
+                if first_hint:
+                    deny_msg += f"\n\n💡 SAFER ALTERNATIVE: {first_hint}"
+                break
         return {
             "approved": False,
-            "message": "BLOCKED: User denied. Do NOT retry.",
+            "message": deny_msg,
             "pattern_key": primary_key,
             "description": combined_desc,
+            "safer_hint": first_hint,
         }
 
     # Persist approval for each warning individually

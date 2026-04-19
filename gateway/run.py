@@ -9722,6 +9722,7 @@ class GatewayRunner:
 
                 cmd = approval_data.get("command", "")
                 desc = approval_data.get("description", "dangerous command")
+                justification = approval_data.get("justification", "")
 
                 # Prefer button-based approval when the adapter supports it.
                 # Check the *class* for the method, not the instance — avoids
@@ -9735,6 +9736,7 @@ class GatewayRunner:
                                 session_key=_approval_session_key,
                                 description=desc,
                                 metadata=_status_thread_metadata,
+                                justification=justification,
                             ),
                             _loop_for_step,
                         ).result(timeout=15)
@@ -9751,10 +9753,16 @@ class GatewayRunner:
 
                 # Fallback: plain text approval prompt
                 cmd_preview = cmd[:200] + "..." if len(cmd) > 200 else cmd
+                justification_block = ""
+                if justification:
+                    justification_block = (
+                        f"\n\n🤖 **Agent's justification:**\n{justification}\n"
+                    )
                 msg = (
                     f"⚠️ **Dangerous command requires approval:**\n"
                     f"```\n{cmd_preview}\n```\n"
-                    f"Reason: {desc}\n\n"
+                    f"Reason: {desc}"
+                    f"{justification_block}\n"
                     f"Reply `/approve` to execute, `/approve session` to approve this pattern "
                     f"for the session, `/approve always` to approve permanently, or `/deny` to cancel."
                 )
