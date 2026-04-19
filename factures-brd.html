@@ -202,23 +202,24 @@
 
         .btn-generate:active { transform: scale(0.99); }
 
-        /* ===== INVOICE OVERLAY ===== */
-        #invoice-overlay {
+        /* ===== INVOICE SECTION ===== */
+        #invoice-section {
             display: none;
-            position: fixed;
-            inset: 0;
-            background: rgba(5,10,30,0.72);
-            z-index: 1000;
-            overflow-y: auto;
-            padding: 28px 16px 48px;
+            background: var(--bg);
+            min-height: 100vh;
+            padding-bottom: 60px;
         }
 
         .invoice-toolbar {
-            max-width: 820px;
-            margin: 0 auto 16px;
+            background: var(--navy);
+            padding: 12px 20px;
             display: flex;
             gap: 10px;
             justify-content: flex-end;
+            position: sticky;
+            top: 0;
+            z-index: 10;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.3);
         }
 
         .btn-pdf {
@@ -231,10 +232,8 @@
             font-weight: 700;
             cursor: pointer;
             letter-spacing: 0.04em;
-            transition: opacity 0.15s;
+            -webkit-tap-highlight-color: transparent;
         }
-
-        .btn-pdf:hover { opacity: 0.88; }
 
         .btn-close {
             padding: 10px 22px;
@@ -246,10 +245,14 @@
             font-weight: 700;
             cursor: pointer;
             letter-spacing: 0.04em;
-            transition: opacity 0.15s;
+            -webkit-tap-highlight-color: transparent;
         }
 
-        .btn-close:hover { opacity: 0.88; }
+        .invoice-doc-wrap {
+            max-width: 820px;
+            margin: 24px auto;
+            padding: 0 12px;
+        }
 
         /* ===== INVOICE DOCUMENT ===== */
         #invoice-doc {
@@ -592,20 +595,20 @@
             body { background: white !important; }
 
             .app-header,
-            .container { display: none !important; }
+            #form-section { display: none !important; }
 
-            #invoice-overlay {
+            #invoice-section {
                 display: block !important;
-                position: static !important;
-                background: none !important;
+                background: white !important;
                 padding: 0 !important;
-                overflow: visible !important;
             }
 
             .invoice-toolbar { display: none !important; }
 
+            .invoice-doc-wrap { margin: 0 !important; padding: 0 !important; max-width: 100% !important; }
+
             #invoice-doc {
-                padding: 28px 36px 28px !important;
+                padding: 20px 32px !important;
                 max-width: 100% !important;
                 box-shadow: none !important;
             }
@@ -627,6 +630,7 @@
 </header>
 
 <!-- ===== FORM ===== -->
+<div id="form-section">
 <div class="container">
     <div class="card">
         <div class="card-title">
@@ -638,7 +642,7 @@
         <div class="form-row">
             <div class="form-group">
                 <label>N° de facture</label>
-                <input type="text" id="f-num" placeholder="Ex : 2026-001" />
+                <input type="text" id="f-num" placeholder="Ex : 2026-001" autocomplete="off" />
             </div>
             <div class="form-group">
                 <label>Date</label>
@@ -679,14 +683,17 @@
         <button class="btn-generate" onclick="genInvoice()">Générer la facture</button>
     </div>
 </div>
+</div>
 
-<!-- ===== INVOICE OVERLAY ===== -->
-<div id="invoice-overlay">
+<!-- ===== INVOICE SECTION ===== -->
+<div id="invoice-section">
     <div class="invoice-toolbar">
-        <button class="btn-pdf" onclick="window.print()">🖨️&nbsp; Imprimer / Enregistrer en PDF</button>
-        <button class="btn-close" onclick="closeInvoice()">✕&nbsp; Fermer</button>
+        <button class="btn-pdf" onclick="window.print()">🖨️&nbsp; PDF / Imprimer</button>
+        <button class="btn-close" onclick="closeInvoice()">← Nouvelle facture</button>
     </div>
-    <div id="invoice-doc"></div>
+    <div class="invoice-doc-wrap">
+        <div id="invoice-doc"></div>
+    </div>
 </div>
 
 <script>
@@ -883,14 +890,16 @@
         </div>
         `;
 
-        document.getElementById('invoice-overlay').style.display = 'block';
-        document.body.style.overflow = 'hidden';
+        document.getElementById('form-section').style.display = 'none';
+        document.getElementById('invoice-section').style.display = 'block';
+        window.scrollTo(0, 0);
     }
 
     /* ===== CLOSE ===== */
     function closeInvoice() {
-        document.getElementById('invoice-overlay').style.display = 'none';
-        document.body.style.overflow = '';
+        document.getElementById('invoice-section').style.display = 'none';
+        document.getElementById('form-section').style.display = 'block';
+        window.scrollTo(0, 0);
         /* Propose next number */
         const { year, n } = getCounter();
         document.getElementById('f-num').value = fmtNum(year, n + 1);
