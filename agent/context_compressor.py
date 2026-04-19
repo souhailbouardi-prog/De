@@ -283,6 +283,7 @@ class ContextCompressor(ContextEngine):
         protect_first_n: int = 3,
         protect_last_n: int = 20,
         summary_target_ratio: float = 0.20,
+        summary_ratio: float = 0.20,       # fraction of compressed content allocated to summary detail
         quiet_mode: bool = False,
         summary_model_override: str = None,
         base_url: str = "",
@@ -300,6 +301,7 @@ class ContextCompressor(ContextEngine):
         self.protect_first_n = protect_first_n
         self.protect_last_n = protect_last_n
         self.summary_target_ratio = max(0.10, min(summary_target_ratio, 0.80))
+        self.summary_ratio = max(0.10, min(summary_ratio, 0.80))
         self.quiet_mode = quiet_mode
 
         self.context_length = get_model_context_length(
@@ -527,12 +529,14 @@ class ContextCompressor(ContextEngine):
     def _compute_summary_budget(self, turns_to_summarize: List[Dict[str, Any]]) -> int:
         """Scale summary token budget with the amount of content being compressed.
 
+        Uses the configurable ``summary_ratio`` (default 0.20, clamped 0.10–0.80)
+        to determine how much of the compressed content survives into the summary.
         The maximum scales with the model's context window (5% of context,
         capped at ``_SUMMARY_TOKENS_CEILING``) so large-context models get
         richer summaries instead of being hard-capped at 8K tokens.
         """
         content_tokens = estimate_messages_tokens_rough(turns_to_summarize)
-        budget = int(content_tokens * _SUMMARY_RATIO)
+        budget = int(content_tokens * self.summary_ratio)
         return max(_MIN_SUMMARY_TOKENS, min(budget, self.max_summary_tokens))
 
     # Truncation limits for the summarizer input.  These bound how much of

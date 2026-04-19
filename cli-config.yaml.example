@@ -324,6 +324,12 @@ compression:
   # Range: 0.10 - 0.80
   target_ratio: 0.20
 
+  # Fraction of compressed content to allocate to the summary (default: 0.20 = 20%)
+  # Higher values = more detailed summaries (less lossy).  Lower values = shorter summaries.
+  # e.g. 100K tokens being compressed at 0.20 → ~20K summary; at 0.50 → ~50K summary.
+  # Range: 0.10 - 0.80
+  summary_ratio: 0.20
+
   # Number of most-recent messages to always preserve (default: 20 ≈ 10 full turns)
   # Higher values keep more recent conversation intact at the cost of more aggressive
   # compression of older turns.

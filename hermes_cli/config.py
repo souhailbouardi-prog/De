@@ -450,6 +450,7 @@ DEFAULT_CONFIG = {
         "enabled": True,
         "threshold": 0.50,            # compress when context usage exceeds this ratio
         "target_ratio": 0.20,         # fraction of threshold to preserve as recent tail
+        "summary_ratio": 0.20,        # fraction of compressed content allocated to summary detail (0.10–0.80)
         "protect_last_n": 20,         # minimum recent messages to keep uncompressed
 
     },

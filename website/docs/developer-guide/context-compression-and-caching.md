@@ -185,7 +185,7 @@ template:
 ```
 
 Summary budget scales with the amount of content being compressed:
-- Formula: `content_tokens × 0.20` (the `_SUMMARY_RATIO` constant)
+- Formula: `content_tokens × summary_ratio` (configurable via `compression.summary_ratio`, default 0.20, clamped 0.10–0.80)
 - Minimum: 2,000 tokens
 - Maximum: `min(context_length × 0.05, 12,000)` tokens
 
