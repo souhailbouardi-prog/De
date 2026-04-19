@@ -6847,7 +6847,7 @@ class AIAgent:
             ephemeral_out = getattr(self, "_ephemeral_max_output_tokens", None)
             if ephemeral_out is not None:
                 self._ephemeral_max_output_tokens = None  # consume immediately
-            return build_anthropic_kwargs(
+            kwargs = build_anthropic_kwargs(
                 model=self.model,
                 messages=anthropic_messages,
                 tools=self.tools,
@@ -6859,6 +6859,10 @@ class AIAgent:
                 base_url=getattr(self, "_anthropic_base_url", None),
                 fast_mode=(self.request_overrides or {}).get("speed") == "fast",
             )
+            # OpenCode Go/Zen prompt caching via Anthropic Messages route.
+            if "opencode.ai" in getattr(self, "_base_url_lower", "") and getattr(self, "session_id", None):
+                kwargs.setdefault("extra_headers", {})["x-opencode-session"] = self.session_id
+            return kwargs
 
         # AWS Bedrock native Converse API — bypasses the OpenAI client entirely.
         # The adapter handles message/tool conversion and boto3 calls directly.
@@ -6952,6 +6956,10 @@ class AIAgent:
 
             if is_xai_responses and getattr(self, "session_id", None):
                 kwargs["extra_headers"] = {"x-grok-conv-id": self.session_id}
+
+            # OpenCode Go/Zen prompt caching via Codex Responses route.
+            if "opencode.ai" in getattr(self, "_base_url_lower", "") and getattr(self, "session_id", None):
+                kwargs.setdefault("extra_headers", {})["x-opencode-session"] = self.session_id
 
             return kwargs
 
@@ -7159,6 +7167,12 @@ class AIAgent:
         # Applied last so overrides win over any defaults set above.
         if self.request_overrides:
             api_kwargs.update(self.request_overrides)
+
+        # OpenCode Go/Zen prompt caching: send x-opencode-session header
+        # so the proxy can cache the prompt prefix across requests in the
+        # same conversation.
+        if "opencode.ai" in getattr(self, "_base_url_lower", "") and getattr(self, "session_id", None):
+            api_kwargs.setdefault("extra_headers", {})["x-opencode-session"] = self.session_id
 
         return api_kwargs
 

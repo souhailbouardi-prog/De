@@ -1089,6 +1089,125 @@ class TestBuildApiKwargs:
         assert kwargs.get("extra_body", {}).get("think") is None
 
 
+class TestOpencodeSessionHeader:
+    """x-opencode-session header for prompt caching on OpenCode Go/Zen.
+
+    All three API modes (chat_completions, anthropic_messages, codex_responses)
+    are used by opencode providers depending on the model:
+      opencode-go:  chat_completions (default), anthropic_messages (minimax-*)
+      opencode-zen: chat_completions (default), anthropic_messages (claude-*),
+                    codex_responses (gpt-*)
+    """
+
+    # -- chat_completions path --
+
+    def test_header_injected_chat_completions(self, agent):
+        agent.base_url = "https://opencode.ai/zen/go/v1"
+        agent.session_id = "test-session-123"
+        messages = [{"role": "user", "content": "hi"}]
+        kwargs = agent._build_api_kwargs(messages)
+        assert kwargs["extra_headers"]["x-opencode-session"] == "test-session-123"
+
+    def test_no_header_without_session_id(self, agent):
+        agent.base_url = "https://opencode.ai/zen/go/v1"
+        agent.session_id = None
+        messages = [{"role": "user", "content": "hi"}]
+        kwargs = agent._build_api_kwargs(messages)
+        assert "extra_headers" not in kwargs
+
+    def test_no_header_for_other_providers(self, agent):
+        agent.base_url = "https://openrouter.ai/api/v1"
+        agent.session_id = "test-session-123"
+        messages = [{"role": "user", "content": "hi"}]
+        kwargs = agent._build_api_kwargs(messages)
+        assert "extra_headers" not in kwargs
+
+    def test_header_follows_model_switch(self, agent):
+        agent.base_url = "https://openrouter.ai/api/v1"
+        agent.session_id = "test-session-123"
+        messages = [{"role": "user", "content": "hi"}]
+        kwargs = agent._build_api_kwargs(messages)
+        assert "extra_headers" not in kwargs
+
+        # Switch to opencode
+        agent.base_url = "https://opencode.ai/zen/go/v1"
+        kwargs = agent._build_api_kwargs(messages)
+        assert kwargs["extra_headers"]["x-opencode-session"] == "test-session-123"
+
+    def test_header_follows_session_id_change(self, agent):
+        agent.base_url = "https://opencode.ai/zen/go/v1"
+        agent.session_id = "parent-session"
+        messages = [{"role": "user", "content": "hi"}]
+        kwargs = agent._build_api_kwargs(messages)
+        assert kwargs["extra_headers"]["x-opencode-session"] == "parent-session"
+
+        # Simulate context compression rotating session_id
+        agent.session_id = "child-session-456"
+        kwargs = agent._build_api_kwargs(messages)
+        assert kwargs["extra_headers"]["x-opencode-session"] == "child-session-456"
+
+    # -- anthropic_messages path --
+
+    def test_header_injected_anthropic_messages(self, agent):
+        agent.base_url = "https://opencode.ai/zen/go/v1"
+        agent.api_mode = "anthropic_messages"
+        agent.session_id = "test-session-123"
+        agent._anthropic_client = MagicMock()
+        messages = [{"role": "user", "content": "hi"}]
+        kwargs = agent._build_api_kwargs(messages)
+        assert kwargs["extra_headers"]["x-opencode-session"] == "test-session-123"
+
+    def test_no_header_anthropic_messages_non_opencode(self, agent):
+        agent.base_url = "https://api.anthropic.com"
+        agent.api_mode = "anthropic_messages"
+        agent.session_id = "test-session-123"
+        agent._anthropic_client = MagicMock()
+        messages = [{"role": "user", "content": "hi"}]
+        kwargs = agent._build_api_kwargs(messages)
+        assert "x-opencode-session" not in kwargs.get("extra_headers", {})
+
+    # -- codex_responses path --
+
+    def test_header_injected_codex_responses(self):
+        with (
+            patch("run_agent.get_tool_definitions", return_value=[]),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+        ):
+            a = AIAgent(
+                api_key="test-key-1234567890",
+                base_url="https://opencode.ai/zen/v1",
+                api_mode="codex_responses",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+            a.client = MagicMock()
+            a.session_id = "test-session-123"
+            a.model = "gpt-5"
+            kwargs = a._build_api_kwargs([{"role": "user", "content": "hi"}])
+            assert kwargs["extra_headers"]["x-opencode-session"] == "test-session-123"
+
+    def test_no_header_codex_responses_non_opencode(self):
+        with (
+            patch("run_agent.get_tool_definitions", return_value=[]),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+        ):
+            a = AIAgent(
+                api_key="test-key-1234567890",
+                base_url="https://api.openai.com/v1",
+                api_mode="codex_responses",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+            a.client = MagicMock()
+            a.session_id = "test-session-123"
+            a.model = "gpt-5"
+            kwargs = a._build_api_kwargs([{"role": "user", "content": "hi"}])
+            assert "x-opencode-session" not in kwargs.get("extra_headers", {})
+
 
 class TestBuildAssistantMessage:
     def test_basic_message(self, agent):
