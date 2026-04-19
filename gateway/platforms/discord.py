@@ -1096,6 +1096,8 @@ class DiscordAdapter(BasePlatformAdapter):
         chat_id: str,
         message_id: str,
         content: str,
+        *,
+        finalize: bool = False,
     ) -> SendResult:
         """Edit a previously sent Discord message."""
         if not self._client:
