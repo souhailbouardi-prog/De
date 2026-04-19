@@ -2305,7 +2305,10 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
                 new_entry = {"api": old_url}
                 if old_name:
                     new_entry["name"] = old_name
-                if old_key and old_key not in ("no-key", "no-key-required", ""):
+                old_key_env = entry.get("api_key_env", "")
+                if old_key_env:
+                    new_entry["api_key_env"] = old_key_env
+                elif old_key and old_key not in ("no-key", "no-key-required", ""):
                     new_entry["api_key"] = old_key
 
                 # Carry over model and api_mode if present

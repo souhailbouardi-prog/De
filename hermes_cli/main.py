@@ -293,7 +293,8 @@ def _has_any_provider_configured() -> bool:
         cfg_provider = (model_cfg.get("provider") or "").strip()
         cfg_base_url = (model_cfg.get("base_url") or "").strip()
         cfg_api_key = (model_cfg.get("api_key") or "").strip()
-        if cfg_provider or cfg_base_url or cfg_api_key:
+        cfg_api_key_env = (model_cfg.get("api_key_env") or "").strip()
+        if cfg_provider or cfg_base_url or cfg_api_key or cfg_api_key_env:
             return True
 
     # Check for Claude Code OAuth credentials (~/.claude/.credentials.json)
@@ -1437,6 +1438,7 @@ def select_provider_and_model(args=None):
                 "base_url": base_url,
                 "api_key": entry.get("api_key", ""),
                 "key_env": entry.get("key_env", ""),
+                "api_key_env": entry.get("api_key_env", ""),
                 "model": entry.get("model", ""),
                 "api_mode": entry.get("api_mode", ""),
                 "provider_key": provider_key,
@@ -2372,7 +2374,7 @@ def _model_flow_custom(config):
     so it appears in the provider menu on subsequent runs.
     """
     from hermes_cli.auth import _save_model_choice, deactivate_provider
-    from hermes_cli.config import get_env_value, load_config, save_config
+    from hermes_cli.config import get_env_value, load_config, save_config, save_env_value
 
     current_url = get_env_value("OPENAI_BASE_URL") or ""
     current_key = get_env_value("OPENAI_API_KEY") or ""
@@ -2525,7 +2527,10 @@ def _model_flow_custom(config):
         model["provider"] = "custom"
         model["base_url"] = effective_url
         if effective_key:
-            model["api_key"] = effective_key
+            env_var = _custom_provider_env_var(effective_url)
+            save_env_value(env_var, effective_key)
+            model["api_key_env"] = env_var
+            model.pop("api_key", None)
         model.pop("api_mode", None)  # let runtime auto-detect from URL
         save_config(cfg)
         deactivate_provider()
@@ -2548,7 +2553,10 @@ def _model_flow_custom(config):
         _caller_model["provider"] = "custom"
         _caller_model["base_url"] = effective_url
         if effective_key:
-            _caller_model["api_key"] = effective_key
+            env_var = _custom_provider_env_var(effective_url)
+            save_env_value(env_var, effective_key)
+            _caller_model["api_key_env"] = env_var
+            _caller_model.pop("api_key", None)
         _caller_model.pop("api_mode", None)
         config["model"] = _caller_model
         print("Endpoint saved. Use `/model` in chat or `hermes model` to set a model.")
@@ -2584,6 +2592,19 @@ def _auto_provider_name(base_url: str) -> str:
     return name
 
 
+def _custom_provider_env_var(base_url: str) -> str:
+    """Derive a deterministic env-var name from a custom provider URL."""
+    import re
+
+    clean = base_url.replace("https://", "").replace("http://", "").rstrip("/")
+    clean = re.sub(r"/v1/?$", "", clean)
+    hostname = clean.split("/")[0].split(":")[0]
+    sanitized = re.sub(r"[^A-Za-z0-9]", "_", hostname).strip("_").upper()
+    if not sanitized:
+        sanitized = "ENDPOINT"
+    return f"CUSTOM_{sanitized}_API_KEY"
+
+
 def _save_custom_provider(
     base_url, api_key="", model="", context_length=None, name=None
 ):
@@ -2592,8 +2613,9 @@ def _save_custom_provider(
     Deduplicates by base_url — if the URL already exists, updates the
     model name and context_length but doesn't add a duplicate entry.
     Uses *name* when provided, otherwise auto-generates from the URL.
+    API keys are stored in .env via an environment variable reference.
     """
-    from hermes_cli.config import load_config, save_config
+    from hermes_cli.config import load_config, save_config, save_env_value
 
     cfg = load_config()
     providers = cfg.get("custom_providers") or []
@@ -2616,6 +2638,12 @@ def _save_custom_provider(
                 models_cfg[model] = {"context_length": context_length}
                 entry["models"] = models_cfg
                 changed = True
+            # Migrate legacy api_key to api_key_env
+            if entry.get("api_key"):
+                env_var = _custom_provider_env_var(base_url)
+                save_env_value(env_var, entry.pop("api_key"))
+                entry["api_key_env"] = env_var
+                changed = True
             if changed:
                 cfg["custom_providers"] = providers
                 save_config(cfg)
@@ -2627,7 +2655,9 @@ def _save_custom_provider(
 
     entry = {"name": name, "base_url": base_url}
     if api_key:
-        entry["api_key"] = api_key
+        env_var = _custom_provider_env_var(base_url)
+        save_env_value(env_var, api_key)
+        entry["api_key_env"] = env_var
     if model:
         entry["model"] = model
     if model and context_length:
@@ -2711,13 +2741,14 @@ def _model_flow_named_custom(config, provider_info):
     Falls back to the saved model if probing fails.
     """
     from hermes_cli.auth import _save_model_choice, deactivate_provider
-    from hermes_cli.config import load_config, save_config
+    from hermes_cli.config import get_env_value, load_config, save_config
     from hermes_cli.models import fetch_api_models
 
     name = provider_info["name"]
     base_url = provider_info["base_url"]
-    api_key = provider_info.get("api_key", "")
+    api_key_env = provider_info.get("api_key_env", "")
     key_env = provider_info.get("key_env", "")
+    api_key = (get_env_value(api_key_env) if api_key_env else "") or (get_env_value(key_env) if key_env else "") or provider_info.get("api_key", "")
     saved_model = provider_info.get("model", "")
     provider_key = (provider_info.get("provider_key") or "").strip()
 
@@ -2813,8 +2844,15 @@ def _model_flow_named_custom(config, provider_info):
     else:
         model["provider"] = "custom"
         model["base_url"] = base_url
-        if api_key:
-            model["api_key"] = api_key
+        if api_key_env:
+            model["api_key_env"] = api_key_env
+            model.pop("api_key", None)
+        elif api_key:
+            env_var = _custom_provider_env_var(base_url)
+            from hermes_cli.config import save_env_value
+            save_env_value(env_var, api_key)
+            model["api_key_env"] = env_var
+            model.pop("api_key", None)
     # Apply api_mode from custom_providers entry, or clear stale value
     custom_api_mode = provider_info.get("api_mode", "")
     if custom_api_mode:

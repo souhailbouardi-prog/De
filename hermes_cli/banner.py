@@ -276,7 +276,8 @@ def prefetch_update_check():
 
 def get_update_result(timeout: float = 0.5) -> Optional[int]:
     """Get result of prefetched check. Returns None if not ready."""
-    _update_check_done.wait(timeout=timeout)
+    if not _update_check_done.wait(timeout=timeout):
+        return None
     return _update_result
 
 
