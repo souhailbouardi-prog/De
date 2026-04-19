@@ -632,6 +632,7 @@ class APIServerAdapter(BasePlatformAdapter):
             )
 
         stream = body.get("stream", False)
+        stream_tool_progress = body.get("stream_tool_progress", True)
 
         # Extract system message (becomes ephemeral system prompt layered ON TOP of core)
         system_prompt = None
@@ -761,6 +762,12 @@ class APIServerAdapter(BasePlatformAdapter):
                     "label": label,
                 }))
 
+            # When stream_tool_progress is false (or the client explicitly
+            # disables it), suppress the callback so no tool echo reaches
+            # the SSE stream — useful for voice-based and latency-sensitive
+            # frontends that only want the final answer.
+            _tool_progress_cb = _on_tool_progress if stream_tool_progress else None
+
             # Start agent in background.  agent_ref is a mutable container
             # so the SSE writer can interrupt the agent on client disconnect.
             agent_ref = [None]
@@ -770,7 +777,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 ephemeral_system_prompt=system_prompt,
                 session_id=session_id,
                 stream_delta_callback=_on_delta,
-                tool_progress_callback=_on_tool_progress,
+                tool_progress_callback=_tool_progress_cb,
                 agent_ref=agent_ref,
             ))
 

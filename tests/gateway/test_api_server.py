@@ -650,6 +650,76 @@ class TestChatCompletionsEndpoint:
                 assert '"label": "Python docs"' in body
 
     @pytest.mark.asyncio
+    async def test_stream_tool_progress_disabled(self, adapter):
+        """stream_tool_progress=false suppresses tool echo from the SSE stream."""
+        import asyncio
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            async def _mock_run_agent(**kwargs):
+                cb = kwargs.get("stream_delta_callback")
+                tp_cb = kwargs.get("tool_progress_callback")
+                # tp_cb must be None when disabled
+                assert tp_cb is None, "tool_progress_callback should be None when stream_tool_progress=false"
+                if cb:
+                    await asyncio.sleep(0.05)
+                    cb("Final answer only.")
+                return (
+                    {"final_response": "Final answer only.", "messages": [], "api_calls": 1},
+                    {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15},
+                )
+
+            with patch.object(adapter, "_run_agent", side_effect=_mock_run_agent):
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    json={
+                        "model": "test",
+                        "messages": [{"role": "user", "content": "do stuff"}],
+                        "stream": True,
+                        "stream_tool_progress": False,
+                    },
+                )
+                assert resp.status == 200
+                body = await resp.text()
+                assert "[DONE]" in body
+                assert "Final answer only." in body
+
+    @pytest.mark.asyncio
+    async def test_stream_tool_progress_default_is_on(self, adapter):
+        """When stream_tool_progress is omitted, tool progress is streamed (default=True)."""
+        import asyncio
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            async def _mock_run_agent(**kwargs):
+                cb = kwargs.get("stream_delta_callback")
+                tp_cb = kwargs.get("tool_progress_callback")
+                # tp_cb must be present (not None) when default is on
+                assert tp_cb is not None, "tool_progress_callback should be present by default"
+                tp_cb("terminal", "ls", {"command": "ls"})
+                if cb:
+                    await asyncio.sleep(0.05)
+                    cb("Done.")
+                return (
+                    {"final_response": "Done.", "messages": [], "api_calls": 1},
+                    {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15},
+                )
+
+            with patch.object(adapter, "_run_agent", side_effect=_mock_run_agent):
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    json={
+                        "model": "test",
+                        "messages": [{"role": "user", "content": "list"}],
+                        "stream": True,
+                    },
+                )
+                assert resp.status == 200
+                body = await resp.text()
+                assert "ls" in body
+                assert "Done." in body
+
+    @pytest.mark.asyncio
     async def test_no_user_message_returns_400(self, adapter):
         app = _create_app(adapter)
         async with TestClient(TestServer(app)) as cli:
