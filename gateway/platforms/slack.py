@@ -114,6 +114,26 @@ class SlackAdapter(BasePlatformAdapter):
         self._thread_context_cache: Dict[str, _ThreadContextCache] = {}
         self._THREAD_CACHE_TTL = 60.0
 
+    def _reactions_enabled(self) -> bool:
+        """Check if message reactions (👀 / ✅) are enabled.
+
+        Controlled by the ``SLACK_REACTIONS`` environment variable or the
+        ``reactions`` key in the platform config.  Defaults to ``true``.
+
+        Example::
+
+            # .env
+            SLACK_REACTIONS=false
+
+            # config.yaml
+            slack:
+              reactions: false
+        """
+        cfg_value = self.config.extra.get("reactions")
+        if cfg_value is not None:
+            return str(cfg_value).lower() not in ("false", "0", "no")
+        return os.getenv("SLACK_REACTIONS", "true").lower() not in ("false", "0", "no")
+
     async def connect(self) -> bool:
         """Connect to Slack via Socket Mode."""
         if not SLACK_AVAILABLE:
@@ -1208,12 +1228,12 @@ class SlackAdapter(BasePlatformAdapter):
         # casual message would be noisy.
         _should_react = is_dm or is_mentioned
 
-        if _should_react:
+        if _should_react and self._reactions_enabled():
             await self._add_reaction(channel_id, ts, "eyes")
 
         await self.handle_message(msg_event)
 
-        if _should_react:
+        if _should_react and self._reactions_enabled():
             await self._remove_reaction(channel_id, ts, "eyes")
             await self._add_reaction(channel_id, ts, "white_check_mark")
 
