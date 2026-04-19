@@ -20,11 +20,12 @@ Public API (signatures preserved from the original 2,400-line version):
     check_tool_availability(quiet) -> tuple
 """
 
+import copy
 import json
 import asyncio
 import logging
 import threading
-from typing import Dict, Any, List, Optional, Tuple
+from typing import Dict, Any, List, Optional, Tuple, Union
 
 from tools.registry import discover_builtin_tools, registry
 from toolsets import resolve_toolset, validate_toolset
@@ -190,6 +191,72 @@ _LEGACY_TOOLSET_MAP = {
 
 
 # =============================================================================
+# Schema truncation for providers with strict size limits
+# =============================================================================
+
+def _truncate_tool_schema(
+    tool_def: Dict[str, Any],
+    max_top_description: int = 600,
+    max_param_description: int = 300,
+) -> Dict[str, Any]:
+    """Return a copy of a tool definition with description lengths capped.
+
+    Some providers (e.g. Moonshot/Kimi) reject requests when the aggregated
+    ``tools.function.parameters`` schema exceeds a maximum allowed size.
+    Trimming verbose natural-language descriptions is the safest way to stay
+    under the limit without losing structural schema information.
+    """
+    tool_def = copy.deepcopy(tool_def)
+    fn = tool_def.get("function")
+    if not isinstance(fn, dict):
+        return tool_def
+
+    desc = fn.get("description")
+    if isinstance(desc, str) and len(desc) > max_top_description:
+        fn["description"] = desc[: max_top_description - 3].rsplit(" ", 1)[0] + "..."
+        logger.debug(
+            "Truncated top-level description for tool %s (%d -> %d chars)",
+            fn.get("name", "?"),
+            len(desc),
+            len(fn["description"]),
+        )
+
+    params = fn.get("parameters")
+    if isinstance(params, dict):
+        _truncate_schema_descriptions(params, max_param_description)
+    return tool_def
+
+
+def _truncate_schema_descriptions(node: Any, max_chars: int) -> None:
+    """Recursively truncate ``description`` fields inside a JSON Schema dict."""
+    if not isinstance(node, dict):
+        return
+
+    desc = node.get("description")
+    if isinstance(desc, str) and len(desc) > max_chars:
+        node["description"] = desc[: max_chars - 3].rsplit(" ", 1)[0] + "..."
+
+    for key in ("properties", "additionalProperties", "patternProperties"):
+        child = node.get(key)
+        if isinstance(child, dict):
+            for v in child.values():
+                _truncate_schema_descriptions(v, max_chars)
+
+    # items can be a single schema dict or a list of schemas (tuple form)
+    items = node.get("items")
+    if isinstance(items, dict):
+        _truncate_schema_descriptions(items, max_chars)
+    elif isinstance(items, list):
+        for item in items:
+            _truncate_schema_descriptions(item, max_chars)
+
+    # anyOf / oneOf / allOf
+    for key in ("anyOf", "oneOf", "allOf"):
+        for item in node.get(key, []):
+            _truncate_schema_descriptions(item, max_chars)
+
+
+# =============================================================================
 # get_tool_definitions  (the main schema provider)
 # =============================================================================
 
@@ -311,6 +378,10 @@ def get_tool_definitions(
 
     global _last_resolved_tool_names
     _last_resolved_tool_names = [t["function"]["name"] for t in filtered_tools]
+
+    # Truncate verbose descriptions for providers with strict schema size limits
+    # (e.g. Moonshot/Kimi rejects "schema exceeds maximum allowed size").
+    filtered_tools = [_truncate_tool_schema(td) for td in filtered_tools]
 
     return filtered_tools
 

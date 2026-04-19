@@ -222,3 +222,116 @@ class TestBackwardCompat:
     def test_tool_to_toolset_map(self):
         assert isinstance(TOOL_TO_TOOLSET_MAP, dict)
         assert len(TOOL_TO_TOOLSET_MAP) > 0
+
+
+# =========================================================================
+# Schema truncation for size-limited providers (e.g. Moonshot/Kimi)
+# =========================================================================
+
+class TestTruncateToolSchema:
+    def test_top_level_description_truncated(self):
+        from model_tools import _truncate_tool_schema
+
+        tool = {
+            "type": "function",
+            "function": {
+                "name": "test",
+                "description": "A" * 1000,
+                "parameters": {"type": "object", "properties": {}},
+            },
+        }
+        result = _truncate_tool_schema(tool, max_top_description=100, max_param_description=50)
+        desc = result["function"]["description"]
+        assert len(desc) <= 100
+        assert desc.endswith("...")
+
+    def test_parameter_descriptions_truncated(self):
+        from model_tools import _truncate_tool_schema
+
+        tool = {
+            "type": "function",
+            "function": {
+                "name": "test",
+                "description": "Short",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "foo": {
+                            "type": "string",
+                            "description": "B" * 200,
+                        }
+                    },
+                },
+            },
+        }
+        result = _truncate_tool_schema(tool, max_top_description=500, max_param_description=80)
+        desc = result["function"]["parameters"]["properties"]["foo"]["description"]
+        assert len(desc) <= 80
+        assert desc.endswith("...")
+
+    def test_nested_items_descriptions_truncated(self):
+        from model_tools import _truncate_tool_schema
+
+        tool = {
+            "type": "function",
+            "function": {
+                "name": "test",
+                "description": "Short",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "bar": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "nested": {
+                                        "type": "string",
+                                        "description": "C" * 500,
+                                    }
+                                },
+                            },
+                        }
+                    },
+                },
+            },
+        }
+        result = _truncate_tool_schema(tool, max_top_description=500, max_param_description=100)
+        desc = result["function"]["parameters"]["properties"]["bar"]["items"]["properties"]["nested"]["description"]
+        assert len(desc) <= 100
+        assert desc.endswith("...")
+
+    def test_no_mutation_of_original(self):
+        from model_tools import _truncate_tool_schema
+
+        tool = {
+            "type": "function",
+            "function": {
+                "name": "test",
+                "description": "A" * 1000,
+                "parameters": {"type": "object", "properties": {}},
+            },
+        }
+        original_len = len(tool["function"]["description"])
+        _truncate_tool_schema(tool, max_top_description=100, max_param_description=50)
+        assert len(tool["function"]["description"]) == original_len
+
+    def test_short_descriptions_unchanged(self):
+        from model_tools import _truncate_tool_schema
+
+        tool = {
+            "type": "function",
+            "function": {
+                "name": "test",
+                "description": "Short desc",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "foo": {"type": "string", "description": "Also short"}
+                    },
+                },
+            },
+        }
+        result = _truncate_tool_schema(tool)
+        assert result["function"]["description"] == "Short desc"
+        assert result["function"]["parameters"]["properties"]["foo"]["description"] == "Also short"
