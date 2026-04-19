@@ -3759,7 +3759,12 @@ class GatewayRunner:
                 message_text = f"{context_note}\n\n{message_text}"
 
         if getattr(event, "reply_to_text", None) and event.reply_to_message_id:
-            reply_snippet = event.reply_to_text[:500]
+            full_reply_text = event.reply_to_text
+            _REPLY_TO_LIMIT = 3000
+            if len(full_reply_text) > _REPLY_TO_LIMIT:
+                reply_snippet = full_reply_text[:_REPLY_TO_LIMIT] + "\n... [truncated] Stashed changes
+            else:
+                reply_snippet = full_reply_text
             found_in_history = any(
                 reply_snippet[:200] in (msg.get("content") or "")
                 for msg in history
@@ -3767,6 +3772,10 @@ class GatewayRunner:
             )
             if not found_in_history:
                 message_text = f'[Replying to: "{reply_snippet}"]\n\n{message_text}'
+            else:
+                # 即使 parent message 在历史中，也加简短标记让 agent 知道在回复哪条
+                marker_preview = reply_snippet[:80].replace("\n", " ")
+                message_text = f'[Replying to earlier message: "{marker_preview}..."]\n\n{message_text}' Stashed changes
 
         if "@" in message_text:
             try:
