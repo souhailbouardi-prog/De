@@ -3,7 +3,7 @@
 import socket
 from unittest.mock import patch
 
-from tools.url_safety import is_safe_url, _is_blocked_ip
+from tools.url_safety import is_safe_url, _is_blocked_ip, resolve_and_validate_url
 
 import ipaddress
 import pytest
@@ -202,3 +202,143 @@ class TestIsBlockedIp:
     def test_allowed_ips(self, ip_str):
         ip = ipaddress.ip_address(ip_str)
         assert _is_blocked_ip(ip) is False, f"{ip_str} should be allowed"
+
+
+class TestResolveAndValidateUrl:
+    """Tests for resolve_and_validate_url — DNS rebinding mitigation."""
+
+    def test_public_url_returns_resolved_ip(self):
+        with patch("tools.url_safety.socket.getaddrinfo", return_value=[
+            (2, 1, 6, "", ("93.184.216.34", 0)),
+        ]):
+            is_safe, resolved_ip, error = resolve_and_validate_url("https://example.com/page")
+            assert is_safe is True
+            assert resolved_ip == "93.184.216.34"
+            assert error is None
+
+    def test_private_ip_blocked_with_error(self):
+        with patch("tools.url_safety.socket.getaddrinfo", return_value=[
+            (2, 1, 6, "", ("10.0.0.1", 0)),
+        ]):
+            is_safe, resolved_ip, error = resolve_and_validate_url("http://internal.corp/api")
+            assert is_safe is False
+            assert resolved_ip is None
+            assert "blocked" in error.lower()
+
+    def test_loopback_blocked(self):
+        with patch("tools.url_safety.socket.getaddrinfo", return_value=[
+            (2, 1, 6, "", ("127.0.0.1", 0)),
+        ]):
+            is_safe, resolved_ip, error = resolve_and_validate_url("http://localhost/secret")
+            assert is_safe is False
+            assert resolved_ip is None
+
+    def test_link_local_metadata_blocked(self):
+        with patch("tools.url_safety.socket.getaddrinfo", return_value=[
+            (2, 1, 6, "", ("169.254.169.254", 0)),
+        ]):
+            is_safe, resolved_ip, error = resolve_and_validate_url(
+                "http://169.254.169.254/latest/meta-data/"
+            )
+            assert is_safe is False
+            assert resolved_ip is None
+
+    def test_cgnat_blocked(self):
+        with patch("tools.url_safety.socket.getaddrinfo", return_value=[
+            (2, 1, 6, "", ("100.100.100.100", 0)),
+        ]):
+            is_safe, resolved_ip, error = resolve_and_validate_url("http://tailscale-peer/")
+            assert is_safe is False
+            assert resolved_ip is None
+
+    def test_ipv6_loopback_blocked(self):
+        with patch("tools.url_safety.socket.getaddrinfo", return_value=[
+            (10, 1, 6, "", ("::1", 0, 0, 0)),
+        ]):
+            is_safe, resolved_ip, error = resolve_and_validate_url("http://[::1]:8080/")
+            assert is_safe is False
+            assert resolved_ip is None
+
+    def test_dns_failure_returns_error(self):
+        with patch(
+            "tools.url_safety.socket.getaddrinfo",
+            side_effect=socket.gaierror("Name resolution failed"),
+        ):
+            is_safe, resolved_ip, error = resolve_and_validate_url(
+                "https://nonexistent.example.com"
+            )
+            assert is_safe is False
+            assert resolved_ip is None
+            assert "DNS resolution failed" in error
+
+    def test_empty_url_returns_error(self):
+        is_safe, resolved_ip, error = resolve_and_validate_url("")
+        assert is_safe is False
+        assert resolved_ip is None
+        assert "hostname" in error.lower()
+
+    def test_no_hostname_returns_error(self):
+        is_safe, resolved_ip, error = resolve_and_validate_url("http://")
+        assert is_safe is False
+        assert resolved_ip is None
+
+    def test_blocked_hostname_metadata_google(self):
+        is_safe, resolved_ip, error = resolve_and_validate_url(
+            "http://metadata.google.internal/computeMetadata/v1/"
+        )
+        assert is_safe is False
+        assert resolved_ip is None
+        assert "metadata.google.internal" in error
+
+    def test_blocked_hostname_metadata_goog(self):
+        is_safe, resolved_ip, error = resolve_and_validate_url(
+            "http://metadata.goog/computeMetadata/v1/"
+        )
+        assert is_safe is False
+        assert resolved_ip is None
+
+    def test_multiple_addrs_first_returned(self):
+        """When DNS returns multiple addresses, first IP is returned."""
+        with patch("tools.url_safety.socket.getaddrinfo", return_value=[
+            (2, 1, 6, "", ("93.184.216.34", 0)),
+            (2, 1, 6, "", ("93.184.216.35", 0)),
+        ]):
+            is_safe, resolved_ip, error = resolve_and_validate_url("https://example.com")
+            assert is_safe is True
+            assert resolved_ip == "93.184.216.34"
+
+    def test_multiple_addrs_one_blocked_fails(self):
+        """If any resolved address is blocked, the whole URL is blocked."""
+        with patch("tools.url_safety.socket.getaddrinfo", return_value=[
+            (2, 1, 6, "", ("93.184.216.34", 0)),
+            (2, 1, 6, "", ("127.0.0.1", 0)),
+        ]):
+            is_safe, resolved_ip, error = resolve_and_validate_url("https://sneaky.example.com")
+            assert is_safe is False
+            assert resolved_ip is None
+
+    def test_unexpected_error_fails_closed(self):
+        with patch("tools.url_safety.urlparse", side_effect=ValueError("bad url")):
+            is_safe, resolved_ip, error = resolve_and_validate_url("http://evil.com/")
+            assert is_safe is False
+            assert resolved_ip is None
+            assert "error" in error.lower()
+
+    def test_ipv4_mapped_ipv6_private_blocked(self):
+        """::ffff:10.0.0.1 — IPv4-mapped IPv6 private address."""
+        with patch("tools.url_safety.socket.getaddrinfo", return_value=[
+            (10, 1, 6, "", ("::ffff:10.0.0.1", 0, 0, 0)),
+        ]):
+            is_safe, resolved_ip, error = resolve_and_validate_url("http://mapped.example/")
+            assert is_safe is False
+            assert resolved_ip is None
+
+    def test_resolved_ip_is_string(self):
+        """Verify resolved_ip is always a plain string, not an IP object."""
+        with patch("tools.url_safety.socket.getaddrinfo", return_value=[
+            (2, 1, 6, "", ("8.8.8.8", 0)),
+        ]):
+            is_safe, resolved_ip, error = resolve_and_validate_url("https://dns.google/")
+            assert is_safe is True
+            assert isinstance(resolved_ip, str)
+            assert resolved_ip == "8.8.8.8"
