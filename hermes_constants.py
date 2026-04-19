@@ -112,6 +112,24 @@ def display_hermes_home() -> str:
         return str(home)
 
 
+def profile_name_if_under_std_profiles(home: Path | str) -> str | None:
+    """Return the active profile name when ``home`` is under standard profiles dir.
+
+    Resolves ``home`` relative to ``Path.home() / ".hermes" / "profiles"`` and
+    returns the first path segment (the profile id). Nested paths such as
+    ``.../profiles/<name>/extra`` still yield ``<name>``. Returns ``None`` if
+    ``home`` is not under that directory or if ``home`` equals the profiles
+    root (no profile segment).
+    """
+    home = Path(home)
+    profiles_parent = Path.home() / ".hermes" / "profiles"
+    try:
+        rel = home.relative_to(profiles_parent)
+    except ValueError:
+        return None
+    return rel.parts[0] if rel.parts else None
+
+
 def get_subprocess_home() -> str | None:
     """Return a per-profile HOME directory for subprocesses, or None.
 

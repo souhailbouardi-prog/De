@@ -4073,10 +4073,16 @@ class HermesCLI:
     
     def _handle_profile_command(self):
         """Display active profile name and home directory."""
+        from hermes_constants import (
+            display_hermes_home,
+            get_hermes_home,
+            profile_name_if_under_std_profiles,
+        )
         from hermes_constants import display_hermes_home
         from hermes_cli.profiles import get_active_profile_name
 
         display = display_hermes_home()
+        profile_name = profile_name_if_under_std_profiles(home)
         profile_name = get_active_profile_name()
 
         print()

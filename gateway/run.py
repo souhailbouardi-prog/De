@@ -4829,10 +4829,27 @@ class GatewayRunner:
     
     async def _handle_profile_command(self, event: MessageEvent) -> str:
         """Handle /profile — show active profile name and home directory."""
+        from hermes_constants import (
+            display_hermes_home,
+            get_hermes_home,
+            profile_name_if_under_std_profiles,
+        )
         from hermes_constants import display_hermes_home
         from hermes_cli.profiles import get_active_profile_name
 
         display = display_hermes_home()
+        profile_name = profile_name_if_under_std_profiles(home)
+
+        if profile_name:
+            lines = [
+                f"👤 **Profile:** `{profile_name}`",
+                f"📂 **Home:** `{display}`",
+            ]
+        else:
+            lines = [
+                "👤 **Profile:** default",
+                f"📂 **Home:** `{display}`",
+            ]
         profile_name = get_active_profile_name()
 
         lines = [
