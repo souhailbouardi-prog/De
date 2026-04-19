@@ -1178,13 +1178,49 @@ def _hermes_home_for_target_user(target_home_dir: str) -> str:
         return str(current_hermes)
 
 
+def _detect_venv_dir_from_home(home_dir: Path) -> Path | None:
+    """Detect venv directory under a specific user's home directory."""
+    for candidate in (".hermes/hermes-agent", ".local/share/hermes"):
+        venv = home_dir / candidate
+        if venv.is_dir():
+            return venv
+    # Fallback: check common virtualenv directory names under the project root within user's home.
+    for candidate in (".venv", "venv"):
+        venv = home_dir / ".hermes" / "hermes-agent" / candidate
+        if venv.is_dir():
+            return venv
+    return None
+
+
+def _get_python_path_from_venv(venv_dir: Path) -> str:
+    """Get python path from a specific venv directory."""
+    if is_windows():
+        venv_python = venv_dir / "Scripts" / "python.exe"
+    else:
+        venv_python = venv_dir / "bin" / "python"
+    if venv_python.exists():
+        return str(venv_python)
+    return str(venv_dir / "bin" / "python")
+
+
 def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) -> str:
-    python_path = get_python_path()
     working_dir = str(PROJECT_ROOT)
-    detected_venv = _detect_venv_dir()
-    venv_dir = str(detected_venv) if detected_venv else str(PROJECT_ROOT / "venv")
-    venv_bin = str(detected_venv / "bin") if detected_venv else str(PROJECT_ROOT / "venv" / "bin")
     node_bin = str(PROJECT_ROOT / "node_modules" / ".bin")
+    
+    # In system mode, detect venv from target user's home directory.
+    # In user mode, detect venv from current Python environment.
+    if system:
+        _, _, home_dir = _system_service_identity(run_as_user)
+        user_home = Path(home_dir)
+        detected_venv = _detect_venv_dir_from_home(user_home)
+        venv_dir = str(detected_venv) if detected_venv else str(user_home / ".hermes" / "hermes-agent")
+        venv_bin = str(detected_venv / "bin") if detected_venv else str(user_home / ".hermes" / "hermes-agent" / "bin")
+        python_path = _get_python_path_from_venv(detected_venv) if detected_venv else sys.executable
+    else:
+        python_path = get_python_path()
+        detected_venv = _detect_venv_dir()
+        venv_dir = str(detected_venv) if detected_venv else str(PROJECT_ROOT / "venv")
+        venv_bin = str(detected_venv / "bin") if detected_venv else str(PROJECT_ROOT / "venv" / "bin")
 
     path_entries = [venv_bin, node_bin]
     resolved_node = shutil.which("node")

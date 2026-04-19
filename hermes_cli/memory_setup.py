@@ -168,7 +168,7 @@ def _get_available_providers() -> list:
         if has_secrets and has_non_secrets:
             setup_hint = "API key / local"
         elif has_secrets:
-            setup_hint = "requires API key"
+            setup_hint = "API key / local"
         elif not schema:
             setup_hint = "no setup needed"
         else:

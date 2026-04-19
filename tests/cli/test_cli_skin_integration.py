@@ -107,6 +107,43 @@ class TestCliSkinPromptIntegration:
         assert cli._app.style is not None
 
 
+class TestBannerLayout:
+    def test_banner_left_column_uses_left_justification(self):
+        """Regression test: left column should not use center justification.
+
+        Center justification causes extra ASCII-space padding to be added around
+        braille-based banner heroes, breaking symmetric ASCII art rendering.
+        See: https://github.com/NousResearch/hermes-agent/issues/9879
+        """
+        from hermes_cli.banner import build_welcome_banner
+        from rich.console import Console
+        from io import StringIO
+
+        output = StringIO()
+        console = Console(file=output, force_terminal=True, width=120)
+
+        # Build banner with dummy args - we just need to verify the layout table creation
+        build_welcome_banner(
+            console=console,
+            model="test/model",
+            cwd="/tmp",
+            tools=[],
+            enabled_toolsets=[],
+        )
+
+        # Verify left column is left-aligned by checking rendered output
+        rendered = output.getvalue()
+        # The left column content should appear at the start of lines,
+        # not centered with leading whitespace
+        lines = rendered.split("\n")
+        non_empty = [l for l in lines if l.strip()]
+        # Check that content doesn't start with excessive leading spaces (centered)
+        for line in non_empty[:5]:
+            leading_spaces = len(line) - len(line.lstrip())
+            # Allow some padding but not full center justification
+            assert leading_spaces < 20, f"Line appears centered: {line[:50]}"
+
+
 class TestAnsiRichTextHelper:
     def test_preserves_literal_brackets(self):
         text = _rich_text_from_ansi("[notatag] literal")
