@@ -1223,6 +1223,33 @@ class TestTitleLineage:
         # Resolving "my project #2" exactly should return s2
         assert db.resolve_session_by_title("my project #2") == "s2"
 
+    def test_resolve_title_honors_source_and_user_scope(self, db):
+        """Scoped lookups should not select another source/user's lineage."""
+        db.create_session("s1", "telegram", user_id="u1")
+        db.set_session_title("s1", "my project")
+        db.create_session("s2", "cli", user_id="cli-user")
+        db.set_session_title("s2", "my project #2")
+        db.create_session("s3", "telegram", user_id="u2")
+        db.set_session_title("s3", "other user project")
+
+        assert db.resolve_session_by_title("my project") == "s2"
+        assert (
+            db.resolve_session_by_title(
+                "my project",
+                source="telegram",
+                user_id="u1",
+            )
+            == "s1"
+        )
+        assert (
+            db.resolve_session_by_title(
+                "my project #2",
+                source="telegram",
+                user_id="u1",
+            )
+            is None
+        )
+
     def test_resolve_nonexistent_title(self, db):
         assert db.resolve_session_by_title("nonexistent") is None
 

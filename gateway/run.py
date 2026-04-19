@@ -6964,7 +6964,9 @@ class GatewayRunner:
             try:
                 user_source = source.platform.value if source.platform else None
                 sessions = self._session_db.list_sessions_rich(
-                    source=user_source, limit=10
+                    source=user_source,
+                    user_id=source.user_id,
+                    limit=10,
                 )
                 titled = [s for s in sessions if s.get("title")]
                 if not titled:
@@ -6986,7 +6988,12 @@ class GatewayRunner:
                 return f"Could not list sessions: {e}"
 
         # Resolve the name to a session ID
-        target_id = self._session_db.resolve_session_by_title(name)
+        user_source = source.platform.value if source.platform else None
+        target_id = self._session_db.resolve_session_by_title(
+            name,
+            source=user_source,
+            user_id=source.user_id,
+        )
         if not target_id:
             return (
                 f"No session found matching '**{name}**'.\n"

@@ -80,16 +80,19 @@ class TestHandleResumeCommand:
         """With no argument, lists recently titled sessions."""
         from hermes_state import SessionDB
         db = SessionDB(db_path=tmp_path / "state.db")
-        db.create_session("sess_001", "telegram")
-        db.create_session("sess_002", "telegram")
+        db.create_session("sess_001", "telegram", user_id="12345")
+        db.create_session("sess_002", "telegram", user_id="12345")
+        db.create_session("other_user_session", "telegram", user_id="other-user")
         db.set_session_title("sess_001", "Research")
         db.set_session_title("sess_002", "Coding")
+        db.set_session_title("other_user_session", "Hidden")
 
         event = _make_event(text="/resume")
         runner = _make_runner(session_db=db, event=event)
         result = await runner._handle_resume_command(event)
         assert "Research" in result
         assert "Coding" in result
+        assert "Hidden" not in result
         assert "Named Sessions" in result
         db.close()
 
@@ -98,7 +101,7 @@ class TestHandleResumeCommand:
         """With no arg and no titled sessions, shows instructions."""
         from hermes_state import SessionDB
         db = SessionDB(db_path=tmp_path / "state.db")
-        db.create_session("sess_001", "telegram")  # No title
+        db.create_session("sess_001", "telegram", user_id="12345")  # No title
 
         event = _make_event(text="/resume")
         runner = _make_runner(session_db=db, event=event)
@@ -112,9 +115,9 @@ class TestHandleResumeCommand:
         """Resolves a title and switches to that session."""
         from hermes_state import SessionDB
         db = SessionDB(db_path=tmp_path / "state.db")
-        db.create_session("old_session_abc", "telegram")
+        db.create_session("old_session_abc", "telegram", user_id="12345")
         db.set_session_title("old_session_abc", "My Project")
-        db.create_session("current_session_001", "telegram")
+        db.create_session("current_session_001", "telegram", user_id="12345")
 
         event = _make_event(text="/resume My Project")
         runner = _make_runner(session_db=db, current_session_id="current_session_001",
@@ -134,7 +137,7 @@ class TestHandleResumeCommand:
         """Returns error for unknown session name."""
         from hermes_state import SessionDB
         db = SessionDB(db_path=tmp_path / "state.db")
-        db.create_session("current_session_001", "telegram")
+        db.create_session("current_session_001", "telegram", user_id="12345")
 
         event = _make_event(text="/resume Nonexistent Session")
         runner = _make_runner(session_db=db, event=event)
@@ -143,11 +146,31 @@ class TestHandleResumeCommand:
         db.close()
 
     @pytest.mark.asyncio
+    async def test_resume_does_not_cross_user_or_source_scope(self, tmp_path):
+        """Gateway /resume should not bind a caller to another user's session."""
+        from hermes_state import SessionDB
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session("cli_session", "cli", user_id="cli-user")
+        db.set_session_title("cli_session", "Secret Plan")
+        db.create_session("other_user_session", "telegram", user_id="other-user")
+        db.set_session_title("other_user_session", "Other User Plan")
+        db.create_session("current_session_001", "telegram", user_id="12345")
+
+        event = _make_event(text="/resume Secret Plan", user_id="12345")
+        runner = _make_runner(session_db=db, current_session_id="current_session_001",
+                              event=event)
+        result = await runner._handle_resume_command(event)
+
+        assert "No session found" in result
+        runner.session_store.switch_session.assert_not_called()
+        db.close()
+
+    @pytest.mark.asyncio
     async def test_resume_already_on_session(self, tmp_path):
         """Returns friendly message when already on the requested session."""
         from hermes_state import SessionDB
         db = SessionDB(db_path=tmp_path / "state.db")
-        db.create_session("current_session_001", "telegram")
+        db.create_session("current_session_001", "telegram", user_id="12345")
         db.set_session_title("current_session_001", "Active Project")
 
         event = _make_event(text="/resume Active Project")
@@ -162,11 +185,11 @@ class TestHandleResumeCommand:
         """Asking for 'My Project' when 'My Project #2' exists gets the latest."""
         from hermes_state import SessionDB
         db = SessionDB(db_path=tmp_path / "state.db")
-        db.create_session("sess_v1", "telegram")
+        db.create_session("sess_v1", "telegram", user_id="12345")
         db.set_session_title("sess_v1", "My Project")
-        db.create_session("sess_v2", "telegram")
+        db.create_session("sess_v2", "telegram", user_id="12345")
         db.set_session_title("sess_v2", "My Project #2")
-        db.create_session("current_session_001", "telegram")
+        db.create_session("current_session_001", "telegram", user_id="12345")
 
         event = _make_event(text="/resume My Project")
         runner = _make_runner(session_db=db, current_session_id="current_session_001",
@@ -184,9 +207,9 @@ class TestHandleResumeCommand:
         """Switching sessions clears any cached running agent."""
         from hermes_state import SessionDB
         db = SessionDB(db_path=tmp_path / "state.db")
-        db.create_session("old_session", "telegram")
+        db.create_session("old_session", "telegram", user_id="12345")
         db.set_session_title("old_session", "Old Work")
-        db.create_session("current_session_001", "telegram")
+        db.create_session("current_session_001", "telegram", user_id="12345")
 
         event = _make_event(text="/resume Old Work")
         runner = _make_runner(session_db=db, current_session_id="current_session_001",
@@ -206,9 +229,9 @@ class TestHandleResumeCommand:
         from hermes_state import SessionDB
 
         db = SessionDB(db_path=tmp_path / "state.db")
-        db.create_session("old_session", "telegram")
+        db.create_session("old_session", "telegram", user_id="12345")
         db.set_session_title("old_session", "Old Work")
-        db.create_session("current_session_001", "telegram")
+        db.create_session("current_session_001", "telegram", user_id="12345")
 
         event = _make_event(text="/resume Old Work")
         runner = _make_runner(
