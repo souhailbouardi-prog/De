@@ -9458,6 +9458,7 @@ class GatewayRunner:
                             chat_id=source.chat_id,
                             config=_consumer_cfg,
                             metadata={"thread_id": _progress_thread_id} if _progress_thread_id else None,
+                            reply_to=event_message_id,
                         )
                         if _want_stream_deltas:
                             def _stream_delta_cb(text: str) -> None:
