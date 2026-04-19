@@ -52,5 +52,9 @@ RUN uv venv && \
 # ---------- Runtime ----------
 ENV HERMES_WEB_DIST=/opt/hermes/hermes_cli/web_dist
 ENV HERMES_HOME=/opt/data
+
+# Prepend the virtualenv bin directory to PATH so that `hermes` and all other venv binaries are found in every execution context
+ENV PATH="/opt/hermes/.venv/bin:$PATH"
+
 VOLUME [ "/opt/data" ]
 ENTRYPOINT [ "/opt/hermes/docker/entrypoint.sh" ]
