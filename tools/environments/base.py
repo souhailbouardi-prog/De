@@ -332,8 +332,19 @@ class BaseEnvironment(ABC):
         ``_snapshot_ready = True`` so subsequent commands source the snapshot
         instead of running with ``bash -l``.
         """
+        requested_cwd = self.cwd or "."
+        quoted_cwd = (
+            shlex.quote(requested_cwd)
+            if requested_cwd != "~" and not requested_cwd.startswith("~/")
+            else requested_cwd
+        )
+
         # Full capture: env vars, functions (filtered), aliases, shell options.
+        # IMPORTANT: enter the requested working directory before sampling pwd,
+        # otherwise login-shell startup defaults (often "/") overwrite the cwd
+        # passed in by ACP/terminal configuration.
         bootstrap = (
+            f"cd {quoted_cwd} || exit 126\n"
             f"export -p > {self._snapshot_path}\n"
             f"declare -f | grep -vE '^_[^_]' >> {self._snapshot_path}\n"
             f"alias -p >> {self._snapshot_path}\n"
