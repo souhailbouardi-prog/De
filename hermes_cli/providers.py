@@ -459,10 +459,44 @@ def resolve_user_provider(name: str, user_config: Dict[str, Any]) -> Optional[Pr
     if not isinstance(entry, dict):
         return None
 
-    # Extract fields
+    # Extract fields.
+    # Accept both snake_case (api_key, base_url) and camelCase (apiKey, baseUrl)
+    # aliases so that hand-written YAML from JavaScript-centric users works
+    # without silent failures. (#9332)
     display_name = entry.get("name", "") or name
-    api_url = entry.get("api", "") or entry.get("url", "") or entry.get("base_url", "") or ""
-    key_env = entry.get("key_env", "") or ""
+
+    # base_url: prefer explicit snake_case keys; fall back to legacy "api"/"url"
+    # aliases; reject values that are clearly not URLs (no scheme) to surface
+    # mis-configured entries early rather than producing cryptic errors.
+    _url_candidates = (
+        entry.get("base_url", "")
+        or entry.get("baseUrl", "")     # camelCase alias
+        or entry.get("url", "")
+        or entry.get("api", "")         # legacy alias
+        or ""
+    )
+    # Warn when a non-URL string lands in a URL field so the user gets a
+    # clear message instead of a downstream Bearer/connection error.
+    if _url_candidates and not (
+        _url_candidates.startswith("http://") or _url_candidates.startswith("https://")
+    ):
+        import logging as _logging
+        _logging.getLogger(__name__).warning(
+            "providers[%s]: base_url value %r does not look like a URL "
+            "(missing http:// or https:// scheme) — check your config.yaml. "
+            "Accepted keys: base_url, baseUrl, url, api.",
+            name, _url_candidates,
+        )
+        _url_candidates = ""
+    api_url = _url_candidates
+
+    # api key env var: accept both snake_case and camelCase.
+    key_env = (
+        entry.get("key_env", "")
+        or entry.get("keyEnv", "")      # camelCase alias
+        or entry.get("api_key_env", "")
+        or ""
+    )
     transport = entry.get("transport", "openai_chat") or "openai_chat"
 
     env_vars: List[str] = []
