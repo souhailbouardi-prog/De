@@ -1901,6 +1901,33 @@ def _wait_for_gateway_exit(timeout: float = 10.0, force_after: float | None = 5.
     return True
 
 
+def _kill_orphan_gateway_pids() -> None:
+    """Kill gateway processes not tracked by the service manager.
+
+    launchctl kickstart -k only kills the launchd-managed process.  Any
+    gateway started manually (or left behind by a previous failed restart)
+    will survive and hold platform locks, blocking the new instance.
+    """
+    import time as _time
+    service_pids = _get_service_pids()
+    orphan_pids = find_gateway_pids(exclude_pids=service_pids | {os.getpid()})
+    if not orphan_pids:
+        return
+    for orphan_pid in orphan_pids:
+        try:
+            terminate_pid(orphan_pid, force=False)
+        except (ProcessLookupError, PermissionError, OSError):
+            pass
+    _time.sleep(1)
+    for orphan_pid in orphan_pids:
+        try:
+            os.kill(orphan_pid, 0)
+            terminate_pid(orphan_pid, force=True)
+        except (ProcessLookupError, PermissionError, OSError):
+            pass
+    print(f"↻ Cleaned up {len(orphan_pids)} orphan gateway process(es): {orphan_pids}")
+
+
 def launchd_restart():
     label = get_launchd_label()
     target = f"{_launchd_domain()}/{label}"
@@ -1911,6 +1938,7 @@ def launchd_restart():
         pid = get_running_pid()
         if pid is not None and _request_gateway_self_restart(pid):
             print("✓ Service restart requested")
+            _kill_orphan_gateway_pids()
             return
         if pid is not None:
             try:
@@ -1921,6 +1949,7 @@ def launchd_restart():
                 exited = _wait_for_gateway_exit(timeout=drain_timeout, force_after=None)
                 if not exited:
                     print(f"⚠ Gateway drain timed out after {drain_timeout:.0f}s — forcing launchd restart")
+        _kill_orphan_gateway_pids()
         subprocess.run(["launchctl", "kickstart", "-k", target], check=True, timeout=90)
         print("✓ Service restarted")
     except subprocess.CalledProcessError as e:
