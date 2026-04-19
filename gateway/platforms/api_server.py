@@ -46,6 +46,11 @@ from gateway.platforms.base import (
     SendResult,
     is_network_accessible,
 )
+from hermes_cli.config import load_config, save_config
+from hermes_cli.models import curated_models_for_provider, list_available_providers
+from hermes_state import SessionDB
+from tools.memory_tool import MemoryStore
+from tools.skills_tool import skill_view, skills_categories, skills_list
 
 logger = logging.getLogger(__name__)
 
@@ -234,7 +239,7 @@ class ResponseStore:
 # ---------------------------------------------------------------------------
 
 _CORS_HEADERS = {
-    "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
+    "Access-Control-Allow-Methods": "GET, POST, PATCH, PUT, DELETE, OPTIONS",
     "Access-Control-Allow-Headers": "Authorization, Content-Type, Idempotency-Key",
 }
 
@@ -348,6 +353,24 @@ def _make_request_fingerprint(body: Dict[str, Any], keys: List[str]) -> str:
     return sha256(repr(subset).encode("utf-8")).hexdigest()
 
 
+# Cron module — imported at module level to avoid Python descriptor binding
+# issue when functions are imported inside a class body.
+try:
+    from cron.jobs import (
+        list_jobs as _cron_list,
+        get_job as _cron_get,
+        create_job as _cron_create,
+        update_job as _cron_update,
+        remove_job as _cron_remove,
+        pause_job as _cron_pause,
+        resume_job as _cron_resume,
+        trigger_job as _cron_trigger,
+    )
+    _CRON_MODULE_AVAILABLE = True
+except ImportError:
+    _CRON_MODULE_AVAILABLE = False
+
+
 def _derive_chat_session_id(
     system_prompt: Optional[str],
     first_user_message: str,
@@ -394,7 +417,8 @@ class APIServerAdapter(BasePlatformAdapter):
         self._run_streams: Dict[str, "asyncio.Queue[Optional[Dict]]"] = {}
         # Creation timestamps for orphaned-run TTL sweep
         self._run_streams_created: Dict[str, float] = {}
-        self._session_db: Optional[Any] = None  # Lazy-init SessionDB for session continuity
+        self._session_db: Optional[SessionDB] = None
+        self._memory_store: Optional[MemoryStore] = None
 
     @staticmethod
     def _parse_cors_origins(value: Any) -> tuple[str, ...]:
@@ -487,6 +511,63 @@ class APIServerAdapter(BasePlatformAdapter):
             status=401,
         )
 
+    def _get_session_db(self) -> SessionDB:
+        """Create the session DB lazily."""
+        if self._session_db is None:
+            self._session_db = SessionDB()
+        return self._session_db
+
+    def _get_memory_store(self) -> MemoryStore:
+        """Create the memory store lazily."""
+        if self._memory_store is None:
+            self._memory_store = MemoryStore()
+            self._memory_store.load_from_disk()
+        return self._memory_store
+
+    @staticmethod
+    def _normalize_session_record(session: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+        """Parse serialized session fields into API-friendly JSON."""
+        if session is None:
+            return None
+        normalized = dict(session)
+        model_config = normalized.get("model_config")
+        if model_config:
+            try:
+                normalized["model_config"] = json.loads(model_config)
+            except (TypeError, json.JSONDecodeError):
+                pass
+        return normalized
+
+    @staticmethod
+    def _current_model_settings(config: Dict[str, Any]) -> Dict[str, Any]:
+        """Extract model/provider/base_url/api_mode from config.yaml."""
+        model_cfg = config.get("model")
+        if isinstance(model_cfg, dict):
+            return {
+                "model": str(model_cfg.get("default") or model_cfg.get("model") or "").strip(),
+                "provider": str(model_cfg.get("provider") or "").strip(),
+                "api_mode": str(model_cfg.get("api_mode") or "").strip(),
+                "base_url": str(model_cfg.get("base_url") or "").strip(),
+            }
+        if isinstance(model_cfg, str):
+            return {
+                "model": model_cfg.strip(),
+                "provider": "",
+                "api_mode": "",
+                "base_url": "",
+            }
+        return {"model": "", "provider": "", "api_mode": "", "base_url": ""}
+
+    @staticmethod
+    def _parse_int(value: Any, default: int, minimum: int = 0) -> int:
+        """Parse an integer query parameter with bounds."""
+        if value in (None, ""):
+            return default
+        parsed = int(value)
+        if parsed < minimum:
+            raise ValueError(f"Value must be >= {minimum}")
+        return parsed
+
     # ------------------------------------------------------------------
     # Session DB helper
     # ------------------------------------------------------------------
@@ -509,6 +590,57 @@ class APIServerAdapter(BasePlatformAdapter):
     # Agent creation helper
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _build_user_content(
+        text: str, attachments: Optional[List[Dict[str, Any]]] = None
+    ) -> tuple:
+        """Build multimodal content from text + image attachments.
+
+        Returns (user_content, persist_text) where user_content is either
+        a plain string or a list of content parts for multimodal input.
+        """
+        if not attachments:
+            return text, text
+
+        image_parts: List[Dict[str, Any]] = []
+        for att in attachments:
+            if not isinstance(att, dict):
+                continue
+            mime = ""
+            for key in ("contentType", "mimeType", "mediaType"):
+                val = att.get(key)
+                if isinstance(val, str) and val.strip():
+                    mime = val.strip()
+                    break
+            if not mime.startswith("image/"):
+                continue
+            content = ""
+            for key in ("content", "base64", "data"):
+                val = att.get(key)
+                if isinstance(val, str) and val.strip():
+                    content = val.strip()
+                    break
+            if not content:
+                # Try dataUrl format: data:image/png;base64,...
+                data_url = att.get("dataUrl", "")
+                if isinstance(data_url, str) and data_url.startswith("data:"):
+                    content = data_url.split(",", 1)[-1] if "," in data_url else ""
+            if not content:
+                continue
+            image_parts.append({
+                "type": "image_url",
+                "image_url": {"url": f"data:{mime};base64,{content}"},
+            })
+
+        if not image_parts:
+            return text, text
+
+        content_parts: List[Dict[str, Any]] = []
+        if text.strip():
+            content_parts.append({"type": "text", "text": text})
+        content_parts.extend(image_parts)
+        return content_parts, text
+
     def _create_agent(
         self,
         ephemeral_system_prompt: Optional[str] = None,
@@ -530,7 +662,20 @@ class APIServerAdapter(BasePlatformAdapter):
         from gateway.run import _resolve_runtime_agent_kwargs, _resolve_gateway_model, _load_gateway_config
         from hermes_cli.tools_config import _get_platform_tools
 
-        runtime_kwargs = _resolve_runtime_agent_kwargs()
+        # Clear stale OPENAI_API_KEY from parent process (e.g. OpenClaw sets
+        # this to an Anthropic OAuth token which confuses provider resolution).
+        # The configured provider's own auth (device_code, credential pool, etc.)
+        # is the correct source of truth.
+        _stale_oai_key = os.environ.pop("OPENAI_API_KEY", None)
+        _stale_oai_base = os.environ.pop("OPENAI_BASE_URL", None)
+        try:
+            runtime_kwargs = _resolve_runtime_agent_kwargs()
+        finally:
+            # Restore env if something else depends on it
+            if _stale_oai_key is not None:
+                os.environ["OPENAI_API_KEY"] = _stale_oai_key
+            if _stale_oai_base is not None:
+                os.environ["OPENAI_BASE_URL"] = _stale_oai_base
         model = _resolve_gateway_model()
 
         user_config = _load_gateway_config()
@@ -612,6 +757,713 @@ class APIServerAdapter(BasePlatformAdapter):
             ],
         })
 
+    async def _handle_list_sessions(self, request: "web.Request") -> "web.Response":
+        """GET /api/sessions — list sessions."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        try:
+            limit = self._parse_int(request.query.get("limit"), 50)
+            offset = self._parse_int(request.query.get("offset"), 0)
+        except ValueError as e:
+            return web.json_response({"error": str(e)}, status=400)
+
+        source = (request.query.get("source") or "").strip() or None
+        db = self._get_session_db()
+        items = [
+            self._normalize_session_record(item)
+            for item in db.list_sessions_rich(source=source, limit=limit, offset=offset)
+        ]
+        total = db.session_count(source=source)
+        return web.json_response({"items": items, "total": total})
+
+    async def _handle_create_session(self, request: "web.Request") -> "web.Response":
+        """POST /api/sessions — create a new session."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        try:
+            body = await request.json()
+        except (json.JSONDecodeError, Exception):
+            return web.json_response({"error": "Invalid JSON in request body"}, status=400)
+
+        title = body.get("title")
+        source = str(body.get("source") or "api_server").strip() or "api_server"
+        model = body.get("model")
+        system_prompt = body.get("system_prompt")
+        session_id = f"sess_{uuid.uuid4().hex}"
+        db = self._get_session_db()
+
+        try:
+            db.create_session(
+                session_id=session_id,
+                source=source,
+                model=model,
+                system_prompt=system_prompt,
+            )
+            if title is not None:
+                db.set_session_title(session_id, str(title))
+        except ValueError as e:
+            return web.json_response({"error": str(e)}, status=400)
+        except Exception as e:
+            return web.json_response({"error": str(e)}, status=500)
+
+        session = self._normalize_session_record(db.get_session(session_id))
+        return web.json_response({"session": session})
+
+    async def _handle_search_sessions(self, request: "web.Request") -> "web.Response":
+        """GET /api/sessions/search — search messages across sessions."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        query = (request.query.get("q") or "").strip()
+        if not query:
+            return web.json_response({"error": "Missing query parameter: q"}, status=400)
+        try:
+            limit = self._parse_int(request.query.get("limit"), 20)
+            offset = self._parse_int(request.query.get("offset"), 0)
+        except ValueError as e:
+            return web.json_response({"error": str(e)}, status=400)
+
+        results = self._get_session_db().search_messages(query=query, limit=limit, offset=offset)
+        return web.json_response({"query": query, "count": len(results), "results": results})
+
+    async def _handle_get_session(self, request: "web.Request") -> "web.Response":
+        """GET /api/sessions/{session_id} — fetch one session."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        session_id = request.match_info["session_id"]
+        session = self._normalize_session_record(self._get_session_db().get_session(session_id))
+        if session is None:
+            return web.json_response({"error": "Session not found"}, status=404)
+        return web.json_response({"session": session})
+
+    async def _handle_get_session_messages(self, request: "web.Request") -> "web.Response":
+        """GET /api/sessions/{session_id}/messages — fetch session messages."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        session_id = request.match_info["session_id"]
+        db = self._get_session_db()
+        if db.get_session(session_id) is None:
+            db.ensure_session(session_id, source="web")
+        items = db.get_messages(session_id)
+        return web.json_response({"items": items, "total": len(items)})
+
+    async def _handle_update_session(self, request: "web.Request") -> "web.Response":
+        """PATCH /api/sessions/{session_id} — update a session."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        session_id = request.match_info["session_id"]
+        db = self._get_session_db()
+        if db.get_session(session_id) is None:
+            return web.json_response({"error": "Session not found"}, status=404)
+        try:
+            body = await request.json()
+        except (json.JSONDecodeError, Exception):
+            return web.json_response({"error": "Invalid JSON in request body"}, status=400)
+
+        try:
+            if "title" in body:
+                db.set_session_title(session_id, body.get("title"))
+            if "system_prompt" in body:
+                db.update_system_prompt(session_id, body.get("system_prompt"))
+            if "end_reason" in body:
+                db.end_session(session_id, str(body.get("end_reason") or "updated"))
+        except ValueError as e:
+            return web.json_response({"error": str(e)}, status=400)
+        except Exception as e:
+            return web.json_response({"error": str(e)}, status=500)
+
+        session = self._normalize_session_record(db.get_session(session_id))
+        return web.json_response({"session": session})
+
+    async def _handle_delete_session(self, request: "web.Request") -> "web.Response":
+        """DELETE /api/sessions/{session_id} — delete a session."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        session_id = request.match_info["session_id"]
+        deleted = self._get_session_db().delete_session(session_id)
+        if not deleted:
+            return web.json_response({"error": "Session not found"}, status=404)
+        return web.json_response({"ok": True})
+
+    async def _handle_fork_session(self, request: "web.Request") -> "web.Response":
+        """POST /api/sessions/{session_id}/fork — clone a session and its messages."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        session_id = request.match_info["session_id"]
+        db = self._get_session_db()
+        original = db.get_session(session_id)
+        if original is None:
+            return web.json_response({"error": "Session not found"}, status=404)
+
+        forked_id = f"sess_{uuid.uuid4().hex}"
+        try:
+            db.create_session(
+                session_id=forked_id,
+                source=original.get("source") or "api_server",
+                model=original.get("model"),
+                system_prompt=original.get("system_prompt"),
+                user_id=original.get("user_id"),
+                parent_session_id=session_id,
+            )
+            messages = db.get_messages(session_id)
+            for message in messages:
+                db.append_message(
+                    session_id=forked_id,
+                    role=message.get("role"),
+                    content=message.get("content"),
+                    tool_name=message.get("tool_name"),
+                    tool_calls=message.get("tool_calls"),
+                    tool_call_id=message.get("tool_call_id"),
+                    token_count=message.get("token_count"),
+                    finish_reason=message.get("finish_reason"),
+                    reasoning=message.get("reasoning"),
+                )
+        except Exception as e:
+            return web.json_response({"error": str(e)}, status=500)
+
+        session = self._normalize_session_record(db.get_session(forked_id))
+        return web.json_response({"session": session, "forked_from": session_id})
+
+    async def _handle_session_chat(self, request: "web.Request") -> "web.Response":
+        """POST /api/sessions/{session_id}/chat — run a session-aware chat turn."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+
+        session_id = request.match_info["session_id"]
+        db = self._get_session_db()
+        session = self._normalize_session_record(db.get_session(session_id))
+        if session is None:
+            db.ensure_session(session_id, source="web")
+            session = self._normalize_session_record(db.get_session(session_id)) or {}
+
+        try:
+            body = await request.json()
+        except (json.JSONDecodeError, Exception):
+            return web.json_response({"error": "Invalid JSON in request body"}, status=400)
+
+        message = body.get("message")
+        if not isinstance(message, str):
+            return web.json_response({"error": "Missing or invalid 'message' field"}, status=400)
+
+        raw_attachments_sync = body.get("attachments")
+        if raw_attachments_sync:
+            logger.debug("[chat] Received %d attachment(s): %s",
+                         len(raw_attachments_sync),
+                         [(a.get("name"), a.get("contentType"), len(a.get("content", "") or a.get("base64", "") or "")) for a in raw_attachments_sync if isinstance(a, dict)])
+        user_content, persist_text = self._build_user_content(message, raw_attachments_sync)
+        if isinstance(user_content, list):
+            logger.debug("[chat] Built multimodal content with %d parts", len(user_content))
+
+        model = body.get("model") or session.get("model") or "hermes-agent"
+        system_message = body.get("system_message")
+        history = db.get_messages_as_conversation(session_id)
+        loop = asyncio.get_event_loop()
+
+        def _run():
+            agent = self._create_agent(
+                ephemeral_system_prompt=system_message,
+                session_id=session_id,
+            )
+            agent._session_db = db  # Enable session persistence
+            result = agent.run_conversation(
+                user_content,
+                conversation_history=history,
+                persist_user_message=persist_text,
+            )
+            usage = {
+                "input_tokens": getattr(agent, "session_prompt_tokens", 0) or 0,
+                "output_tokens": getattr(agent, "session_completion_tokens", 0) or 0,
+                "total_tokens": getattr(agent, "session_total_tokens", 0) or 0,
+            }
+            return result, usage
+
+        try:
+            result, usage = await loop.run_in_executor(None, _run)
+        except Exception as e:
+            logger.error("Error running session chat for %s: %s", session_id, e, exc_info=True)
+            return web.json_response({"error": str(e)}, status=500)
+
+        return web.json_response({
+            "session_id": session_id,
+            "run_id": f"run_{uuid.uuid4().hex}",
+            "model": model,
+            "final_response": result.get("final_response"),
+            "completed": result.get("completed", False),
+            "partial": result.get("partial", False),
+            "interrupted": result.get("interrupted", False),
+            "api_calls": result.get("api_calls", 0),
+            "messages": result.get("messages", []),
+            "last_reasoning": result.get("last_reasoning"),
+            "response_previewed": result.get("response_previewed", False),
+            "usage": usage,
+        })
+
+    async def _handle_session_chat_stream(self, request: "web.Request") -> "web.StreamResponse":
+        """POST /api/sessions/{session_id}/chat/stream — stream a session chat turn over SSE."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+
+        session_id = request.match_info["session_id"]
+        db = self._get_session_db()
+        session = self._normalize_session_record(db.get_session(session_id))
+        if session is None:
+            db.ensure_session(session_id, source="web")
+            session = self._normalize_session_record(db.get_session(session_id)) or {}
+
+        try:
+            body = await request.json()
+        except (json.JSONDecodeError, Exception):
+            return web.json_response({"error": "Invalid JSON in request body"}, status=400)
+
+        message = body.get("message")
+        if not isinstance(message, str):
+            return web.json_response({"error": "Missing or invalid 'message' field"}, status=400)
+
+        # Build multimodal content if image attachments are present
+        raw_attachments = body.get("attachments")
+        if raw_attachments:
+            logger.debug("[chat/stream] Received %d attachment(s): %s",
+                         len(raw_attachments),
+                         [(a.get("name"), a.get("contentType"), len(a.get("content", "") or a.get("base64", "") or "")) for a in raw_attachments if isinstance(a, dict)])
+        user_content, persist_text = self._build_user_content(message, raw_attachments)
+        if isinstance(user_content, list):
+            logger.debug("[chat/stream] Built multimodal content with %d parts", len(user_content))
+
+        system_message = body.get("system_message")
+        history = db.get_messages_as_conversation(session_id)
+        assistant_message_id = f"msg_asst_{uuid.uuid4().hex}"
+
+        # Note: user message persistence is handled by AIAgent._flush_messages_to_session_db
+        # Don't double-persist here or messages will appear twice
+
+        import queue as _q
+        stream_q: _q.Queue = _q.Queue()
+
+        def _encode_sse(event_name: str, payload: Dict[str, Any]) -> bytes:
+            return f"event: {event_name}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n".encode("utf-8")
+
+        def _queue_event(event_name: str, payload: Dict[str, Any]) -> None:
+            stream_q.put(_encode_sse(event_name, payload))
+
+        def _tool_map(messages: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+            mapping: Dict[str, Dict[str, Any]] = {}
+            for item in messages:
+                if item.get("role") != "assistant":
+                    continue
+                for index, tool_call in enumerate(item.get("tool_calls") or []):
+                    tool_id = tool_call.get("id")
+                    if not tool_id:
+                        continue
+                    fn = tool_call.get("function") or {}
+                    raw_args = fn.get("arguments")
+                    try:
+                        parsed_args = json.loads(raw_args) if isinstance(raw_args, str) and raw_args.strip() else {}
+                    except json.JSONDecodeError:
+                        parsed_args = raw_args
+                    mapping[tool_id] = {
+                        "tool_name": fn.get("name") or item.get("tool_name") or f"tool_{index + 1}",
+                        "args": parsed_args,
+                    }
+            return mapping
+
+        def _result_preview(content: Any, limit: int = 4000) -> str:
+            text = content if isinstance(content, str) else json.dumps(content, ensure_ascii=False)
+            return text[:limit] + ("..." if len(text) > limit else "")
+
+        run_id = f"run_{uuid.uuid4().hex}"
+
+        def _on_delta(delta):
+            if delta:
+                _queue_event(
+                    "assistant.delta",
+                    {"session_id": session_id, "run_id": run_id, "message_id": assistant_message_id, "delta": delta},
+                )
+
+        def _on_tool_progress(name, preview, args):
+            if name == "_thinking":
+                _queue_event(
+                    "tool.progress",
+                    {"session_id": session_id, "run_id": run_id, "message_id": assistant_message_id, "delta": preview},
+                )
+                return
+            payload = {
+                "session_id": session_id,
+                "run_id": run_id,
+                "tool_name": name,
+                "preview": preview,
+                "args": args,
+            }
+            _queue_event("tool.started", payload)
+
+        agent_ref = [None]
+        loop = asyncio.get_event_loop()
+
+        async def _run_agent_task():
+            def _run():
+                agent = self._create_agent(
+                    ephemeral_system_prompt=system_message,
+                    session_id=session_id,
+                    stream_delta_callback=_on_delta,
+                    tool_progress_callback=_on_tool_progress,
+                )
+                agent._session_db = db  # Enable session persistence
+                agent_ref[0] = agent
+                return agent.run_conversation(
+                    user_content,
+                    conversation_history=history,
+                    persist_user_message=persist_text,
+                )
+
+            return await loop.run_in_executor(None, _run)
+
+        agent_task = asyncio.ensure_future(_run_agent_task())
+
+        sse_headers = {
+            "Content-Type": "text/event-stream",
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        }
+        origin = request.headers.get("Origin", "")
+        cors = self._cors_headers_for_origin(origin) if origin else None
+        if cors:
+            sse_headers.update(cors)
+
+        response = web.StreamResponse(status=200, headers=sse_headers)
+        await response.prepare(request)
+
+        try:
+            user_message_id = f"msg_user_{uuid.uuid4().hex}"
+            await response.write(_encode_sse("session.created", {
+                "session_id": session_id,
+                "run_id": run_id,
+                "title": session.get("title") or "New Chat",
+            }))
+            await response.write(_encode_sse("run.started", {
+                "session_id": session_id,
+                "run_id": run_id,
+                "user_message": {
+                    "id": user_message_id,
+                    "role": "user",
+                    "content": message,
+                },
+            }))
+            await response.write(_encode_sse("message.started", {
+                "session_id": session_id,
+                "run_id": run_id,
+                "message": {"id": assistant_message_id, "role": "assistant"},
+            }))
+
+            while True:
+                try:
+                    frame = await loop.run_in_executor(None, lambda: stream_q.get(timeout=0.5))
+                except _q.Empty:
+                    if agent_task.done():
+                        while True:
+                            try:
+                                frame = stream_q.get_nowait()
+                                if frame is None:
+                                    break
+                                await response.write(frame)
+                            except _q.Empty:
+                                break
+                        break
+                    continue
+
+                if frame is None:
+                    break
+
+                await response.write(frame)
+
+            result = await agent_task
+            tools = _tool_map(result.get("messages") or [])
+            for item in result.get("messages") or []:
+                if item.get("role") != "tool":
+                    continue
+                tool_id = item.get("tool_call_id")
+                tool_meta = tools.get(tool_id, {})
+                await response.write(_encode_sse("tool.completed", {
+                    "session_id": session_id,
+                    "run_id": run_id,
+                    "tool_call_id": tool_id,
+                    "tool_name": tool_meta.get("tool_name") or item.get("tool_name") or "unknown",
+                    "args": tool_meta.get("args"),
+                    "result_preview": _result_preview(item.get("content")),
+                }))
+
+            await response.write(_encode_sse("assistant.completed", {
+                "session_id": session_id,
+                "run_id": run_id,
+                "message_id": assistant_message_id,
+                "content": result.get("final_response") or "",
+                "completed": result.get("completed", False),
+                "partial": result.get("partial", False),
+                "interrupted": result.get("interrupted", False),
+            }))
+            await response.write(_encode_sse("run.completed", {
+                "session_id": session_id,
+                "run_id": run_id,
+                "message_id": assistant_message_id,
+                "completed": result.get("completed", False),
+                "partial": result.get("partial", False),
+                "interrupted": result.get("interrupted", False),
+                "api_calls": result.get("api_calls"),
+            }))
+            await response.write(_encode_sse("done", {"session_id": session_id, "run_id": run_id, "state": "final"}))
+        except (ConnectionResetError, ConnectionAbortedError, BrokenPipeError, OSError):
+            agent = agent_ref[0]
+            if agent is not None:
+                try:
+                    agent.interrupt("SSE client disconnected")
+                except Exception:
+                    pass
+            if not agent_task.done():
+                agent_task.cancel()
+                try:
+                    await agent_task
+                except (asyncio.CancelledError, Exception):
+                    pass
+            logger.info("Session SSE client disconnected; interrupted session %s", session_id)
+
+        return response
+
+    async def _handle_get_memory(self, request: "web.Request") -> "web.Response":
+        """GET /api/memory — read current memory state."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        target = (request.query.get("target") or "all").strip().lower()
+        if target not in {"all", "memory", "user"}:
+            return web.json_response({"error": "target must be one of: all, memory, user"}, status=400)
+
+        store = self._get_memory_store()
+        store.load_from_disk()
+        targets = []
+        if target in {"all", "memory"}:
+            targets.append({
+                "target": "memory",
+                "entries": store.memory_entries,
+                "entry_count": len(store.memory_entries),
+            })
+        if target in {"all", "user"}:
+            targets.append({
+                "target": "user",
+                "entries": store.user_entries,
+                "entry_count": len(store.user_entries),
+            })
+        return web.json_response({"targets": targets})
+
+    async def _handle_add_memory(self, request: "web.Request") -> "web.Response":
+        """POST /api/memory — add a memory entry."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        try:
+            body = await request.json()
+        except (json.JSONDecodeError, Exception):
+            return web.json_response({"error": "Invalid JSON in request body"}, status=400)
+
+        target = str(body.get("target") or "").strip().lower()
+        content = str(body.get("content") or "")
+        if target not in {"memory", "user"}:
+            return web.json_response({"error": "target must be 'memory' or 'user'"}, status=400)
+        result = self._get_memory_store().add(target, content)
+        status = 200 if result.get("success") else 400
+        return web.json_response(result, status=status)
+
+    async def _handle_replace_memory(self, request: "web.Request") -> "web.Response":
+        """PATCH /api/memory — replace a memory entry."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        try:
+            body = await request.json()
+        except (json.JSONDecodeError, Exception):
+            return web.json_response({"error": "Invalid JSON in request body"}, status=400)
+
+        target = str(body.get("target") or "").strip().lower()
+        old_text = str(body.get("old_text") or "")
+        content = str(body.get("content") or "")
+        if target not in {"memory", "user"}:
+            return web.json_response({"error": "target must be 'memory' or 'user'"}, status=400)
+        result = self._get_memory_store().replace(target, old_text, content)
+        status = 200 if result.get("success") else 400
+        return web.json_response(result, status=status)
+
+    async def _handle_delete_memory(self, request: "web.Request") -> "web.Response":
+        """DELETE /api/memory — delete a memory entry."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        try:
+            body = await request.json()
+        except (json.JSONDecodeError, Exception):
+            return web.json_response({"error": "Invalid JSON in request body"}, status=400)
+
+        target = str(body.get("target") or "").strip().lower()
+        old_text = str(body.get("old_text") or "")
+        if target not in {"memory", "user"}:
+            return web.json_response({"error": "target must be 'memory' or 'user'"}, status=400)
+        result = self._get_memory_store().remove(target, old_text)
+        status = 200 if result.get("success") else 400
+        return web.json_response(result, status=status)
+
+    async def _handle_list_skills(self, request: "web.Request") -> "web.Response":
+        """GET /api/skills — list skills."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        category = (request.query.get("category") or "").strip() or None
+        return web.json_response(json.loads(skills_list(category=category)))
+
+    async def _handle_skill_categories(self, request: "web.Request") -> "web.Response":
+        """GET /api/skills/categories — list skill categories."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        return web.json_response(json.loads(skills_categories()))
+
+    async def _handle_view_skill(self, request: "web.Request") -> "web.Response":
+        """GET /api/skills/{name} — fetch skill details."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        name = request.match_info["name"]
+        file_path = (request.query.get("file_path") or "").strip() or None
+        return web.json_response(json.loads(skill_view(name, file_path=file_path)))
+
+    async def _handle_get_config(self, request: "web.Request") -> "web.Response":
+        """GET /api/config — fetch the current config."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        config = load_config()
+        current = self._current_model_settings(config)
+        return web.json_response({
+            "model": current["model"],
+            "provider": current["provider"],
+            "api_mode": current["api_mode"],
+            "base_url": current["base_url"],
+            "config": config,
+        })
+
+    async def _handle_update_config(self, request: "web.Request") -> "web.Response":
+        """PATCH /api/config — update model/provider/base_url settings."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        try:
+            body = await request.json()
+        except (json.JSONDecodeError, Exception):
+            return web.json_response({"error": "Invalid JSON in request body"}, status=400)
+
+        config = load_config()
+        model_cfg = config.get("model")
+        if isinstance(model_cfg, dict):
+            updated_model_cfg = dict(model_cfg)
+        elif isinstance(model_cfg, str) and model_cfg.strip():
+            updated_model_cfg = {"default": model_cfg.strip()}
+        else:
+            updated_model_cfg = {}
+
+        new_provider = str(body.get("provider") or "").strip()
+        new_model = str(body.get("model") or "").strip()
+
+        # Strip provider prefix from model name (e.g. "openai/gpt-5.4" -> "gpt-5.4")
+        # to match how `hermes model <name> <provider>` works from terminal
+        if new_model and "/" in new_model and not new_provider:
+            parts = new_model.split("/", 1)
+            new_provider = parts[0]
+            new_model = parts[1]
+
+        if new_model:
+            updated_model_cfg["default"] = new_model
+        if new_provider:
+            updated_model_cfg["provider"] = new_provider
+        if "base_url" in body:
+            updated_model_cfg["base_url"] = str(body.get("base_url") or "").strip()
+
+        config["model"] = updated_model_cfg
+        # Also sync top-level provider key so all runtime paths agree
+        if new_provider:
+            config["provider"] = new_provider
+        try:
+            save_config(config)
+        except Exception as e:
+            return web.json_response({"error": str(e)}, status=500)
+
+        current = self._current_model_settings(config)
+        return web.json_response({
+            "ok": True,
+            "model": current["model"],
+            "provider": current["provider"],
+            "base_url": current["base_url"],
+        })
+
+    async def _handle_available_models(self, request: "web.Request") -> "web.Response":
+        """GET /api/available-models — list provider models and available providers."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        config = load_config()
+        current = self._current_model_settings(config)
+        provider = (request.query.get("provider") or current["provider"] or "openrouter").strip()
+        models = [
+            {"id": model_id, "description": description, "provider": provider}
+            for model_id, description in curated_models_for_provider(provider)
+        ]
+
+        # Also include models from other authenticated providers
+        model_ids = {m["id"] for m in models}
+        providers = list_available_providers()
+        for p in providers:
+            if not p.get("authenticated") or p["id"] == provider:
+                continue
+            for model_id, desc in curated_models_for_provider(p["id"]):
+                if model_id not in model_ids:
+                    models.append({"id": model_id, "description": desc or p.get("label", p["id"]), "provider": p["id"]})
+                    model_ids.add(model_id)
+
+        # Ensure the currently configured model is always in the list
+        current_model = (current.get("model") or "").strip()
+        if current_model:
+            if current_model not in model_ids:
+                models.insert(0, {"id": current_model, "description": "current", "provider": provider})
+                model_ids.add(current_model)
+
+        # Discover local Ollama models if reachable
+        try:
+            import aiohttp as _aiohttp
+            for ollama_base in ["http://127.0.0.1:11434", "http://localhost:11434"]:
+                try:
+                    async with _aiohttp.ClientSession() as _sess:
+                        async with _sess.get(f"{ollama_base}/api/tags", timeout=_aiohttp.ClientTimeout(total=2)) as resp:
+                            if resp.status == 200:
+                                data = await resp.json()
+                                model_ids = {m["id"] for m in models}
+                                for om in (data.get("models") or []):
+                                    name = om.get("name") or om.get("model") or ""
+                                    if name and name not in model_ids:
+                                        models.append({"id": name, "description": "local", "provider": "ollama"})
+                                        model_ids.add(name)
+                                break
+                except Exception:
+                    continue
+        except ImportError:
+            pass
+
+        providers = list_available_providers()
+        return web.json_response({"provider": provider, "models": models, "providers": providers})
+
     async def _handle_chat_completions(self, request: "web.Request") -> "web.Response":
         """POST /v1/chat/completions — OpenAI Chat Completions format."""
         auth_err = self._check_auth(request)
@@ -630,6 +1482,20 @@ class APIServerAdapter(BasePlatformAdapter):
                 {"error": {"message": "Missing or invalid 'messages' field", "type": "invalid_request_error"}},
                 status=400,
             )
+
+        # Fast-path for capability probes (max_tokens=1 or model='test')
+        # Return a minimal valid response so frontends detect the endpoint
+        max_tokens = body.get("max_tokens")
+        probe_model = body.get("model", "")
+        if max_tokens == 1 or probe_model == "test":
+            return web.json_response({
+                "id": f"chatcmpl-probe-{uuid.uuid4().hex[:8]}",
+                "object": "chat.completion",
+                "created": int(time.time()),
+                "model": probe_model or "hermes-agent",
+                "choices": [{"index": 0, "message": {"role": "assistant", "content": "ok"}, "finish_reason": "stop"}],
+                "usage": {"prompt_tokens": 0, "completion_tokens": 1, "total_tokens": 1},
+            })
 
         stream = body.get("stream", False)
 
@@ -1683,33 +2549,9 @@ class APIServerAdapter(BasePlatformAdapter):
     # ------------------------------------------------------------------
 
     # Check cron module availability once (not per-request)
-    _CRON_AVAILABLE = False
-    try:
-        from cron.jobs import (
-            list_jobs as _cron_list,
-            get_job as _cron_get,
-            create_job as _cron_create,
-            update_job as _cron_update,
-            remove_job as _cron_remove,
-            pause_job as _cron_pause,
-            resume_job as _cron_resume,
-            trigger_job as _cron_trigger,
-        )
-        # Wrap as staticmethod to prevent descriptor binding — these are plain
-        # module functions, not instance methods.  Without this, self._cron_*()
-        # injects ``self`` as the first positional argument and every call
-        # raises TypeError.
-        _cron_list = staticmethod(_cron_list)
-        _cron_get = staticmethod(_cron_get)
-        _cron_create = staticmethod(_cron_create)
-        _cron_update = staticmethod(_cron_update)
-        _cron_remove = staticmethod(_cron_remove)
-        _cron_pause = staticmethod(_cron_pause)
-        _cron_resume = staticmethod(_cron_resume)
-        _cron_trigger = staticmethod(_cron_trigger)
-        _CRON_AVAILABLE = True
-    except ImportError:
-        pass
+    # NOTE: imports are done at module level to avoid Python descriptor
+    # binding issue, otherwise self._fn(arg) passes self as first positional.
+    _CRON_AVAILABLE = _CRON_MODULE_AVAILABLE
 
     _JOB_ID_RE = __import__("re").compile(r"[a-f0-9]{12}")
     # Allowed fields for update — prevents clients injecting arbitrary keys
@@ -1744,7 +2586,7 @@ class APIServerAdapter(BasePlatformAdapter):
             return cron_err
         try:
             include_disabled = request.query.get("include_disabled", "").lower() in ("true", "1")
-            jobs = self._cron_list(include_disabled=include_disabled)
+            jobs = _cron_list(include_disabled=include_disabled)
             return web.json_response({"jobs": jobs})
         except Exception as e:
             return web.json_response({"error": str(e)}, status=500)
@@ -1792,7 +2634,7 @@ class APIServerAdapter(BasePlatformAdapter):
             if repeat is not None:
                 kwargs["repeat"] = repeat
 
-            job = self._cron_create(**kwargs)
+            job = _cron_create(**kwargs)
             return web.json_response({"job": job})
         except Exception as e:
             return web.json_response({"error": str(e)}, status=500)
@@ -1809,7 +2651,7 @@ class APIServerAdapter(BasePlatformAdapter):
         if id_err:
             return id_err
         try:
-            job = self._cron_get(job_id)
+            job = _cron_get(job_id)
             if not job:
                 return web.json_response({"error": "Job not found"}, status=404)
             return web.json_response({"job": job})
@@ -1842,7 +2684,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 return web.json_response(
                     {"error": f"Prompt must be ≤ {self._MAX_PROMPT_LENGTH} characters"}, status=400,
                 )
-            job = self._cron_update(job_id, sanitized)
+            job = _cron_update(job_id, sanitized)
             if not job:
                 return web.json_response({"error": "Job not found"}, status=404)
             return web.json_response({"job": job})
@@ -1861,7 +2703,7 @@ class APIServerAdapter(BasePlatformAdapter):
         if id_err:
             return id_err
         try:
-            success = self._cron_remove(job_id)
+            success = _cron_remove(job_id)
             if not success:
                 return web.json_response({"error": "Job not found"}, status=404)
             return web.json_response({"ok": True})
@@ -1880,7 +2722,7 @@ class APIServerAdapter(BasePlatformAdapter):
         if id_err:
             return id_err
         try:
-            job = self._cron_pause(job_id)
+            job = _cron_pause(job_id)
             if not job:
                 return web.json_response({"error": "Job not found"}, status=404)
             return web.json_response({"job": job})
@@ -1899,7 +2741,7 @@ class APIServerAdapter(BasePlatformAdapter):
         if id_err:
             return id_err
         try:
-            job = self._cron_resume(job_id)
+            job = _cron_resume(job_id)
             if not job:
                 return web.json_response({"error": "Job not found"}, status=404)
             return web.json_response({"job": job})
@@ -1918,7 +2760,7 @@ class APIServerAdapter(BasePlatformAdapter):
         if id_err:
             return id_err
         try:
-            job = self._cron_trigger(job_id)
+            job = _cron_trigger(job_id)
             if not job:
                 return web.json_response({"error": "Job not found"}, status=404)
             return web.json_response({"job": job})
@@ -2333,6 +3175,27 @@ class APIServerAdapter(BasePlatformAdapter):
             # Structured event streaming
             self._app.router.add_post("/v1/runs", self._handle_runs)
             self._app.router.add_get("/v1/runs/{run_id}/events", self._handle_run_events)
+            # Workspace integration endpoints
+            self._app.router.add_get("/api/sessions", self._handle_list_sessions)
+            self._app.router.add_post("/api/sessions", self._handle_create_session)
+            self._app.router.add_get("/api/sessions/search", self._handle_search_sessions)
+            self._app.router.add_get("/api/sessions/{session_id}", self._handle_get_session)
+            self._app.router.add_get("/api/sessions/{session_id}/messages", self._handle_get_session_messages)
+            self._app.router.add_patch("/api/sessions/{session_id}", self._handle_update_session)
+            self._app.router.add_delete("/api/sessions/{session_id}", self._handle_delete_session)
+            self._app.router.add_post("/api/sessions/{session_id}/fork", self._handle_fork_session)
+            self._app.router.add_post("/api/sessions/{session_id}/chat", self._handle_session_chat)
+            self._app.router.add_post("/api/sessions/{session_id}/chat/stream", self._handle_session_chat_stream)
+            self._app.router.add_get("/api/memory", self._handle_get_memory)
+            self._app.router.add_post("/api/memory", self._handle_add_memory)
+            self._app.router.add_patch("/api/memory", self._handle_replace_memory)
+            self._app.router.add_delete("/api/memory", self._handle_delete_memory)
+            self._app.router.add_get("/api/skills", self._handle_list_skills)
+            self._app.router.add_get("/api/skills/categories", self._handle_skill_categories)
+            self._app.router.add_get("/api/skills/{name}", self._handle_view_skill)
+            self._app.router.add_get("/api/config", self._handle_get_config)
+            self._app.router.add_patch("/api/config", self._handle_update_config)
+            self._app.router.add_get("/api/available-models", self._handle_available_models)
             # Start background sweep to clean up orphaned (unconsumed) run streams
             sweep_task = asyncio.create_task(self._sweep_orphaned_runs())
             try:
@@ -2412,6 +3275,10 @@ class APIServerAdapter(BasePlatformAdapter):
             await self._runner.cleanup()
             self._runner = None
         self._app = None
+        if self._session_db is not None:
+            self._session_db.close()
+            self._session_db = None
+        self._memory_store = None
         logger.info("[%s] API server stopped", self.name)
 
     async def send(

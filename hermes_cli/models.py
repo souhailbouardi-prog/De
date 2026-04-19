@@ -577,6 +577,7 @@ _PROVIDER_LABELS["custom"] = "Custom endpoint"  # special case: not a named prov
 
 
 _PROVIDER_ALIASES = {
+    "openai": "openai-codex",
     "glm": "zai",
     "z-ai": "zai",
     "z.ai": "zai",
