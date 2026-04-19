@@ -631,6 +631,12 @@ class GatewayRunner:
         self._fallback_model = self._load_fallback_model()
         self._smart_model_routing = self._load_smart_model_routing()
 
+        # Per-session memory nudge counters — persisted across agent cache
+        # misses (e.g. when smart routing switches between cheap/strong model).
+        # Without this, _turns_since_memory resets to 0 on every new AIAgent
+        # and the background memory review never triggers.
+        self._session_nudge_counters: Dict[str, int] = {}
+
         # Wire process registry into session store for reset protection
         from tools.process_registry import process_registry
         self.session_store = SessionStore(
@@ -9557,6 +9563,12 @@ class GatewayRunner:
                         self._enforce_agent_cache_cap()
                 logger.debug("Created new agent for session %s (sig=%s)", session_key, _sig)
 
+            # Restore memory nudge counter from gateway-level storage so it
+            # survives agent cache misses (smart routing model switches).
+            _saved_nudge = self._session_nudge_counters.get(session_key, 0)
+            if hasattr(agent, '_turns_since_memory'):
+                agent._turns_since_memory = _saved_nudge
+
             # Per-message state — callbacks and reasoning config change every
             # turn and must not be baked into the cached agent constructor.
             agent.tool_progress_callback = progress_callback if tool_progress_enabled else None
@@ -9833,6 +9845,11 @@ class GatewayRunner:
                 unregister_gateway_notify(_approval_session_key)
                 reset_current_session_key(_approval_session_token)
             result_holder[0] = result
+
+            # Save memory nudge counter back to gateway for persistence
+            # across agent cache misses (smart routing model switches).
+            if hasattr(agent, '_turns_since_memory'):
+                self._session_nudge_counters[session_key] = agent._turns_since_memory
 
             # Signal the stream consumer that the agent is done
             if _stream_consumer is not None:
