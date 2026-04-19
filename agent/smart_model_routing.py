@@ -95,6 +95,14 @@ def choose_cheap_model_route(user_message: str, routing_config: Optional[Dict[st
     if _URL_RE.search(text):
         return None
 
+    # CJK text has no whitespace-separated "words", so word-count based
+    # heuristics fail badly.  A 160-char Chinese sentence looks like a
+    # single "word" and slips through as 'simple'.  Detect CJK density
+    # and treat CJK-heavy messages as complex (#8516).
+    cjk_chars = len(_CJK_RE.findall(text))
+    if cjk_chars > 0 and cjk_chars / max(len(text), 1) > 0.2:
+        return None
+
     lowered = text.lower()
     words = {token.strip(".,:;!?()[]{}\"'`") for token in lowered.split()}
     if words & _COMPLEX_KEYWORDS:
@@ -178,18 +186,22 @@ def resolve_turn_route(user_message: str, routing_config: Optional[Dict[str, Any
             "api_key": runtime.get("api_key"),
             "base_url": runtime.get("base_url"),
             "provider": runtime.get("provider"),
-            "api_mode": runtime.get("api_mode"),
-            "command": runtime.get("command"),
-            "args": list(runtime.get("args") or []),
+            # Honour cheap_model config fields over the resolved runtime —
+            # resolve_runtime_provider reads api_mode from the PRIMARY model
+            # config, not the cheap_model config, so it can return the wrong
+            # value for the routed model (#8515).
+            "api_mode": runtime.get("api_mode") or route.get("api_mode"),
+            "command": runtime.get("command") or route.get("command"),
+            "args": list(runtime.get("args") or route.get("args") or []),
             "credential_pool": runtime.get("credential_pool"),
         },
-        "label": f"smart route → {route.get('model')} ({runtime.get('provider')})",
+        "label": f"smart route \u2192 {route.get('model')} ({runtime.get('provider')})",
         "signature": (
             route.get("model"),
             runtime.get("provider"),
             runtime.get("base_url"),
-            runtime.get("api_mode"),
-            runtime.get("command"),
-            tuple(runtime.get("args") or ()),
+            runtime.get("api_mode") or route.get("api_mode"),
+            runtime.get("command") or route.get("command"),
+            tuple(runtime.get("args") or route.get("args") or ()),
         ),
     }
