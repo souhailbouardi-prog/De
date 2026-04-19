@@ -431,6 +431,11 @@ def _socket_safe_tmpdir() -> str:
 # Stores: session_name (always), bb_session_id + cdp_url (cloud mode only)
 _active_sessions: Dict[str, Dict[str, str]] = {}  # task_id -> {session_name, ...}
 _recording_sessions: set = set()  # task_ids with active recordings
+_live_cdp_task_warning = (
+    "Live Chrome via /browser connect is shared-state and does not support multiple "
+    "concurrent browser tasks safely. Finish the existing browser task or disconnect "
+    "from live Chrome before starting another."
+)
 
 # Flag to track if cleanup has been done
 _cleanup_done = False
@@ -939,6 +944,25 @@ def _get_session_info(task_id: Optional[str] = None) -> Dict[str, str]:
     
     # Update activity timestamp for this session
     _update_session_activity(task_id)
+
+    cdp_override = _get_cdp_override()
+    if cdp_override:
+        with _cleanup_lock:
+            existing = _active_sessions.get(task_id)
+            if existing:
+                return existing
+            live_cdp_tasks = [
+                active_task_id
+                for active_task_id, info in _active_sessions.items()
+                if active_task_id != task_id and info.get("features", {}).get("cdp_override")
+            ]
+            if live_cdp_tasks:
+                raise RuntimeError(
+                    f"{_live_cdp_task_warning} Active live browser task(s): {', '.join(sorted(live_cdp_tasks))}"
+                )
+            session_info = _create_cdp_session(task_id, cdp_override)
+            _active_sessions[task_id] = session_info
+            return session_info
     
     with _cleanup_lock:
         # Check if we already have a session for this task
@@ -946,45 +970,41 @@ def _get_session_info(task_id: Optional[str] = None) -> Dict[str, str]:
             return _active_sessions[task_id]
     
     # Create session outside the lock (network call in cloud mode)
-    cdp_override = _get_cdp_override()
-    if cdp_override:
-        session_info = _create_cdp_session(task_id, cdp_override)
+    provider = _get_cloud_provider()
+    if provider is None:
+        session_info = _create_local_session(task_id)
     else:
-        provider = _get_cloud_provider()
-        if provider is None:
-            session_info = _create_local_session(task_id)
-        else:
+        try:
+            session_info = provider.create_session(task_id)
+            # Validate cloud provider returned a usable session
+            if not session_info or not isinstance(session_info, dict):
+                raise ValueError(f"Cloud provider returned invalid session: {session_info!r}")
+            if session_info.get("cdp_url"):
+                # Some cloud providers (including Browser-Use v3) return an HTTP
+                # CDP discovery URL instead of a raw websocket endpoint.
+                session_info = dict(session_info)
+                session_info["cdp_url"] = _resolve_cdp_override(str(session_info["cdp_url"]))
+        except Exception as e:
+            provider_name = type(provider).__name__
+            logger.warning(
+                "Cloud provider %s failed (%s); attempting fallback to local "
+                "Chromium for task %s",
+                provider_name, e, task_id,
+                exc_info=True,
+            )
             try:
-                session_info = provider.create_session(task_id)
-                # Validate cloud provider returned a usable session
-                if not session_info or not isinstance(session_info, dict):
-                    raise ValueError(f"Cloud provider returned invalid session: {session_info!r}")
-                if session_info.get("cdp_url"):
-                    # Some cloud providers (including Browser-Use v3) return an HTTP
-                    # CDP discovery URL instead of a raw websocket endpoint.
-                    session_info = dict(session_info)
-                    session_info["cdp_url"] = _resolve_cdp_override(str(session_info["cdp_url"]))
-            except Exception as e:
-                provider_name = type(provider).__name__
-                logger.warning(
-                    "Cloud provider %s failed (%s); attempting fallback to local "
-                    "Chromium for task %s",
-                    provider_name, e, task_id,
-                    exc_info=True,
-                )
-                try:
-                    session_info = _create_local_session(task_id)
-                except Exception as local_error:
-                    raise RuntimeError(
-                        f"Cloud provider {provider_name} failed ({e}) and local "
-                        f"fallback also failed ({local_error})"
-                    ) from e
-                # Mark session as degraded for observability
-                if isinstance(session_info, dict):
-                    session_info = dict(session_info)
-                    session_info["fallback_from_cloud"] = True
-                    session_info["fallback_reason"] = str(e)
-                    session_info["fallback_provider"] = provider_name
+                session_info = _create_local_session(task_id)
+            except Exception as local_error:
+                raise RuntimeError(
+                    f"Cloud provider {provider_name} failed ({e}) and local "
+                    f"fallback also failed ({local_error})"
+                ) from e
+            # Mark session as degraded for observability
+            if isinstance(session_info, dict):
+                session_info = dict(session_info)
+                session_info["fallback_from_cloud"] = True
+                session_info["fallback_reason"] = str(e)
+                session_info["fallback_provider"] = provider_name
     
     with _cleanup_lock:
         # Double-check: another thread may have created a session while we
@@ -1437,7 +1457,13 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
     
     # Get session info to check if this is a new session
     # (will create one with features logged if not exists)
-    session_info = _get_session_info(effective_task_id)
+    try:
+        session_info = _get_session_info(effective_task_id)
+    except Exception as e:
+        return json.dumps({
+            "success": False,
+            "error": f"Failed to create browser session: {str(e)}"
+        }, ensure_ascii=False)
     is_first_nav = session_info.get("_first_nav", True)
     
     # Auto-start recording if configured and this is first navigation
