@@ -116,6 +116,30 @@ def test_restore_stashed_changes_can_skip_restore_and_keep_stash(monkeypatch, tm
     assert "git stash apply abc123" in out
 
 
+def test_restore_stashed_changes_handles_eof_and_keeps_stash(monkeypatch, tmp_path, capsys):
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append((cmd, kwargs))
+        raise AssertionError(f"unexpected command: {cmd}")
+
+    monkeypatch.setattr(hermes_main.subprocess, "run", fake_run)
+
+    def _raise_eof():
+        raise EOFError
+
+    monkeypatch.setattr("builtins.input", _raise_eof)
+
+    restored = hermes_main._restore_stashed_changes(["git"], tmp_path, "abc123", prompt_user=True)
+
+    assert restored is False
+    assert calls == []
+    out = capsys.readouterr().out
+    assert "No interactive input available — skipping automatic restore." in out
+    assert "Your changes are still preserved in git stash." in out
+    assert "git stash apply abc123" in out
+
+
 def test_restore_stashed_changes_applies_without_prompt_when_disabled(monkeypatch, tmp_path, capsys):
     calls = []
 
