@@ -1524,6 +1524,24 @@ def resolve_provider_client(
         return (_to_async_client(client, final_model) if async_mode
                 else (client, final_model))
 
+
+    # ── Bedrock (AnthropicBedrock via IAM) ───────────────────────────
+    if provider == "bedrock":
+        try:
+            from agent.anthropic_adapter import build_anthropic_bedrock_client
+            from hermes_cli.config import load_config
+            cfg = load_config()
+            region = (cfg.get("bedrock", {}).get("region") or "").strip() or "us-west-2"
+            bedrock_client = build_anthropic_bedrock_client(region)
+            default_model = model or "us.anthropic.claude-haiku-4-5-20251001-v1:0"
+            logger.debug("resolve_provider_client: bedrock (%s) region=%s", default_model, region)
+            wrapper = AnthropicAuxiliaryClient(bedrock_client, default_model, "bedrock-iam", f"bedrock://{region}", is_oauth=False)
+            return (_to_async_client(wrapper, default_model) if async_mode
+                    else (wrapper, default_model))
+        except Exception as e:
+            logger.warning("resolve_provider_client: bedrock failed: %s", e)
+            return None, None
+
     # ── Custom endpoint (OPENAI_BASE_URL + OPENAI_API_KEY) ───────────
     if provider == "custom":
         if explicit_base_url:
