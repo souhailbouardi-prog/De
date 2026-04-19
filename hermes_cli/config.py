@@ -1639,6 +1639,14 @@ OPTIONAL_ENV_VARS = {
         "category": "messaging",
         "advanced": True,
     },
+    "API_SERVER_MAX_REQUEST_MB": {
+        "description": "Max POST body size in megabytes (default: 25). Needs to be large enough for multimodal requests carrying base64-encoded images.",
+        "prompt": "API server max request size (MB)",
+        "url": None,
+        "password": False,
+        "category": "messaging",
+        "advanced": True,
+    },
     "GATEWAY_PROXY_URL": {
         "description": "URL of a remote Hermes API server to forward messages to (proxy mode). When set, the gateway handles platform I/O only — all agent work is delegated to the remote server. Use for Docker E2EE containers that relay to a host agent. Also configurable via gateway.proxy_url in config.yaml.",
         "prompt": "Remote Hermes API server URL (e.g. http://192.168.1.100:8642)",

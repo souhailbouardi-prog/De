@@ -53,7 +53,30 @@ logger = logging.getLogger(__name__)
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8642
 MAX_STORED_RESPONSES = 100
-MAX_REQUEST_BYTES = 1_000_000  # 1 MB default limit for POST bodies
+
+
+def _resolve_max_request_bytes() -> int:
+    """Resolve the max POST body size.
+
+    Default is 25 MB so that multimodal requests carrying a few base64-encoded
+    images fit.  Operators can tighten or loosen this via the
+    ``API_SERVER_MAX_REQUEST_MB`` environment variable.
+    """
+    raw = os.getenv("API_SERVER_MAX_REQUEST_MB", "").strip()
+    if raw:
+        try:
+            mb = float(raw)
+            if mb > 0:
+                return int(mb * 1024 * 1024)
+        except ValueError:
+            logger.warning(
+                "Invalid API_SERVER_MAX_REQUEST_MB=%r; falling back to default",
+                raw,
+            )
+    return 25 * 1024 * 1024
+
+
+MAX_REQUEST_BYTES = _resolve_max_request_bytes()
 CHAT_COMPLETIONS_SSE_KEEPALIVE_SECONDS = 30.0
 MAX_NORMALIZED_TEXT_LENGTH = 65_536  # 64 KB cap for normalized content parts
 MAX_CONTENT_LIST_SIZE = 1_000  # Max items when content is an array
@@ -115,6 +138,275 @@ def _normalize_chat_content(
         return result[:MAX_NORMALIZED_TEXT_LENGTH] if len(result) > MAX_NORMALIZED_TEXT_LENGTH else result
     except Exception:
         return ""
+
+
+_IMAGE_PREPROCESS_PROMPT = (
+    "Describe everything visible in this image in thorough detail. "
+    "Include any text, code, data, objects, people, layout, colors, "
+    "and any other notable visual information."
+)
+
+# Accept only image MIME types we can sniff and recognize.  Unknown types
+# collapse to a generic .bin suffix so the vision tool rejects them cleanly
+# instead of being misled by the caller's claimed Content-Type.
+_IMAGE_MIME_SUFFIXES = {
+    "image/png": ".png",
+    "image/gif": ".gif",
+    "image/webp": ".webp",
+    "image/jpeg": ".jpg",
+    "image/jpg": ".jpg",
+}
+
+# Per-image cap on the decoded byte payload of a data: URL (15 MiB).
+# Paired with MAX_REQUEST_BYTES (the per-request cap) so that a single
+# oversize image can't sneak through, and so we don't decode > this much
+# attacker-controlled base64 into RAM.
+_MAX_IMAGE_BYTES = 15 * 1024 * 1024
+
+
+def _sniff_image_mime(data: bytes) -> Optional[str]:
+    """Return the MIME type implied by image magic bytes, or None."""
+    if data.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if data.startswith((b"GIF87a", b"GIF89a")):
+        return "image/gif"
+    if data.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if len(data) >= 12 and data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "image/webp"
+    return None
+
+
+def _is_safe_image_url(url: str) -> bool:
+    """Return True iff ``url`` is an acceptable image source.
+
+    Acceptable: ``data:image/*;base64,...`` and http(s) URLs that pass the
+    shared SSRF filter (which blocks loopback, link-local, private ranges,
+    and cloud-metadata endpoints).  Everything else — ``file://``,
+    ``ftp://``, ``gopher://``, raw local paths — is rejected.
+
+    Fails closed: any lookup/parse error returns False.
+    """
+    if not isinstance(url, str) or not url:
+        return False
+    if url.startswith("data:"):
+        return True  # data: URLs are validated by _materialize_data_url
+    if not url.startswith(("http://", "https://")):
+        return False
+    try:
+        from tools.url_safety import is_safe_url
+    except Exception:
+        # SSRF guard unavailable → refuse to call out to arbitrary hosts.
+        return False
+    try:
+        return bool(is_safe_url(url))
+    except Exception:
+        return False
+
+
+def _materialize_data_url(url: str):
+    """Write a ``data:image/...;base64,...`` URL to a temp file.
+
+    Returns ``(path_str, cleanup_path)`` where ``cleanup_path`` is the
+    :class:`Path` the caller must ``unlink()`` when done.  Returns
+    ``(url, None)`` unchanged if ``url`` is not a ``data:`` URL.
+
+    Validates the payload by sniffing magic bytes — the caller-supplied
+    MIME type is not trusted for anything but logging.  Payloads that
+    exceed ``_MAX_IMAGE_BYTES`` or don't match a known image format raise
+    :class:`ValueError`.
+    """
+    import base64
+    import tempfile
+    from pathlib import Path as _Path
+
+    if not isinstance(url, str) or not url.startswith("data:"):
+        return url, None
+
+    header, _, payload = url.partition(",")
+    # The claimed MIME is advisory only — sniffed magic bytes decide.
+    claimed_mime = header[len("data:"):].split(";", 1)[0].strip().lower()
+
+    try:
+        data = base64.b64decode(payload, validate=False)
+    except Exception as exc:  # binascii.Error, ValueError
+        raise ValueError("invalid base64 payload in data: URL") from exc
+
+    if len(data) > _MAX_IMAGE_BYTES:
+        raise ValueError(
+            f"image payload exceeds per-image limit "
+            f"({len(data)} > {_MAX_IMAGE_BYTES} bytes)"
+        )
+
+    sniffed_mime = _sniff_image_mime(data)
+    if sniffed_mime is None:
+        raise ValueError(
+            "data: URL payload is not a recognized image format "
+            f"(claimed {claimed_mime!r})"
+        )
+
+    suffix = _IMAGE_MIME_SUFFIXES.get(sniffed_mime, ".bin")
+    tmp = tempfile.NamedTemporaryFile(
+        prefix="api_server_image_", suffix=suffix, delete=False,
+    )
+    try:
+        tmp.write(data)
+    finally:
+        tmp.close()
+    path = _Path(tmp.name)
+    return str(path), path
+
+
+def _split_content_parts(content: List[Any]):
+    """Extract text strings and image URLs from a multi-part content list."""
+    text_parts: List[str] = []
+    image_urls: List[str] = []
+    for part in content:
+        if isinstance(part, str):
+            if part.strip():
+                text_parts.append(part.strip())
+            continue
+        if not isinstance(part, dict):
+            continue
+        ptype = str(part.get("type") or "").strip().lower()
+        if ptype in {"text", "input_text", "output_text"}:
+            text = str(part.get("text", "") or "").strip()
+            if text:
+                text_parts.append(text)
+        elif ptype == "image_url":
+            img = part.get("image_url")
+            url = ""
+            if isinstance(img, dict):
+                url = str(img.get("url", "") or "")
+            elif isinstance(img, str):
+                url = img
+            if url:
+                image_urls.append(url)
+    return text_parts, image_urls
+
+
+async def _preprocess_message_images(messages: List[Dict[str, Any]]) -> None:
+    """Convert ``image_url`` parts in OpenAI chat messages into text descriptions.
+
+    The OpenAI chat completions format allows a message's ``content`` to be an
+    array of typed parts, including ``{"type": "image_url", ...}``.  The
+    downstream agent pipeline expects plain strings, and the existing
+    :func:`_normalize_chat_content` flatten step silently drops image parts.
+
+    This helper — called before normalization — mirrors the CLI's
+    ``_preprocess_images_with_vision``: for each image in the message, it
+    invokes the auxiliary vision model (configured via ``auxiliary.vision``)
+    and inlines the resulting description back into the user's message as
+    text.  This lets any provider backend (Codex Responses, Anthropic,
+    OpenAI-compatible, etc.) receive the image content, since the agent
+    ultimately only sees text.
+
+    ``data:`` URLs (used by Open WebUI and similar frontends) are materialized
+    to a temp file after base64-decoded-size and magic-byte validation;
+    remote URLs are filtered through ``tools.url_safety.is_safe_url`` to
+    block SSRF targets.  Per-image errors produce a neutral note in the
+    message rather than failing the whole request, and exception details
+    are logged internally rather than echoed to the caller.
+
+    Mutates ``messages`` in place.
+    """
+    # Neutral user-facing message for any per-image failure.  Exception
+    # details (file paths, stack traces, internal URLs) go only to logs.
+    _IMAGE_FAILED_NOTE = (
+        "[The user attached an image but it could not be processed.]"
+    )
+
+    for msg in messages:
+        if not isinstance(msg, dict):
+            continue
+        content = msg.get("content")
+        if not isinstance(content, list):
+            continue
+
+        has_image = any(
+            isinstance(p, dict) and str(p.get("type") or "").strip().lower() == "image_url"
+            for p in content
+        )
+        if not has_image:
+            continue
+
+        try:
+            from tools.vision_tools import vision_analyze_tool
+        except Exception as exc:
+            logger.warning(
+                "vision_analyze_tool unavailable (%s); image parts in this "
+                "request will be dropped",
+                exc,
+            )
+            continue
+
+        text_parts, image_urls = _split_content_parts(content)
+
+        enriched: List[str] = []
+        for url in image_urls:
+            if not _is_safe_image_url(url):
+                logger.warning(
+                    "api_server rejecting unsafe image url (scheme/SSRF filter)"
+                )
+                enriched.append(_IMAGE_FAILED_NOTE)
+                continue
+
+            vision_source, cleanup_path = url, None
+            try:
+                vision_source, cleanup_path = _materialize_data_url(url)
+                result_json = await vision_analyze_tool(
+                    image_url=vision_source, user_prompt=_IMAGE_PREPROCESS_PROMPT,
+                )
+                try:
+                    result = json.loads(result_json) if isinstance(result_json, str) else {}
+                except (ValueError, TypeError):
+                    result = {}
+
+                if isinstance(result, dict) and result.get("success"):
+                    desc = str(result.get("analysis", "") or "").strip()
+                    if desc:
+                        enriched.append(
+                            f"[The user attached an image. Here's what it contains:\n{desc}]"
+                        )
+                    else:
+                        enriched.append(
+                            "[The user attached an image but the vision model returned no description.]"
+                        )
+                else:
+                    # Log the upstream reason verbatim for operators; show a
+                    # neutral message to the agent so internal paths / errors
+                    # don't end up in user-visible output.
+                    upstream_err = ""
+                    if isinstance(result, dict):
+                        upstream_err = str(
+                            result.get("analysis") or result.get("error") or ""
+                        ).strip()
+                    logger.warning(
+                        "api_server vision analysis failed: %s",
+                        upstream_err or "unknown error",
+                    )
+                    enriched.append(_IMAGE_FAILED_NOTE)
+            except Exception as exc:
+                logger.warning(
+                    "api_server image preprocessing raised: %s", exc, exc_info=True,
+                )
+                enriched.append(_IMAGE_FAILED_NOTE)
+            finally:
+                if cleanup_path is not None:
+                    try:
+                        if cleanup_path.exists():
+                            cleanup_path.unlink()
+                    except OSError:
+                        pass
+
+        user_text = "\n".join(t for t in text_parts if t).strip()
+        if enriched:
+            prefix = "\n\n".join(enriched)
+            msg["content"] = f"{prefix}\n\n{user_text}" if user_text else prefix
+        elif user_text:
+            msg["content"] = user_text
+        else:
+            msg["content"] = "[An image was attached but could not be described.]"
 
 
 def check_api_server_requirements() -> bool:
@@ -632,6 +924,17 @@ class APIServerAdapter(BasePlatformAdapter):
             )
 
         stream = body.get("stream", False)
+
+        # Describe any image_url parts in-place via the auxiliary vision model
+        # so the agent pipeline receives them as text.  Without this,
+        # _normalize_chat_content below would silently drop them.
+        try:
+            await _preprocess_message_images(messages)
+        except Exception as e:
+            logger.warning(
+                "image preprocessing failed; images in this request will be dropped: %s",
+                e,
+            )
 
         # Extract system message (becomes ephemeral system prompt layered ON TOP of core)
         system_prompt = None
@@ -1423,7 +1726,20 @@ class APIServerAdapter(BasePlatformAdapter):
             previous_response_id = self._response_store.get_conversation(conversation)
             # No error if conversation doesn't exist yet — it's a new conversation
 
-        # Normalize input to message list
+        # Normalize input to message list.  Preprocess image_url parts first
+        # so the auxiliary vision model can describe them before
+        # _normalize_chat_content drops non-text content.
+        if isinstance(raw_input, list):
+            try:
+                await _preprocess_message_images(
+                    [item for item in raw_input if isinstance(item, dict)]
+                )
+            except Exception as e:
+                logger.warning(
+                    "image preprocessing failed; images in this request will be dropped: %s",
+                    e,
+                )
+
         input_messages: List[Dict[str, str]] = []
         if isinstance(raw_input, str):
             input_messages = [{"role": "user", "content": raw_input}]

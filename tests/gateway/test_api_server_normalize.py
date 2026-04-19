@@ -39,6 +39,10 @@ class TestNormalizeChatContent:
         assert _normalize_chat_content(content) == "plain string\ndict part"
 
     def test_image_url_parts_silently_skipped(self):
+        # ``_normalize_chat_content`` itself still drops image parts — callers
+        # that care about images are expected to run
+        # ``_preprocess_message_images`` first (see
+        # ``test_api_server_image_preprocessing``).
         content = [
             {"type": "text", "text": "check this:"},
             {"type": "image_url", "image_url": {"url": "https://example.com/img.png"}},
