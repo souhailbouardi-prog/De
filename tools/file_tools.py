@@ -629,8 +629,16 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
         _paths_to_check.append(path)
     if mode == "patch" and patch:
         import re as _re
-        for _m in _re.finditer(r'^\*\*\*\s+(?:Update|Add|Delete)\s+File:\s*(.+)$', patch, _re.MULTILINE):
+        # `\s*` (not `\s+`) matches patch_parser leniency: it accepts
+        # `***Update File:` without a space after the asterisks.
+        for _m in _re.finditer(r'^\*\*\*\s*(?:Update|Add|Delete)\s+File:\s*(.+)$', patch, _re.MULTILINE):
             _paths_to_check.append(_m.group(1).strip())
+        # Move operations use `src -> dst`; check both endpoints so a
+        # sensitive destination (e.g. /etc/crontab) is refused before
+        # it reaches the lower-level write deny list.
+        for _m in _re.finditer(r'^\*\*\*\s*Move\s+File:\s*(.+?)\s*->\s*(.+)$', patch, _re.MULTILINE):
+            _paths_to_check.append(_m.group(1).strip())
+            _paths_to_check.append(_m.group(2).strip())
     for _p in _paths_to_check:
         sensitive_err = _check_sensitive_path(_p)
         if sensitive_err:
