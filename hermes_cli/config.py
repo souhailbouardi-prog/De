@@ -1291,6 +1291,14 @@ OPTIONAL_ENV_VARS = {
         "password": True,
         "category": "tool",
     },
+    "LUMENFALL_API_KEY": {
+        "description": "Lumenfall API key for image generation, video generation, image editing, and model discovery",
+        "prompt": "Lumenfall API key",
+        "url": "https://lumenfall.ai",
+        "tools": ["lumenfall_image_generate", "lumenfall_video_generate", "lumenfall_image_edit", "lumenfall_list_models"],
+        "password": True,
+        "category": "tool",
+    },
     "TINKER_API_KEY": {
         "description": "Tinker API key for RL training",
         "prompt": "Tinker API key",
@@ -3367,6 +3375,7 @@ def show_config():
         ("BROWSERBASE_API_KEY", "Browserbase"),
         ("BROWSER_USE_API_KEY", "Browser Use"),
         ("FAL_KEY", "FAL"),
+        ("LUMENFALL_API_KEY", "Lumenfall"),
     ]
     
     for env_key, name in keys:
@@ -3543,7 +3552,7 @@ def set_config_value(key: str, value: str):
         'FIRECRAWL_GATEWAY_URL', 'TOOL_GATEWAY_DOMAIN', 'TOOL_GATEWAY_SCHEME',
         'TOOL_GATEWAY_USER_TOKEN', 'TAVILY_API_KEY',
         'BROWSERBASE_API_KEY', 'BROWSERBASE_PROJECT_ID', 'BROWSER_USE_API_KEY',
-        'FAL_KEY', 'TELEGRAM_BOT_TOKEN', 'DISCORD_BOT_TOKEN',
+        'FAL_KEY', 'LUMENFALL_API_KEY', 'TELEGRAM_BOT_TOKEN', 'DISCORD_BOT_TOKEN',
         'TERMINAL_SSH_HOST', 'TERMINAL_SSH_USER', 'TERMINAL_SSH_KEY',
         'SUDO_PASSWORD', 'SLACK_BOT_TOKEN', 'SLACK_APP_TOKEN',
         'GITHUB_TOKEN', 'HONCHO_API_KEY', 'WANDB_API_KEY',

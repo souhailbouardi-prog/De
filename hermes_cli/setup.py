@@ -415,6 +415,12 @@ def _print_setup_summary(config: dict, hermes_home):
     else:
         tool_status.append(("Image Generation", False, "FAL_KEY"))
 
+    # Lumenfall (image + video generation)
+    if get_env_value("LUMENFALL_API_KEY"):
+        tool_status.append(("Lumenfall Image & Video Generation", True, None))
+    else:
+        tool_status.append(("Lumenfall Image & Video Generation", False, "LUMENFALL_API_KEY"))
+
     # TTS — show configured provider
     tts_provider = config.get("tts", {}).get("provider", "edge")
     if subscription_features.tts.managed_by_nous:

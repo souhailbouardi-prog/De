@@ -37,6 +37,8 @@ _HERMES_CORE_TOOLS = [
     "read_file", "write_file", "patch", "search_files",
     # Vision + image generation
     "vision_analyze", "image_generate",
+    "lumenfall_image_generate", "lumenfall_video_generate",
+    "lumenfall_list_models", "lumenfall_image_edit",
     # Skills
     "skills_list", "skill_view", "skill_manage",
     # Browser automation
@@ -90,7 +92,16 @@ TOOLSETS = {
         "tools": ["image_generate"],
         "includes": []
     },
-    
+
+    "lumenfall": {
+        "description": "Lumenfall image and video generation, editing, and model discovery",
+        "tools": [
+            "lumenfall_image_generate", "lumenfall_video_generate",
+            "lumenfall_list_models", "lumenfall_image_edit",
+        ],
+        "includes": []
+    },
+
     "terminal": {
         "description": "Terminal/command execution and process management tools",
         "tools": ["terminal", "process"],
@@ -268,6 +279,9 @@ TOOLSETS = {
             "read_file", "write_file", "patch", "search_files",
             # Vision + image generation
             "vision_analyze", "image_generate",
+            # Lumenfall image & video generation
+            "lumenfall_image_generate", "lumenfall_video_generate",
+            "lumenfall_list_models", "lumenfall_image_edit",
             # Skills
             "skills_list", "skill_view", "skill_manage",
             # Browser automation
