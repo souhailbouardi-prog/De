@@ -1,0 +1,7 @@
+name: sound_alerts
+version: 1.0.0
+description: "TTS sound alerts for approval requests and task completion. Plays audio notifications when the agent needs permission or finishes a task."
+requires_env: []
+hooks:
+  - on_approval_request
+  - on_task_complete

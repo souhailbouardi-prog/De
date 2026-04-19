@@ -856,6 +856,19 @@ def check_all_command_guards(command: str, env_type: str,
 
             # Notify the user (bridges sync agent thread → async gateway)
             try:
+                from hermes_cli.plugins import invoke_hook as _invoke_hook
+                _invoke_hook(
+                    "on_approval_request",
+                    command=command,
+                    description=combined_desc,
+                    pattern_key=primary_key,
+                    pattern_keys=all_keys,
+                    platform="gateway",
+                    session_key=session_key,
+                )
+            except Exception:
+                pass
+            try:
                 notify_cb(approval_data)
             except Exception as exc:
                 logger.warning("Gateway approval notify failed: %s", exc)
@@ -963,6 +976,19 @@ def check_all_command_guards(command: str, env_type: str,
 
     # CLI interactive: single combined prompt
     # Hide [a]lways when any tirith warning is present
+    try:
+        from hermes_cli.plugins import invoke_hook as _invoke_hook
+        _invoke_hook(
+            "on_approval_request",
+            command=command,
+            description=combined_desc,
+            pattern_key=primary_key,
+            pattern_keys=all_keys,
+            platform="cli",
+            session_key=session_key,
+        )
+    except Exception:
+        pass
     choice = prompt_dangerous_approval(command, combined_desc,
                                        allow_permanent=not has_tirith,
                                        approval_callback=approval_callback)

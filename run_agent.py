@@ -11745,6 +11745,23 @@ class AIAgent:
             except Exception as exc:
                 logger.warning("post_llm_call hook failed: %s", exc)
 
+        # Plugin hook: on_task_complete
+        # Fired when the agent finishes a task (completed normally).
+        # Plugins can use this to notify the user (e.g. play a sound).
+        if completed and final_response:
+            try:
+                from hermes_cli.plugins import invoke_hook as _invoke_hook
+                _invoke_hook(
+                    "on_task_complete",
+                    session_id=self.session_id,
+                    user_message=original_user_message,
+                    assistant_response=final_response,
+                    api_calls=api_call_count,
+                    platform=getattr(self, "platform", None) or "",
+                )
+            except Exception as exc:
+                logger.warning("on_task_complete hook failed: %s", exc)
+
         # Extract reasoning from the last assistant message (if any)
         last_reasoning = None
         for msg in reversed(messages):
