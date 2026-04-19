@@ -100,6 +100,7 @@ Hermes reads MCP config from `~/.hermes/config.yaml` under `mcp_servers`.
 | `command` | string | Executable for a stdio MCP server |
 | `args` | list | Arguments for the stdio server |
 | `env` | mapping | Environment variables passed to the stdio server |
+| `cwd` | string | Working directory for stdio server subprocesses |
 | `url` | string | HTTP MCP endpoint |
 | `headers` | mapping | HTTP headers for remote servers |
 | `timeout` | number | Tool call timeout |
@@ -310,6 +311,43 @@ That makes MCP servers easier to reason about at the toolset level.
 For stdio servers, Hermes does not blindly pass your full shell environment.
 
 Only explicitly configured `env` plus a safe baseline are passed through. This reduces accidental secret leakage.
+
+### Stdio cwd control
+
+For stdio servers, you can also set an explicit working directory:
+
+```yaml
+mcp_servers:
+  chrome_devtools:
+    command: "cmd.exe"
+    args: ["/c", "npx -y chrome-devtools-mcp@latest --autoConnect"]
+    cwd: "/mnt/c/Users/Administrator"
+```
+
+This is especially useful on WSL when the stdio server command is a Windows executable such as `cmd.exe` or `powershell.exe`.
+
+If Hermes is launched from a Linux-only WSL path like `/root` or `/home/user`, Windows may treat that launch directory as a `\\wsl.localhost\...` UNC path and print a warning before the MCP server starts. That extra stdout text corrupts the stdio MCP protocol stream and makes the server appear to fail immediately.
+
+Hermes now automatically picks a Windows-mounted working directory for Windows stdio executables on WSL when `cwd` is not set, but you can still override it explicitly if needed.
+
+### WSL troubleshooting for Windows-backed stdio servers
+
+If an MCP server works in `hermes mcp test` but shows as failed when Hermes starts on WSL, check where you launched Hermes from.
+
+Avoid launching Hermes from Linux-only WSL directories when the MCP command is a Windows executable:
+
+- bad: `/root`, `/home/...`
+- good: `/mnt/c/Users/<you>`, `/mnt/c/workspace/...`
+
+Typical failure symptom:
+
+```text
+'\\wsl.localhost\Ubuntu\root'
+CMD.EXE was started with the above path as the current directory.
+UNC paths are not supported. Defaulting to Windows directory.
+```
+
+That message comes from `cmd.exe`, not from the MCP server itself.
 
 ### Config-level exposure control
 

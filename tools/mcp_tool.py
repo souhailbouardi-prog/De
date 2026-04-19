@@ -80,7 +80,10 @@ import re
 import shutil
 import threading
 import time
+from pathlib import Path
 from typing import Any, Dict, List, Optional
+
+from hermes_constants import is_wsl
 
 logger = logging.getLogger(__name__)
 
@@ -319,6 +322,45 @@ def _resolve_stdio_command(command: str, env: dict) -> tuple[str, dict]:
         resolved_env = _prepend_path(resolved_env, command_dir)
 
     return resolved_command, resolved_env
+
+
+def _looks_like_windows_executable(command: str) -> bool:
+    """Return True when *command* appears to be a Windows executable name/path."""
+    lowered = os.path.basename(str(command).strip()).lower()
+    return lowered.endswith((".exe", ".cmd", ".bat", ".com"))
+
+
+def _resolve_stdio_cwd(command: str, config_cwd: Optional[str]) -> Optional[str]:
+    """Resolve a safe working directory for stdio MCP subprocesses.
+
+    On WSL, launching ``cmd.exe`` (or another Windows executable) from a Linux
+    cwd like ``/root`` makes Windows emit a UNC-path warning on stdout. That
+    corrupts stdio-based MCP traffic. When no explicit cwd is configured, route
+    Windows executables through a Windows-mounted path instead.
+    """
+    if config_cwd:
+        return os.path.expanduser(str(config_cwd))
+
+    if not is_wsl() or not _looks_like_windows_executable(command):
+        return None
+
+    candidates = []
+    for username in (
+        os.environ.get("USERNAME"),
+        os.environ.get("WIN_USERNAME"),
+    ):
+        if username:
+            candidates.append(Path("/mnt/c/Users") / username)
+
+    candidates.extend([
+        Path("/mnt/c/Users/Administrator"),
+        Path("/mnt/c/Users"),
+        Path("/mnt/c"),
+    ])
+    for candidate in candidates:
+        if candidate.is_dir():
+            return str(candidate)
+    return None
 
 
 def _format_connect_error(exc: BaseException) -> str:
@@ -933,6 +975,7 @@ class MCPServerTask:
         command = config.get("command")
         args = config.get("args", [])
         user_env = config.get("env")
+        config_cwd = config.get("cwd")
 
         if not command:
             raise ValueError(
@@ -941,6 +984,7 @@ class MCPServerTask:
 
         safe_env = _build_safe_env(user_env)
         command, safe_env = _resolve_stdio_command(command, safe_env)
+        resolved_cwd = _resolve_stdio_cwd(command, config_cwd)
 
         # Check package against OSV malware database before spawning
         from tools.osv_check import check_package_for_malware
@@ -954,6 +998,7 @@ class MCPServerTask:
             command=command,
             args=args,
             env=safe_env if safe_env else None,
+            cwd=resolved_cwd,
         )
 
         sampling_kwargs = self._sampling.session_kwargs() if self._sampling else {}

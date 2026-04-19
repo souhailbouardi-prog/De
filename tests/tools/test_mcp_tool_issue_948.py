@@ -6,7 +6,13 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from tools.mcp_tool import MCPServerTask, _format_connect_error, _resolve_stdio_command, _MCP_AVAILABLE
+from tools.mcp_tool import (
+    MCPServerTask,
+    _MCP_AVAILABLE,
+    _format_connect_error,
+    _resolve_stdio_command,
+    _resolve_stdio_cwd,
+)
 
 # Ensure the mcp module symbols exist for patching even when the SDK isn't installed
 if not _MCP_AVAILABLE:
@@ -47,6 +53,29 @@ def test_resolve_stdio_command_respects_explicit_empty_path():
     assert command == "python"
     assert env["PATH"] == ""
     assert seen_paths == [""]
+
+
+def test_resolve_stdio_cwd_uses_windows_mount_for_wsl_windows_exe():
+    with patch("tools.mcp_tool.is_wsl", return_value=True), \
+         patch.dict("os.environ", {"USERNAME": "Administrator"}, clear=False), \
+         patch("tools.mcp_tool.Path.is_dir", autospec=True, side_effect=lambda self: str(self) == "/mnt/c/Users/Administrator"):
+        cwd = _resolve_stdio_cwd("cmd.exe", None)
+
+    assert cwd == "/mnt/c/Users/Administrator"
+
+
+def test_resolve_stdio_cwd_respects_explicit_config():
+    with patch("tools.mcp_tool.is_wsl", return_value=True):
+        cwd = _resolve_stdio_cwd("cmd.exe", "/mnt/c/workspace")
+
+    assert cwd == "/mnt/c/workspace"
+
+
+def test_resolve_stdio_cwd_skips_non_windows_commands():
+    with patch("tools.mcp_tool.is_wsl", return_value=True):
+        cwd = _resolve_stdio_cwd("npx", None)
+
+    assert cwd is None
 
 
 def test_format_connect_error_unwraps_exception_group():
@@ -91,6 +120,38 @@ def test_run_stdio_uses_resolved_command_and_prepended_path(tmp_path):
             call_kwargs = mock_params.call_args.kwargs
             assert call_kwargs["command"] == str(npx_path)
             assert call_kwargs["env"]["PATH"].split(os.pathsep)[0] == str(node_bin)
+            assert call_kwargs["cwd"] is None
+
+            await server.shutdown()
+
+    asyncio.run(_test())
+
+
+def test_run_stdio_uses_safe_windows_cwd_on_wsl(tmp_path):
+    mock_session = MagicMock()
+    mock_session.initialize = AsyncMock()
+    mock_session.list_tools = AsyncMock(return_value=SimpleNamespace(tools=[]))
+
+    mock_stdio_cm = MagicMock()
+    mock_stdio_cm.__aenter__ = AsyncMock(return_value=(object(), object()))
+    mock_stdio_cm.__aexit__ = AsyncMock(return_value=False)
+
+    mock_session_cm = MagicMock()
+    mock_session_cm.__aenter__ = AsyncMock(return_value=mock_session)
+    mock_session_cm.__aexit__ = AsyncMock(return_value=False)
+
+    async def _test():
+        with patch("tools.mcp_tool.is_wsl", return_value=True), \
+             patch("tools.mcp_tool._resolve_stdio_cwd", return_value="/mnt/c/Users/Administrator"), \
+             patch("tools.mcp_tool.StdioServerParameters") as mock_params, \
+             patch("tools.mcp_tool.stdio_client", return_value=mock_stdio_cm), \
+             patch("tools.mcp_tool.ClientSession", return_value=mock_session_cm):
+            server = MCPServerTask("srv")
+            await server.start({"command": "cmd.exe", "args": ["/c", "echo", "ok"]})
+
+            call_kwargs = mock_params.call_args.kwargs
+            assert call_kwargs["command"].endswith("cmd.exe")
+            assert call_kwargs["cwd"] == "/mnt/c/Users/Administrator"
 
             await server.shutdown()
 
