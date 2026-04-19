@@ -191,3 +191,79 @@ class TestDetectVendor:
     ])
     def test_detects_known_vendors(self, model, expected):
         assert detect_vendor(model) == expected
+
+
+# ── Issue #12140 — Regional-variant vendor-prefix stripping ────────────
+#
+# Regional-variant providers (``minimax-cn``, ``kimi-coding-cn``) route
+# to the China-region API of the same vendor. Users and catalogs commonly
+# write the model name with the base-vendor prefix (``minimax/minimax-m2.7``
+# from the OpenRouter catalog, ``moonshot/kimi-k2`` from legacy config).
+# Before the fix, those prefixes weren't recognised as vendor-match for
+# the regional target, so the full ``vendor/model`` slash-bearing slug was
+# sent to the regional API and rejected with ``unknown model`` errors.
+
+
+class TestIssue12140RegionalVariantPrefixStripping:
+    """MiniMax-CN and Kimi-Coding-CN must accept their base-vendor prefix."""
+
+    @pytest.mark.parametrize("model,expected", [
+        # Reporter's exact input: lowercase slug from OpenRouter catalog.
+        ("minimax/minimax-m2.7", "minimax-m2.7"),
+        # PascalCase variant (direct-MiniMax canonical form).
+        ("MiniMax/MiniMax-M2.7", "MiniMax-M2.7"),
+        # Mixed-case — prefix gets stripped, remainder preserved verbatim.
+        ("minimax/MiniMax-M2.7", "MiniMax-M2.7"),
+    ])
+    def test_minimax_cn_strips_minimax_prefix(self, model, expected):
+        assert normalize_model_for_provider(model, "minimax-cn") == expected
+
+    @pytest.mark.parametrize("model,expected", [
+        ("kimi/kimi-k2-turbo-preview", "kimi-k2-turbo-preview"),
+        # ``moonshot`` is a pre-existing alias of ``kimi-coding`` in
+        # ``hermes_cli.models._PROVIDER_ALIASES``; the fix makes it work
+        # for the regional variant too.
+        ("moonshot/kimi-k2", "kimi-k2"),
+        # The canonical ``kimi-coding`` prefix (the base vendor) also
+        # gets stripped for the regional target.
+        ("kimi-coding/kimi-k2", "kimi-k2"),
+    ])
+    def test_kimi_coding_cn_strips_base_vendor_prefix(self, model, expected):
+        assert normalize_model_for_provider(model, "kimi-coding-cn") == expected
+
+    # ── Preserved behaviour canaries ───────────────────────────────────
+
+    @pytest.mark.parametrize("model,provider,expected", [
+        # Non-matching prefix on a regional target must NOT be stripped —
+        # the slash is the user's explicit intent (e.g. a namespaced
+        # model id that happens to include a slash).
+        ("arbitrary/path", "minimax-cn", "arbitrary/path"),
+        ("huggingface/Qwen3.5-397B", "minimax-cn", "huggingface/Qwen3.5-397B"),
+        # No slash at all — no-op, returned verbatim.
+        ("minimax-m2.7", "minimax-cn", "minimax-m2.7"),
+        ("MiniMax-M2.7", "minimax-cn", "MiniMax-M2.7"),
+        # Base vendor + matching target still strip (original feature,
+        # unchanged by this fix).
+        ("minimax/minimax-m2.7", "minimax", "minimax-m2.7"),
+        ("kimi-coding/kimi-k2", "kimi-coding", "kimi-k2"),
+        # Non-regional providers unchanged.
+        ("zai/glm-5.1", "zai", "glm-5.1"),
+        ("glm/glm-4.7", "zai", "glm-4.7"),
+        ("anthropic/claude-sonnet-4.6", "openrouter", "anthropic/claude-sonnet-4.6"),
+        # A regional-target prefix on a non-regional target is not
+        # stripped (no symmetric relationship).
+        ("minimax-cn/minimax-m2.7", "minimax", "minimax-cn/minimax-m2.7"),
+    ])
+    def test_preserved_behaviours(self, model, provider, expected):
+        assert normalize_model_for_provider(model, provider) == expected
+
+    def test_regional_root_map_is_only_for_exact_base_vendor(self):
+        """The fix must not silently accept *any* alias of the regional
+        variant as a base — only the documented base vendor.  Guards
+        against future accidental widening of the mapping."""
+        from hermes_cli.model_normalize import _REGIONAL_VARIANT_ROOTS
+        # minimax-cn's root is specifically 'minimax', not 'minimax-china'
+        # or 'minimax_cn' (which are aliases of minimax-cn itself, not of
+        # the base vendor).
+        assert _REGIONAL_VARIANT_ROOTS["minimax-cn"] == "minimax"
+        assert _REGIONAL_VARIANT_ROOTS["kimi-coding-cn"] == "kimi-coding"

@@ -191,12 +191,38 @@ def _normalize_provider_alias(provider_name: str) -> str:
         return raw
 
 
+# Regional-variant providers that should also accept their base vendor's
+# prefix when stripping ``provider/`` — e.g. when the target provider is
+# ``minimax-cn`` (MiniMax's China API route), a model written as
+# ``minimax/minimax-m2.7`` in config.yaml or emitted by the aggregator
+# catalog should still have its ``minimax/`` prefix stripped.  Without
+# this, the regional adapter is handed ``minimax/minimax-m2.7`` verbatim
+# and the upstream API rejects it with ``unknown model '…'`` (see #12140).
+#
+# Maps: regional variant (canonical) -> base vendor (canonical).  The
+# base vendor's own aliases from ``hermes_cli.models._PROVIDER_ALIASES``
+# (e.g. ``moonshot`` -> ``kimi-coding``) still resolve through
+# ``_normalize_provider_alias``; this map only adds the "target is a
+# regional variant" relationship that plain alias lookup doesn't express.
+_REGIONAL_VARIANT_ROOTS: dict[str, str] = {
+    "minimax-cn": "minimax",
+    "kimi-coding-cn": "kimi-coding",
+}
+
+
 def _strip_matching_provider_prefix(model_name: str, target_provider: str) -> str:
     """Strip ``provider/`` only when the prefix matches the target provider.
 
     This prevents arbitrary slash-bearing model IDs from being mangled on
     native providers while still repairing manual config values like
     ``zai/glm-5.1`` for the ``zai`` provider.
+
+    For regional-variant targets (``minimax-cn``, ``kimi-coding-cn``),
+    also accept the base vendor's prefix (``minimax/…``,
+    ``kimi/…`` / ``moonshot/…`` via existing aliases).  Regression for
+    #12140 — before this, ``minimax/minimax-m2.7`` routed through
+    ``provider: minimax-cn`` reached the MiniMax-CN API with the
+    vendor slash intact and produced ``unknown model`` failures.
     """
     if "/" not in model_name:
         return model_name
@@ -208,6 +234,10 @@ def _strip_matching_provider_prefix(model_name: str, target_provider: str) -> st
     normalized_prefix = _normalize_provider_alias(prefix)
     normalized_target = _normalize_provider_alias(target_provider)
     if normalized_prefix and normalized_prefix == normalized_target:
+        return remainder.strip()
+    # Regional variant: accept the base vendor's prefix too.
+    root = _REGIONAL_VARIANT_ROOTS.get(normalized_target)
+    if root and normalized_prefix == root:
         return remainder.strip()
     return model_name
 
