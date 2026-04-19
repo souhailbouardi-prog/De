@@ -233,6 +233,7 @@ AUTHOR_MAP = {
     "sjtuwbh@gmail.com": "Cygra",
     "srhtsrht17@gmail.com": "Sertug17",
     "stephenschoettler@gmail.com": "stephenschoettler",
+    "binhnt.ht.92@gmail.com": "binhnt92",
     "tanishq231003@gmail.com": "yyovil",
     "tesseracttars@gmail.com": "tesseracttars-creator",
     "tianliangjay@gmail.com": "xingkongliang",

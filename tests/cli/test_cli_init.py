@@ -75,6 +75,11 @@ class TestMaxTurnsResolution:
         cli_obj = _make_cli(env_overrides={"HERMES_MAX_ITERATIONS": "42"})
         assert cli_obj.max_turns == 42
 
+    def test_agent_config_string_max_turns_is_coerced_to_int(self):
+        cli_obj = _make_cli(config_overrides={"agent": {"max_turns": "12"}})
+        assert isinstance(cli_obj.max_turns, int)
+        assert cli_obj.max_turns == 12
+
     def test_legacy_root_max_turns_is_used_when_agent_key_exists_without_value(self):
         cli_obj = _make_cli(config_overrides={"agent": {}, "max_turns": 77})
         assert cli_obj.max_turns == 77
