@@ -4,6 +4,9 @@
   "private": true,
   "scripts": {
     "docusaurus": "docusaurus",
+    "ensure-skills-data": "node scripts/ensure-skills-data.mjs",
+    "prestart": "node scripts/ensure-skills-data.mjs",
+    "prebuild": "node scripts/ensure-skills-data.mjs",
     "start": "docusaurus start",
     "build": "docusaurus build",
     "swizzle": "docusaurus swizzle",
@@ -46,5 +49,8 @@
   },
   "engines": {
     "node": ">=20.0"
+  },
+  "overrides": {
+    "webpackbar": "^7.0.0"
   }
 }
