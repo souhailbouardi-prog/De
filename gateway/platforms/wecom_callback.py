@@ -14,8 +14,14 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import mimetypes
+import os
+import shutil
 import socket as _socket
+import subprocess
+import tempfile
 import time
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 from xml.etree import ElementTree as ET
 
@@ -36,7 +42,7 @@ except ImportError:
     HTTPX_AVAILABLE = False
 
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.base import BasePlatformAdapter, MessageEvent, MessageType, SendResult
+from gateway.platforms.base import BasePlatformAdapter, MessageEvent, MessageType, SendResult, cache_audio_from_bytes
 from gateway.platforms.wecom_crypto import WXBizMsgCrypt, WeComCryptoError
 
 logger = logging.getLogger(__name__)
@@ -219,6 +225,131 @@ class WecomCallbackAdapter(BasePlatformAdapter):
         app = self._get_app_by_name(app_name) if app_name else None
         return app or self._apps[0]
 
+    async def send_voice(
+        self,
+        chat_id: str,
+        audio_path: str,
+        caption: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        **kwargs,
+    ) -> SendResult:
+        """Upload audio to WeCom media store and send as voice message.
+
+        WeCom accepts AMR/MP3/WAV/AAC. Non-AMR files are converted to AMR
+        via ffmpeg before upload (WeCom voice message API requires AMR).
+        """
+        audio_file = Path(audio_path)
+        if not audio_file.exists():
+            return await super().send_voice(chat_id, audio_path, caption, reply_to, **kwargs)
+
+        # WeCom voice API only accepts AMR — convert anything else
+        upload_path = audio_path
+        tmp_path = None
+        ext = audio_file.suffix.lower()
+        if ext != ".amr":
+            converted = self._convert_to_amr(audio_path)
+            if converted:
+                upload_path = converted
+                tmp_path = converted
+            else:
+                logger.warning("[WecomCallback] Failed to convert %s to AMR, falling back to text", ext)
+                return await super().send_voice(chat_id, audio_path, caption, reply_to, **kwargs)
+
+        # Resolve target app and user
+        app = self._resolve_app_for_chat(chat_id)
+        touser = chat_id.split(":", 1)[1] if ":" in chat_id else chat_id
+
+        try:
+            token = await self._get_access_token(app)
+            media_id = await self._upload_media(token, upload_path, media_type="voice")
+            if not media_id:
+                logger.warning("[WecomCallback] Voice upload failed, falling back to text")
+                return await super().send_voice(chat_id, audio_path, caption, reply_to, **kwargs)
+
+            payload = {
+                "touser": touser,
+                "msgtype": "voice",
+                "agentid": int(str(app.get("agent_id") or 0)),
+                "voice": {"media_id": media_id},
+            }
+            resp = await self._http_client.post(
+                f"https://qyapi.weixin.qq.com/cgi-bin/message/send?access_token={token}",
+                json=payload,
+            )
+            data = resp.json()
+            if data.get("errcode") != 0:
+                logger.warning("[WecomCallback] Voice send errcode=%s, falling back to text", data.get("errcode"))
+                return await super().send_voice(chat_id, audio_path, caption, reply_to, **kwargs)
+            return SendResult(success=True, message_id=str(data.get("msgid", "")), raw_response=data)
+        except Exception as exc:
+            logger.warning("[WecomCallback] send_voice error: %s", exc)
+            return await super().send_voice(chat_id, audio_path, caption, reply_to, **kwargs)
+        finally:
+            # Clean up temp converted file
+            if tmp_path and os.path.exists(tmp_path):
+                try:
+                    os.remove(tmp_path)
+                except OSError:
+                    pass
+
+    async def _upload_media(self, access_token: str, file_path: str, media_type: str = "voice") -> Optional[str]:
+        """Upload a file to WeCom temporary media store. Returns media_id or None."""
+        p = Path(file_path)
+        if not p.exists():
+            return None
+        # WeCom accepts: voice(AMR/MP3/WAV/AAC), image, video, file
+        # Max 2MB for voice, 10MB for file
+        file_size = p.stat().st_size
+        if media_type == "voice" and file_size > 2 * 1024 * 1024:
+            logger.warning("[WecomCallback] Voice file %s too large (%d bytes), skipping", file_path, file_size)
+            return None
+        mime = mimetypes.guess_type(file_path)[0] or "application/octet-stream"
+        try:
+            with open(file_path, "rb") as f:
+                resp = await self._http_client.post(
+                    f"https://qyapi.weixin.qq.com/cgi-bin/media/upload?access_token={access_token}&type={media_type}",
+                    files={"media": (p.name, f, mime)},
+                )
+            data = resp.json()
+            if data.get("errcode") != 0:
+                logger.error("[WecomCallback] Media upload failed: %s", data)
+                return None
+            return data.get("media_id")
+        except Exception:
+            logger.exception("[WecomCallback] Media upload exception")
+            return None
+
+    @staticmethod
+    def _convert_to_amr(input_path: str) -> Optional[str]:
+        """Convert audio (OGG/Opus/WAV/MP3) to AMR via ffmpeg. Returns temp file path or None.
+
+        WeCom voice message API requires AMR format (8kHz mono).
+        """
+        ffmpeg = shutil.which("ffmpeg")
+        if not ffmpeg:
+            logger.warning("[WecomCallback] ffmpeg not found — cannot convert audio")
+            return None
+        fd, tmp_path = tempfile.mkstemp(suffix=".amr", prefix="wecom_voice_")
+        os.close(fd)
+        try:
+            result = subprocess.run(
+                [ffmpeg, "-i", input_path, "-acodec", "libopencore_amrnb",
+                 "-ar", "8000", "-ac", "1", "-ab", "12.2k", "-y", tmp_path],
+                capture_output=True, timeout=30,
+            )
+            if result.returncode == 0 and os.path.exists(tmp_path) and os.path.getsize(tmp_path) > 0:
+                return tmp_path
+            logger.warning("[WecomCallback] ffmpeg AMR convert failed (rc=%d): %s", result.returncode, result.stderr.decode()[:200])
+            os.remove(tmp_path)
+            return None
+        except Exception:
+            logger.exception("[WecomCallback] ffmpeg AMR convert exception")
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass
+            return None
+
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         return {"name": chat_id, "type": "dm"}
 
@@ -256,7 +387,7 @@ class WecomCallbackAdapter(BasePlatformAdapter):
                 decrypted = self._decrypt_request(
                     app, body, msg_signature, timestamp, nonce,
                 )
-                event = self._build_event(app, decrypted)
+                event = await self._build_event(app, decrypted)
                 if event is not None:
                     # Deduplicate: WeCom retries callbacks on timeout,
                     # producing duplicate inbound messages (#10305).
@@ -313,7 +444,7 @@ class WecomCallbackAdapter(BasePlatformAdapter):
         crypt = self._crypt_for_app(app)
         return crypt.decrypt(msg_signature, timestamp, nonce, encrypt).decode("utf-8")
 
-    def _build_event(self, app: Dict[str, Any], xml_text: str) -> Optional[MessageEvent]:
+    async def _build_event(self, app: Dict[str, Any], xml_text: str) -> Optional[MessageEvent]:
         root = ET.fromstring(xml_text)
         msg_type = (root.findtext("MsgType") or "").lower()
         # Silently acknowledge lifecycle events.
@@ -321,15 +452,31 @@ class WecomCallbackAdapter(BasePlatformAdapter):
             event_name = (root.findtext("Event") or "").lower()
             if event_name in {"enter_agent", "subscribe"}:
                 return None
-        if msg_type not in {"text", "event"}:
+        if msg_type not in {"text", "event", "voice"}:
             return None
 
         user_id = root.findtext("FromUserName", default="")
         corp_id = root.findtext("ToUserName", default=app.get("corp_id", ""))
         scoped_chat_id = self._user_app_key(corp_id, user_id)
-        content = root.findtext("Content", default="").strip()
-        if not content and msg_type == "event":
-            content = "/start"
+
+        media_urls: list[str] = []
+        media_types: list[str] = []
+        message_type = MessageType.TEXT
+
+        if msg_type == "voice":
+            media_id = root.findtext("MediaId", default="")
+            if media_id:
+                audio_path = await self._download_voice_media(app, media_id)
+                if audio_path:
+                    media_urls.append(audio_path)
+                    media_types.append("audio/wav")
+                    message_type = MessageType.VOICE
+            content = ""
+        else:
+            content = root.findtext("Content", default="").strip()
+            if not content and msg_type == "event":
+                content = "/start"
+
         msg_id = (
             root.findtext("MsgId")
             or f"{user_id}:{root.findtext('CreateTime', default='0')}"
@@ -343,11 +490,76 @@ class WecomCallbackAdapter(BasePlatformAdapter):
         )
         return MessageEvent(
             text=content,
-            message_type=MessageType.TEXT,
+            message_type=message_type,
             source=source,
             raw_message=xml_text,
             message_id=msg_id,
+            media_urls=media_urls,
+            media_types=media_types,
         )
+
+    async def _download_voice_media(self, app: Dict[str, Any], media_id: str) -> Optional[str]:
+        """Download voice file from WeCom media store, convert AMR→WAV, and cache.
+
+        Returns local WAV file path or None on failure.
+        WeCom voice messages are in AMR format which most STT engines don't support,
+        so we convert to WAV (16kHz mono) via ffmpeg.
+        """
+        try:
+            token = await self._get_access_token(app)
+            resp = await self._http_client.get(
+                "https://qyapi.weixin.qq.com/cgi-bin/media/get",
+                params={"access_token": token, "media_id": media_id},
+            )
+            # WeCom returns binary audio data directly (not JSON) on success
+            content_type = resp.headers.get("content-type", "")
+            if "application/json" in content_type:
+                data = resp.json()
+                logger.warning("[WecomCallback] Voice download failed: %s", data)
+                return None
+
+            amr_bytes = resp.content
+            if not amr_bytes:
+                logger.warning("[WecomCallback] Voice download returned empty content")
+                return None
+
+            # Convert AMR → WAV for STT compatibility
+            ffmpeg = shutil.which("ffmpeg")
+            if ffmpeg:
+                amr_path = None
+                wav_path = None
+                try:
+                    fd_amr, amr_path = tempfile.mkstemp(suffix=".amr", prefix="wecom_dl_")
+                    os.close(fd_amr)
+                    with open(amr_path, "wb") as f:
+                        f.write(amr_bytes)
+
+                    fd_wav, wav_path = tempfile.mkstemp(suffix=".wav", prefix="wecom_dl_")
+                    os.close(fd_wav)
+
+                    result = subprocess.run(
+                        [ffmpeg, "-i", amr_path, "-ar", "16000", "-ac", "1", "-y", wav_path],
+                        capture_output=True, timeout=30,
+                    )
+                    if result.returncode == 0 and os.path.exists(wav_path) and os.path.getsize(wav_path) > 0:
+                        cached = cache_audio_from_bytes(open(wav_path, "rb").read(), ext=".wav")
+                        return cached
+                    logger.warning("[WecomCallback] AMR→WAV convert failed (rc=%d): %s",
+                                   result.returncode, result.stderr.decode()[:200])
+                finally:
+                    for p in (amr_path, wav_path):
+                        if p and os.path.exists(p):
+                            try:
+                                os.remove(p)
+                            except OSError:
+                                pass
+
+            # Fallback: cache as AMR if ffmpeg unavailable
+            logger.info("[WecomCallback] ffmpeg not found, caching voice as AMR")
+            return cache_audio_from_bytes(amr_bytes, ext=".amr")
+        except Exception as exc:
+            logger.warning("[WecomCallback] Voice download error: %s", exc)
+            return None
 
     def _crypt_for_app(self, app: Dict[str, Any]) -> WXBizMsgCrypt:
         return WXBizMsgCrypt(
