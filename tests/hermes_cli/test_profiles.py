@@ -171,6 +171,23 @@ class TestCreateProfile:
         assert not (profile_dir / "gateway_state.json").exists()
         assert not (profile_dir / "processes.json").exists()
 
+    def test_clone_all_preserves_recursive_symlink(self, profile_env):
+        tmp_path = profile_env
+        default_home = tmp_path / ".hermes"
+        source = default_home / "profiles" / "source"
+        source.mkdir(parents=True)
+        (source / "loop").symlink_to("..", target_is_directory=True)
+
+        profile_dir = create_profile(
+            "dup",
+            clone_from="source",
+            clone_all=True,
+            no_alias=True,
+        )
+
+        assert profile_dir.is_dir()
+        assert (profile_dir / "loop").is_symlink()
+
     def test_clone_config_missing_files_skipped(self, profile_env):
         """Clone config gracefully skips files that don't exist in source."""
         profile_dir = create_profile("coder", clone_config=True, no_alias=True)
