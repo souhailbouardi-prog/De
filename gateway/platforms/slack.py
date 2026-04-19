@@ -148,7 +148,7 @@ class SlackAdapter(BasePlatformAdapter):
                         team_label = entry.get("team_name", team_id) if isinstance(entry, dict) else team_id
                         logger.info("[Slack] Loaded saved token for workspace %s", team_label)
             except Exception as e:
-                logger.warning("[Slack] Failed to read %s: %s", tokens_file, e)
+                logger.warning("[Slack] Failed to read %s: %s", tokens_file, e, exc_info=True)
 
         try:
             if not self._acquire_platform_lock('slack-app-token', app_token, 'Slack app token'):
@@ -1377,7 +1377,7 @@ class SlackAdapter(BasePlatformAdapter):
                 blocks=updated_blocks,
             )
         except Exception as e:
-            logger.warning("[Slack] Failed to update approval message: %s", e)
+            logger.warning("[Slack] Failed to update approval message: %s", e, exc_info=True)
 
         # Resolve the approval — this unblocks the agent thread
         try:
@@ -1388,7 +1388,7 @@ class SlackAdapter(BasePlatformAdapter):
                 count, session_key, choice, user_name,
             )
         except Exception as exc:
-            logger.error("Failed to resolve gateway approval from Slack button: %s", exc)
+            logger.error("Failed to resolve gateway approval from Slack button: %s", exc, exc_info=True)
 
         # (approval state already consumed by atomic pop above)
 
@@ -1500,7 +1500,7 @@ class SlackAdapter(BasePlatformAdapter):
             return content
 
         except Exception as e:
-            logger.warning("[Slack] Failed to fetch thread context: %s", e)
+            logger.warning("[Slack] Failed to fetch thread context: %s", e, exc_info=True)
             return ""
 
     async def _handle_slash_command(self, command: dict) -> None:
