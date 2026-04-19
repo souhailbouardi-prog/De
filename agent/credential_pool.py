@@ -34,6 +34,69 @@ from hermes_cli.auth import (
 
 logger = logging.getLogger(__name__)
 
+# Keep a local alias so credential_pool tests can monkeypatch the Codex CLI import
+# boundary directly on this module, even though the implementation now lives in
+# hermes_cli.auth.
+_import_codex_cli_tokens = auth_mod._import_codex_cli_tokens
+
+
+def _extract_codex_identity_from_claims(claims: Dict[str, Any]) -> Dict[str, str]:
+    identity: Dict[str, str] = {}
+    nested_auth = claims.get("https://api.openai.com/auth")
+    if isinstance(nested_auth, dict):
+        account_id = nested_auth.get("chatgpt_account_id") or nested_auth.get("account_id")
+        user_id = nested_auth.get("chatgpt_user_id") or nested_auth.get("user_id")
+        if isinstance(account_id, str) and account_id.strip():
+            identity["account_id"] = account_id.strip()
+        if isinstance(user_id, str) and user_id.strip():
+            identity["user_id"] = user_id.strip()
+
+    for key in (
+        "https://api.openai.com/auth.chatgpt_account_id",
+        "chatgpt_account_id",
+        "account_id",
+    ):
+        value = claims.get(key)
+        if isinstance(value, str) and value.strip():
+            identity.setdefault("account_id", value.strip())
+            break
+    for key in (
+        "https://api.openai.com/auth.chatgpt_user_id",
+        "chatgpt_user_id",
+        "user_id",
+    ):
+        value = claims.get(key)
+        if isinstance(value, str) and value.strip():
+            identity.setdefault("user_id", value.strip())
+            break
+    return identity
+
+
+def _extract_codex_identity_from_id_token(id_token: Any) -> Dict[str, str]:
+    return _extract_codex_identity_from_claims(_decode_jwt_claims(id_token))
+
+
+def _extract_pool_codex_identity(entry: "PooledCredential") -> Dict[str, str]:
+    return _extract_codex_identity_from_claims(_decode_jwt_claims(entry.access_token))
+
+
+def _codex_identity_matches(pool_identity: Dict[str, str], cli_identity: Dict[str, str]) -> bool:
+    required_keys = ("account_id", "user_id")
+    if any(not pool_identity.get(key) or not cli_identity.get(key) for key in required_keys):
+        return False
+    return all(pool_identity[key] == cli_identity[key] for key in required_keys)
+
+
+def _merge_codex_identity(identity: Dict[str, str], candidate: Dict[str, str]) -> bool:
+    for key, value in candidate.items():
+        if not value:
+            continue
+        existing = identity.get(key)
+        if existing and existing != value:
+            return False
+        identity.setdefault(key, value)
+    return True
+
 
 def _load_config_safe() -> Optional[dict]:
     """Load config.yaml, returning None on any error."""
@@ -455,6 +518,84 @@ class CredentialPool:
             logger.debug("Failed to sync from credentials file: %s", exc)
         return entry
 
+    def _sync_codex_entry_from_cli(self, entry: PooledCredential) -> PooledCredential:
+        """Sync an openai-codex pool entry from ~/.codex/auth.json if tokens differ.
+
+        Fail closed unless we can prove the CLI tokens belong to the same
+        ChatGPT account/user as the pool entry.
+        """
+        if self.provider != "openai-codex":
+            return entry
+        try:
+            cli_tokens = _import_codex_cli_tokens()
+            if not cli_tokens:
+                return entry
+
+            cli_access = str(cli_tokens.get("access_token", "") or "").strip()
+            cli_refresh = str(cli_tokens.get("refresh_token", "") or "").strip()
+            if not cli_access or not cli_refresh:
+                return entry
+
+            cli_identity: Dict[str, str] = {}
+            id_token = cli_tokens.get("id_token") or cli_tokens.get("idToken")
+            if isinstance(id_token, str) and id_token.strip():
+                id_identity = _extract_codex_identity_from_id_token(id_token.strip())
+                if not _merge_codex_identity(cli_identity, id_identity):
+                    logger.warning(
+                        "Refusing to sync Codex pool entry %s from ~/.codex/auth.json: conflicting id_token identity",
+                        entry.id,
+                    )
+                    return entry
+
+            access_identity = _extract_codex_identity_from_claims(_decode_jwt_claims(cli_access))
+            if not _merge_codex_identity(cli_identity, access_identity):
+                logger.warning(
+                    "Refusing to sync Codex pool entry %s from ~/.codex/auth.json: conflicting access_token identity",
+                    entry.id,
+                )
+                return entry
+
+            metadata_identity: Dict[str, str] = {}
+            account_id = cli_tokens.get("account_id") or cli_tokens.get("tokens.account_id")
+            user_id = cli_tokens.get("user_id") or cli_tokens.get("tokens.user_id")
+            if isinstance(account_id, str) and account_id.strip():
+                metadata_identity["account_id"] = account_id.strip()
+            if isinstance(user_id, str) and user_id.strip():
+                metadata_identity["user_id"] = user_id.strip()
+            if not _merge_codex_identity(cli_identity, metadata_identity):
+                logger.warning(
+                    "Refusing to sync Codex pool entry %s from ~/.codex/auth.json: conflicting metadata identity",
+                    entry.id,
+                )
+                return entry
+
+            pool_identity = _extract_pool_codex_identity(entry)
+            if not _codex_identity_matches(pool_identity, cli_identity):
+                logger.warning(
+                    "Refusing to sync Codex pool entry %s from ~/.codex/auth.json: identity mismatch or unproven",
+                    entry.id,
+                )
+                return entry
+
+            if cli_refresh != entry.refresh_token:
+                logger.debug(
+                    "Pool entry %s: syncing tokens from ~/.codex/auth.json (identity verified)",
+                    entry.id,
+                )
+                updated = replace(
+                    entry,
+                    access_token=cli_access,
+                    refresh_token=cli_refresh,
+                    last_status=None,
+                    last_status_at=None,
+                    last_error_code=None,
+                )
+                self._replace_entry(entry, updated)
+                self._persist()
+                return updated
+        except Exception as exc:
+            logger.debug("Failed to sync from ~/.codex/auth.json: %s", exc)
+        return entry
     def _sync_device_code_entry_to_auth_store(self, entry: PooledCredential) -> None:
         """Write refreshed pool entry tokens back to auth.json providers.
 

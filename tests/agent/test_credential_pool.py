@@ -2,10 +2,23 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import time
 
 import pytest
+
+
+def _mock_jwt_with_identity(account_id: str, user_id: str, *, exp_offset: int = 3600) -> str:
+    payload = {
+        "exp": int(time.time()) + exp_offset,
+        "https://api.openai.com/auth": {
+            "chatgpt_account_id": account_id,
+            "chatgpt_user_id": user_id,
+        },
+    }
+    encoded = base64.urlsafe_b64encode(json.dumps(payload).encode()).rstrip(b"=").decode()
+    return f"h.{encoded}.s"
 
 
 def _write_auth_store(tmp_path, payload: dict) -> None:
@@ -335,6 +348,19 @@ def test_mark_exhausted_and_rotate_persists_status(tmp_path, monkeypatch):
 
 def test_try_refresh_current_updates_only_current_entry(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+
+    def _jwt(exp_off=3600, **extra_claims):
+        payload = {
+            "exp": int(time.time()) + exp_off,
+            "https://api.openai.com/auth": {
+                "chatgpt_account_id": extra_claims.pop("account_id", "acct-default"),
+                "chatgpt_user_id": extra_claims.pop("user_id", "user-default"),
+            },
+            **extra_claims,
+        }
+        encoded = base64.urlsafe_b64encode(json.dumps(payload).encode()).rstrip(b"=").decode()
+        return f"h.{encoded}.s"
+
     _write_auth_store(
         tmp_path,
         {
@@ -347,8 +373,8 @@ def test_try_refresh_current_updates_only_current_entry(tmp_path, monkeypatch):
                         "auth_type": "oauth",
                         "priority": 0,
                         "source": "device_code",
-                        "access_token": "access-old",
-                        "refresh_token": "refresh-old",
+                        "access_token": _jwt(account_id="acct-1", user_id="user-1"),
+                        "refresh_token": "rt-primary-old",
                         "base_url": "https://chatgpt.com/backend-api/codex",
                     },
                     {
@@ -357,8 +383,8 @@ def test_try_refresh_current_updates_only_current_entry(tmp_path, monkeypatch):
                         "auth_type": "oauth",
                         "priority": 1,
                         "source": "device_code",
-                        "access_token": "access-other",
-                        "refresh_token": "refresh-other",
+                        "access_token": _jwt(account_id="acct-2", user_id="user-2"),
+                        "refresh_token": "rt-secondary-old",
                         "base_url": "https://chatgpt.com/backend-api/codex",
                     },
                 ]
@@ -371,8 +397,8 @@ def test_try_refresh_current_updates_only_current_entry(tmp_path, monkeypatch):
     monkeypatch.setattr(
         "hermes_cli.auth.refresh_codex_oauth_pure",
         lambda access_token, refresh_token, timeout_seconds=20.0: {
-            "access_token": "access-new",
-            "refresh_token": "refresh-new",
+            "access_token": _jwt(exp_off=7200, account_id="acct-1", user_id="user-1"),
+            "refresh_token": "rt-primary-new",
         },
     )
 
@@ -383,14 +409,237 @@ def test_try_refresh_current_updates_only_current_entry(tmp_path, monkeypatch):
     refreshed = pool.try_refresh_current()
 
     assert refreshed is not None
-    assert refreshed.access_token == "access-new"
+    assert refreshed.refresh_token == "rt-primary-new"
+    assert refreshed.access_token.count(".") == 2
 
     auth_payload = json.loads((tmp_path / "hermes" / "auth.json").read_text())
     primary, secondary = auth_payload["credential_pool"]["openai-codex"]
-    assert primary["access_token"] == "access-new"
-    assert primary["refresh_token"] == "refresh-new"
-    assert secondary["access_token"] == "access-other"
-    assert secondary["refresh_token"] == "refresh-other"
+    assert primary["refresh_token"] == "rt-primary-new"
+    assert primary["access_token"].count(".") == 2
+    assert secondary["refresh_token"] == "rt-secondary-old"
+    assert secondary["access_token"].count(".") == 2
+
+
+def test_codex_cli_sync_rejects_unproven_identity(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+
+    pool_access = _mock_jwt_with_identity("acct-pool", "user-pool")
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "providers": {
+                "openai-codex": {
+                    "tokens": {
+                        "access_token": pool_access,
+                        "refresh_token": "pool-refresh",
+                    },
+                    "last_refresh": "2026-04-16T00:00:00Z",
+                    "auth_mode": "chatgpt",
+                }
+            },
+            "credential_pool": {
+                "openai-codex": [
+                    {
+                        "id": "cred-1",
+                        "label": "primary",
+                        "auth_type": "oauth",
+                        "priority": 0,
+                        "source": "device_code",
+                        "access_token": pool_access,
+                        "refresh_token": "pool-refresh",
+                        "base_url": "https://chatgpt.com/backend-api/codex",
+                    }
+                ]
+            },
+        },
+    )
+
+    monkeypatch.setattr(
+        "agent.credential_pool._import_codex_cli_tokens",
+        lambda: {
+            "access_token": _mock_jwt_with_identity("acct-cli", "user-cli"),
+            "refresh_token": "cli-refresh",
+        },
+    )
+
+    from agent.credential_pool import load_pool
+
+    pool = load_pool("openai-codex")
+    entry = pool.entries()[0]
+    synced = pool._sync_codex_entry_from_cli(entry)
+
+    assert synced.access_token == pool_access
+    assert synced.refresh_token == "pool-refresh"
+
+
+def test_codex_cli_sync_accepts_matching_identity(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+
+    pool_access = _mock_jwt_with_identity("acct-same", "user-same")
+    cli_access = _mock_jwt_with_identity("acct-same", "user-same", exp_offset=7200)
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "providers": {
+                "openai-codex": {
+                    "tokens": {
+                        "access_token": pool_access,
+                        "refresh_token": "pool-refresh",
+                    },
+                    "last_refresh": "2026-04-16T00:00:00Z",
+                    "auth_mode": "chatgpt",
+                }
+            },
+            "credential_pool": {
+                "openai-codex": [
+                    {
+                        "id": "cred-1",
+                        "label": "primary",
+                        "auth_type": "oauth",
+                        "priority": 0,
+                        "source": "device_code",
+                        "access_token": pool_access,
+                        "refresh_token": "pool-refresh",
+                        "base_url": "https://chatgpt.com/backend-api/codex",
+                    }
+                ]
+            },
+        },
+    )
+
+    monkeypatch.setattr(
+        "agent.credential_pool._import_codex_cli_tokens",
+        lambda: {
+            "access_token": cli_access,
+            "refresh_token": "cli-refresh",
+            "account_id": "acct-same",
+            "user_id": "user-same",
+        },
+    )
+
+    from agent.credential_pool import load_pool
+
+    pool = load_pool("openai-codex")
+    entry = pool.entries()[0]
+    synced = pool._sync_codex_entry_from_cli(entry)
+
+    assert synced.access_token == cli_access
+    assert synced.refresh_token == "cli-refresh"
+
+
+
+def test_codex_cli_sync_merges_partial_metadata_with_access_token_claims(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+
+    pool_access = _mock_jwt_with_identity("acct-merged", "user-merged")
+    cli_access = _mock_jwt_with_identity("acct-merged", "user-merged", exp_offset=7200)
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "providers": {
+                "openai-codex": {
+                    "tokens": {
+                        "access_token": pool_access,
+                        "refresh_token": "pool-refresh",
+                    },
+                    "last_refresh": "2026-04-16T00:00:00Z",
+                    "auth_mode": "chatgpt",
+                }
+            },
+            "credential_pool": {
+                "openai-codex": [
+                    {
+                        "id": "cred-1",
+                        "label": "primary",
+                        "auth_type": "oauth",
+                        "priority": 0,
+                        "source": "device_code",
+                        "access_token": pool_access,
+                        "refresh_token": "pool-refresh",
+                        "base_url": "https://chatgpt.com/backend-api/codex",
+                    }
+                ]
+            },
+        },
+    )
+
+    monkeypatch.setattr(
+        "agent.credential_pool._import_codex_cli_tokens",
+        lambda: {
+            "access_token": cli_access,
+            "refresh_token": "cli-refresh",
+            "account_id": "acct-merged",
+        },
+    )
+
+    from agent.credential_pool import load_pool
+
+    pool = load_pool("openai-codex")
+    entry = pool.entries()[0]
+    synced = pool._sync_codex_entry_from_cli(entry)
+
+    assert synced.access_token == cli_access
+    assert synced.refresh_token == "cli-refresh"
+
+
+
+def test_codex_cli_sync_rejects_conflicting_metadata_and_access_token_claims(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+
+    pool_access = _mock_jwt_with_identity("acct-pool", "user-pool")
+    conflicting_cli_access = _mock_jwt_with_identity("acct-evil", "user-evil", exp_offset=7200)
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "providers": {
+                "openai-codex": {
+                    "tokens": {
+                        "access_token": pool_access,
+                        "refresh_token": "pool-refresh",
+                    },
+                    "last_refresh": "2026-04-16T00:00:00Z",
+                    "auth_mode": "chatgpt",
+                }
+            },
+            "credential_pool": {
+                "openai-codex": [
+                    {
+                        "id": "cred-1",
+                        "label": "primary",
+                        "auth_type": "oauth",
+                        "priority": 0,
+                        "source": "device_code",
+                        "access_token": pool_access,
+                        "refresh_token": "pool-refresh",
+                        "base_url": "https://chatgpt.com/backend-api/codex",
+                    }
+                ]
+            },
+        },
+    )
+
+    monkeypatch.setattr(
+        "agent.credential_pool._import_codex_cli_tokens",
+        lambda: {
+            "access_token": conflicting_cli_access,
+            "refresh_token": "cli-refresh",
+            "account_id": "acct-pool",
+            "user_id": "user-pool",
+        },
+    )
+
+    from agent.credential_pool import load_pool
+
+    pool = load_pool("openai-codex")
+    entry = pool.entries()[0]
+    synced = pool._sync_codex_entry_from_cli(entry)
+
+    assert synced.access_token == pool_access
+    assert synced.refresh_token == "pool-refresh"
 
 
 def test_load_pool_seeds_env_api_key(tmp_path, monkeypatch):
