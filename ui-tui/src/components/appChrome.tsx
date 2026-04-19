@@ -2,7 +2,7 @@ import { Box, type ScrollBoxHandle, Text } from '@hermes/ink'
 import { type ReactNode, type RefObject, useCallback, useEffect, useState, useSyncExternalStore } from 'react'
 
 import { FACES } from '../content/faces.js'
-import { VERBS } from '../content/verbs.js'
+import { VERBS, VERBS_ZH, getVerbs } from '../content/verbs.js'
 import { fmtDuration } from '../domain/messages.js'
 import { stickyPromptFromViewport } from '../domain/viewport.js'
 import { fmtK } from '../lib/text.js'
@@ -14,6 +14,7 @@ const HEART_COLORS = ['#ff5fa2', '#ff4d6d']
 
 function FaceTicker({ color }: { color: string }) {
   const [tick, setTick] = useState(() => Math.floor(Math.random() * 1000))
+  const verbs = getVerbs()
 
   useEffect(() => {
     const id = setInterval(() => setTick(n => n + 1), FACE_TICK_MS)
@@ -23,7 +24,7 @@ function FaceTicker({ color }: { color: string }) {
 
   return (
     <Text color={color}>
-      {FACES[tick % FACES.length]} {VERBS[tick % VERBS.length]}…
+      {FACES[tick % FACES.length]} {verbs[tick % verbs.length]}…
     </Text>
   )
 }
