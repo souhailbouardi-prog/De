@@ -76,6 +76,7 @@ class ClassifiedError:
     should_compress: bool = False
     should_rotate_credential: bool = False
     should_fallback: bool = False
+    should_refund_budget: bool = False  # True for transient errors that never reached the server
 
     @property
     def is_auth(self) -> bool:
@@ -403,12 +404,12 @@ def classify_api_error(
                 retryable=True,
                 should_compress=True,
             )
-        return _result(FailoverReason.timeout, retryable=True)
+        return _result(FailoverReason.timeout, retryable=True, should_refund_budget=True)
 
     # ── 6. Transport / timeout heuristics ───────────────────────────
 
     if error_type in _TRANSPORT_ERROR_TYPES or isinstance(error, (TimeoutError, ConnectionError, OSError)):
-        return _result(FailoverReason.timeout, retryable=True)
+        return _result(FailoverReason.timeout, retryable=True, should_refund_budget=True)
 
     # ── 7. Fallback: unknown ────────────────────────────────────────
 
