@@ -1099,7 +1099,12 @@ class GatewayRunner:
 
         service_tier = getattr(self, "_service_tier", None)
         if not service_tier:
-            route["request_overrides"] = None
+            # service_tier not set — still try to resolve overrides
+            try:
+                overrides = resolve_fast_mode_overrides(route.get("model"))
+            except Exception:
+                overrides = None
+            route["request_overrides"] = overrides
             return route
 
         try:

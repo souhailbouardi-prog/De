@@ -9259,7 +9259,7 @@ class AIAgent:
 
             finish_reason = "stop"
             response = None  # Guard against UnboundLocalError if all retries fail
-            api_kwargs = None  # Guard against UnboundLocalError in except handler
+            api_kwargs = None  # Guard against UnboundLocalError if build fails before assignment
 
             while retry_count < max_retries:
                 # ── Nous Portal rate limit guard ──────────────────────
