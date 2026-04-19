@@ -36,7 +36,10 @@ except ImportError:
     HTTPX_AVAILABLE = False
 
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.base import BasePlatformAdapter, MessageEvent, MessageType, SendResult
+from gateway.platforms.base import (
+    BasePlatformAdapter, MessageEvent, MessageType, SendResult,
+    cache_image_from_bytes, get_audio_cache_dir,
+)
 from gateway.platforms.wecom_crypto import WXBizMsgCrypt, WeComCryptoError
 
 logger = logging.getLogger(__name__)
@@ -256,7 +259,7 @@ class WecomCallbackAdapter(BasePlatformAdapter):
                 decrypted = self._decrypt_request(
                     app, body, msg_signature, timestamp, nonce,
                 )
-                event = self._build_event(app, decrypted)
+                event = await self._build_event(app, decrypted)
                 if event is not None:
                     # Deduplicate: WeCom retries callbacks on timeout,
                     # producing duplicate inbound messages (#10305).
@@ -313,7 +316,7 @@ class WecomCallbackAdapter(BasePlatformAdapter):
         crypt = self._crypt_for_app(app)
         return crypt.decrypt(msg_signature, timestamp, nonce, encrypt).decode("utf-8")
 
-    def _build_event(self, app: Dict[str, Any], xml_text: str) -> Optional[MessageEvent]:
+    async def _build_event(self, app: Dict[str, Any], xml_text: str) -> Optional[MessageEvent]:
         root = ET.fromstring(xml_text)
         msg_type = (root.findtext("MsgType") or "").lower()
         # Silently acknowledge lifecycle events.
@@ -321,7 +324,7 @@ class WecomCallbackAdapter(BasePlatformAdapter):
             event_name = (root.findtext("Event") or "").lower()
             if event_name in {"enter_agent", "subscribe"}:
                 return None
-        if msg_type not in {"text", "event"}:
+        if msg_type not in {"text", "event", "image", "voice"}:
             return None
 
         user_id = root.findtext("FromUserName", default="")
@@ -341,13 +344,126 @@ class WecomCallbackAdapter(BasePlatformAdapter):
             user_id=user_id,
             user_name=user_id,
         )
+
+        media_urls: List[str] = []
+        media_types: List[str] = []
+        message_type = MessageType.TEXT
+
+        if msg_type == "image":
+            message_type = MessageType.PHOTO
+            caption = root.findtext("Content", default="").strip()
+            content = caption or "[图片]"
+            media_id = root.findtext("MediaId", default="")
+            pic_url = root.findtext("PicUrl", default="")
+            cached_path = await self._download_image(app, media_id, pic_url)
+            if cached_path:
+                media_urls.append(cached_path)
+                media_types.append("image/jpeg")
+
+        if msg_type == "voice":
+            message_type = MessageType.VOICE
+            content = "[语音消息]"
+            media_id = root.findtext("MediaId", default="")
+            cached_path = await self._download_voice(app, media_id)
+            if cached_path:
+                media_urls.append(cached_path)
+                media_types.append("audio/amr")
+
         return MessageEvent(
             text=content,
-            message_type=MessageType.TEXT,
+            message_type=message_type,
             source=source,
             raw_message=xml_text,
             message_id=msg_id,
+            media_urls=media_urls,
+            media_types=media_types,
         )
+
+    async def _download_image(
+        self, app: Dict[str, Any], media_id: str, pic_url: str,
+    ) -> Optional[str]:
+        """Download a WeCom image to local cache. Returns cached file path or None."""
+        if media_id and self._http_client:
+            try:
+                token = await self._get_access_token(app)
+                resp = await self._http_client.get(
+                    "https://qyapi.weixin.qq.com/cgi-bin/media/get",
+                    params={"access_token": token, "media_id": media_id},
+                )
+                content_type = resp.headers.get("content-type", "")
+                if resp.status_code == 200 and "json" not in content_type:
+                    data = resp.content
+                    if len(data) > 0:
+                        ext = self._detect_image_ext(data)
+                        cached = cache_image_from_bytes(data, ext=ext)
+                        logger.info("[WecomCallback] Cached image (media_id) at %s", cached)
+                        return cached
+                else:
+                    logger.debug(
+                        "[WecomCallback] media/get returned %s: %s",
+                        resp.status_code, resp.text[:200],
+                    )
+            except Exception as exc:
+                logger.warning("[WecomCallback] media/get failed: %s", exc)
+
+        if pic_url and self._http_client:
+            try:
+                resp = await self._http_client.get(pic_url)
+                if resp.status_code == 200:
+                    data = resp.content
+                    if len(data) > 0:
+                        ext = self._detect_image_ext(data)
+                        cached = cache_image_from_bytes(data, ext=ext)
+                        logger.info("[WecomCallback] Cached image (pic_url) at %s", cached)
+                        return cached
+            except Exception as exc:
+                logger.warning("[WecomCallback] PicUrl download failed: %s", exc)
+
+        logger.warning("[WecomCallback] Could not download image (media_id=%s, pic_url=%s)", media_id, pic_url)
+        return None
+
+    @staticmethod
+    def _detect_image_ext(data: bytes) -> str:
+        """Detect image format from magic bytes."""
+        if data[:8] == b"\x89PNG\r\n\x1a\n":
+            return ".png"
+        if data[:3] == b"\xff\xd8\xff":
+            return ".jpg"
+        if data[:4] == b"RIFF" and b"WEBP" in data[:12]:
+            return ".webp"
+        return ".jpg"
+
+    async def _download_voice(
+        self, app: Dict[str, Any], media_id: str,
+    ) -> Optional[str]:
+        """Download a WeCom voice message to local cache. Returns cached file path or None."""
+        if not media_id or not self._http_client:
+            return None
+        try:
+            token = await self._get_access_token(app)
+            resp = await self._http_client.get(
+                "https://qyapi.weixin.qq.com/cgi-bin/media/get",
+                params={"access_token": token, "media_id": media_id},
+            )
+            content_type = resp.headers.get("content-type", "")
+            if resp.status_code == 200 and "json" not in content_type:
+                data = resp.content
+                if len(data) > 0:
+                    import uuid as _uuid
+                    cache_dir = get_audio_cache_dir()
+                    filename = f"wecom_voice_{_uuid.uuid4().hex[:12]}.amr"
+                    filepath = cache_dir / filename
+                    filepath.write_bytes(data)
+                    logger.info("[WecomCallback] Cached voice at %s", filepath)
+                    return str(filepath)
+            else:
+                logger.debug(
+                    "[WecomCallback] media/get (voice) returned %s: %s",
+                    resp.status_code, resp.text[:200],
+                )
+        except Exception as exc:
+            logger.warning("[WecomCallback] Voice download failed: %s", exc)
+        return None
 
     def _crypt_for_app(self, app: Dict[str, Any]) -> WXBizMsgCrypt:
         return WXBizMsgCrypt(

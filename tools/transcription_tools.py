@@ -74,7 +74,7 @@ COMMON_LOCAL_BIN_DIRS = ("/opt/homebrew/bin", "/usr/local/bin")
 GROQ_BASE_URL = os.getenv("GROQ_BASE_URL", "https://api.groq.com/openai/v1")
 OPENAI_BASE_URL = os.getenv("STT_OPENAI_BASE_URL", "https://api.openai.com/v1")
 
-SUPPORTED_FORMATS = {".mp3", ".mp4", ".mpeg", ".mpga", ".m4a", ".wav", ".webm", ".ogg", ".aac", ".flac"}
+SUPPORTED_FORMATS = {".mp3", ".mp4", ".mpeg", ".mpga", ".m4a", ".wav", ".webm", ".ogg", ".aac", ".flac", ".amr", ".silk"}
 LOCAL_NATIVE_AUDIO_FORMATS = {".wav", ".aiff", ".aif"}
 MAX_FILE_SIZE = 25 * 1024 * 1024  # 25 MB
 
@@ -597,18 +597,38 @@ def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, A
     if provider == "local":
         local_cfg = stt_config.get("local", {})
         model_name = model or local_cfg.get("model", DEFAULT_LOCAL_MODEL)
-        return _transcribe_local(file_path, model_name)
+        result = _transcribe_local(file_path, model_name)
+        if not result["success"] and os.getenv("GROQ_API_KEY") and _HAS_OPENAI:
+            logger.info("Local STT failed (%s), falling back to Groq", result.get("error", ""))
+            result = _transcribe_groq(file_path, model or DEFAULT_GROQ_STT_MODEL)
+            if result["success"]:
+                result["provider"] = "groq (fallback)"
+        return result
 
     if provider == "local_command":
         local_cfg = stt_config.get("local", {})
         model_name = _normalize_local_command_model(
             model or local_cfg.get("model", DEFAULT_LOCAL_MODEL)
         )
-        return _transcribe_local_command(file_path, model_name)
+        result = _transcribe_local_command(file_path, model_name)
+        if not result["success"] and os.getenv("GROQ_API_KEY") and _HAS_OPENAI:
+            logger.info("Local command STT failed, falling back to Groq")
+            result = _transcribe_groq(file_path, model or DEFAULT_GROQ_STT_MODEL)
+            if result["success"]:
+                result["provider"] = "groq (fallback)"
+        return result
 
     if provider == "groq":
         model_name = model or DEFAULT_GROQ_STT_MODEL
-        return _transcribe_groq(file_path, model_name)
+        result = _transcribe_groq(file_path, model_name)
+        if not result["success"] and _HAS_FASTER_WHISPER:
+            logger.info("Groq STT failed (%s), falling back to local", result.get("error", ""))
+            local_cfg = stt_config.get("local", {})
+            local_model = local_cfg.get("model", DEFAULT_LOCAL_MODEL)
+            result = _transcribe_local(file_path, local_model)
+            if result["success"]:
+                result["provider"] = "local (fallback)"
+        return result
 
     if provider == "openai":
         openai_cfg = stt_config.get("openai", {})
