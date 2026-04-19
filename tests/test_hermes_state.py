@@ -170,6 +170,20 @@ class TestMessageStorage:
         assert conv[0] == {"role": "user", "content": "Hello"}
         assert conv[1] == {"role": "assistant", "content": "Hi!"}
 
+    def test_structured_content_round_trips(self, db):
+        db.create_session(session_id="s1", source="cli")
+        content = [
+            {"type": "text", "text": "hello"},
+            {"type": "image_url", "image_url": {"url": "https://example.com/p.png"}},
+        ]
+        db.append_message("s1", role="user", content=content)
+
+        messages = db.get_messages("s1")
+        conv = db.get_messages_as_conversation("s1")
+
+        assert messages[0]["content"] == content
+        assert conv[0] == {"role": "user", "content": content}
+
     def test_finish_reason_stored(self, db):
         db.create_session(session_id="s1", source="cli")
         db.append_message("s1", role="assistant", content="Done", finish_reason="stop")

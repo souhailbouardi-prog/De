@@ -565,6 +565,17 @@ class TestLoadTranscriptPreferLongerSource:
         assert result[0]["content"] == "db-q"
 
 
+    def test_sqlite_structured_content_round_trips(self, store_with_db):
+        """Structured content stored in SQLite should replay as structured content."""
+        sid = "structured_sqlite_session"
+        content = [{"type": "text", "text": "hello from sqlite"}]
+        store_with_db._db.create_session(session_id=sid, source="gateway", model="m")
+        store_with_db._db.append_message(session_id=sid, role="user", content=content)
+
+        result = store_with_db.load_transcript(sid)
+        assert result == [{"role": "user", "content": content}]
+
+
 class TestSessionStoreSwitchSession:
     """Regression coverage for gateway /resume session switching semantics."""
 

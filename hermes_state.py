@@ -32,6 +32,7 @@ T = TypeVar("T")
 DEFAULT_DB_PATH = get_hermes_home() / "state.db"
 
 SCHEMA_VERSION = 6
+_STRUCTURED_CONTENT_PREFIX = "__HERMES_STRUCTURED_CONTENT__:"
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -788,11 +789,33 @@ class SessionDB:
     # Message storage
     # =========================================================================
 
+    @staticmethod
+    def _serialize_message_content(content: Any) -> Any:
+        """Serialize non-string structured message content for SQLite storage."""
+        if content is None or isinstance(content, str):
+            return content
+        try:
+            return _STRUCTURED_CONTENT_PREFIX + json.dumps(content, ensure_ascii=False, default=str)
+        except (TypeError, ValueError):
+            logger.warning("Failed to serialize structured message content; coercing to string")
+            return str(content)
+
+    @staticmethod
+    def _deserialize_message_content(content: Any) -> Any:
+        """Restore structured message content previously serialized for SQLite."""
+        if not isinstance(content, str) or not content.startswith(_STRUCTURED_CONTENT_PREFIX):
+            return content
+        try:
+            return json.loads(content[len(_STRUCTURED_CONTENT_PREFIX):])
+        except (json.JSONDecodeError, TypeError):
+            logger.warning("Failed to deserialize structured message content; returning raw string")
+            return content
+
     def append_message(
         self,
         session_id: str,
         role: str,
-        content: str = None,
+        content: Any = None,
         tool_name: str = None,
         tool_calls: Any = None,
         tool_call_id: str = None,
@@ -818,6 +841,7 @@ class SessionDB:
             if codex_reasoning_items else None
         )
         tool_calls_json = json.dumps(tool_calls) if tool_calls else None
+        serialized_content = self._serialize_message_content(content)
 
         # Pre-compute tool call count
         num_tool_calls = 0
@@ -833,7 +857,7 @@ class SessionDB:
                 (
                     session_id,
                     role,
-                    content,
+                    serialized_content,
                     tool_call_id,
                     tool_calls_json,
                     tool_name,
@@ -874,6 +898,7 @@ class SessionDB:
         result = []
         for row in rows:
             msg = dict(row)
+            msg["content"] = self._deserialize_message_content(msg.get("content"))
             if msg.get("tool_calls"):
                 try:
                     msg["tool_calls"] = json.loads(msg["tool_calls"])
@@ -898,7 +923,10 @@ class SessionDB:
             rows = cursor.fetchall()
         messages = []
         for row in rows:
-            msg = {"role": row["role"], "content": row["content"]}
+            msg = {
+                "role": row["role"],
+                "content": self._deserialize_message_content(row["content"]),
+            }
             if row["tool_call_id"]:
                 msg["tool_call_id"] = row["tool_call_id"]
             if row["tool_name"]:
