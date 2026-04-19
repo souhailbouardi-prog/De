@@ -229,7 +229,7 @@ def _handle_list_entities(args: dict, **kw) -> str:
         result = _run_async(_async_list_entities(domain=domain, area=area))
         return json.dumps({"result": result})
     except Exception as e:
-        logger.error("ha_list_entities error: %s", e)
+        logger.error("ha_list_entities error: %s", e, exc_info=True)
         return tool_error(f"Failed to list entities: {e}")
 
 
@@ -244,7 +244,7 @@ def _handle_get_state(args: dict, **kw) -> str:
         result = _run_async(_async_get_state(entity_id))
         return json.dumps({"result": result})
     except Exception as e:
-        logger.error("ha_get_state error: %s", e)
+        logger.error("ha_get_state error: %s", e, exc_info=True)
         return tool_error(f"Failed to get state for {entity_id}: {e}")
 
 
@@ -284,7 +284,7 @@ def _handle_call_service(args: dict, **kw) -> str:
         result = _run_async(_async_call_service(domain, service, entity_id, data))
         return json.dumps({"result": result})
     except Exception as e:
-        logger.error("ha_call_service error: %s", e)
+        logger.error("ha_call_service error: %s", e, exc_info=True)
         return tool_error(f"Failed to call {domain}.{service}: {e}")
 
 
@@ -333,7 +333,7 @@ def _handle_list_services(args: dict, **kw) -> str:
         result = _run_async(_async_list_services(domain=domain))
         return json.dumps({"result": result})
     except Exception as e:
-        logger.error("ha_list_services error: %s", e)
+        logger.error("ha_list_services error: %s", e, exc_info=True)
         return tool_error(f"Failed to list services: {e}")
 
 
