@@ -33,8 +33,17 @@ class TestWriteDenyExactPaths:
         assert _is_write_denied(path) is True
 
     def test_hermes_env(self):
-        path = os.path.join(str(Path.home()), ".hermes", ".env")
-        assert _is_write_denied(path) is True
+        # HERMES_HOME/.env is captured in WRITE_DENIED_PATHS at import time
+        # via ``get_hermes_home() / ".env"``.  In production, HERMES_HOME
+        # defaults to ~/.hermes, but under test isolation it points at a
+        # scratch tmp dir, so we cannot assume the path is ~/.hermes/.env.
+        # Assert that *some* .env path was captured and that it is denied.
+        from tools.file_operations import WRITE_DENIED_PATHS
+        env_paths = [p for p in WRITE_DENIED_PATHS if p.endswith(os.sep + ".env")]
+        assert env_paths, (
+            "HERMES_HOME/.env should be captured in WRITE_DENIED_PATHS at import time"
+        )
+        assert _is_write_denied(env_paths[0]) is True
 
     def test_shell_profiles(self):
         home = str(Path.home())
