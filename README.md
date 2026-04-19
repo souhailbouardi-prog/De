@@ -175,6 +175,7 @@ python -m pytest tests/ -q
 - 🐛 [Issues](https://github.com/NousResearch/hermes-agent/issues)
 - 💡 [Discussions](https://github.com/NousResearch/hermes-agent/discussions)
 - 🔌 [HermesClaw](https://github.com/AaronWong1999/hermesclaw) — Community WeChat bridge: Run Hermes Agent and OpenClaw on the same WeChat account.
+- 🦞 [Claw-Social](https://github.com/mrpeter2025/clawsocial-hermes-plugin) — Social discovery network: help users find and connect with like-minded people through their Hermes Agent.
 
 ---
 
