@@ -659,6 +659,47 @@ class TestDelegationCredentialResolution(unittest.TestCase):
                 _resolve_delegation_credentials(cfg, parent)
         self.assertIn("OPENAI_API_KEY", str(ctx.exception))
 
+    def test_direct_endpoint_uses_api_key_env(self):
+        """api_key_env is resolved from the environment when api_key is absent."""
+        parent = _make_mock_parent(depth=0)
+        cfg = {
+            "model": "my-model",
+            "base_url": "https://my-endpoint.example.com/v1",
+            "api_key_env": "MY_DELEGATION_KEY",
+        }
+        with patch.dict(os.environ, {"MY_DELEGATION_KEY": "env-secret"}, clear=False):
+            creds = _resolve_delegation_credentials(cfg, parent)
+        self.assertEqual(creds["api_key"], "env-secret")
+        self.assertEqual(creds["provider"], "custom")
+        self.assertEqual(creds["base_url"], "https://my-endpoint.example.com/v1")
+
+    def test_api_key_takes_priority_over_api_key_env(self):
+        """Literal api_key wins when both api_key and api_key_env are set."""
+        parent = _make_mock_parent(depth=0)
+        cfg = {
+            "model": "my-model",
+            "base_url": "https://my-endpoint.example.com/v1",
+            "api_key": "explicit-key",
+            "api_key_env": "MY_DELEGATION_KEY",
+        }
+        with patch.dict(os.environ, {"MY_DELEGATION_KEY": "env-secret"}, clear=False):
+            creds = _resolve_delegation_credentials(cfg, parent)
+        self.assertEqual(creds["api_key"], "explicit-key")
+
+    def test_api_key_env_raises_when_env_var_missing(self):
+        """ValueError is raised when api_key_env is set but the env var is absent."""
+        parent = _make_mock_parent(depth=0)
+        cfg = {
+            "model": "my-model",
+            "base_url": "https://my-endpoint.example.com/v1",
+            "api_key_env": "NONEXISTENT_DELEGATION_KEY",
+        }
+        env_without_key = {k: v for k, v in os.environ.items() if k != "NONEXISTENT_DELEGATION_KEY"}
+        with patch.dict(os.environ, env_without_key, clear=True):
+            with self.assertRaises(ValueError) as ctx:
+                _resolve_delegation_credentials(cfg, parent)
+        self.assertIn("NONEXISTENT_DELEGATION_KEY", str(ctx.exception))
+
     @patch("hermes_cli.runtime_provider.resolve_runtime_provider")
     def test_nous_provider_resolves_nous_credentials(self, mock_resolve):
         """Nous provider resolves Nous Portal base_url and api_key."""

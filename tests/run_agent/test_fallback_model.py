@@ -211,7 +211,7 @@ class TestTryActivateFallback:
                 "provider": "custom",
                 "model": "my-model",
                 "base_url": "http://localhost:8080/v1",
-                "api_key_env": "MY_CUSTOM_KEY",
+                "api_key": "custom-secret",
             },
         )
         mock_client = _mock_resolve(
@@ -221,10 +221,82 @@ class TestTryActivateFallback:
         with patch(
             "agent.auxiliary_client.resolve_provider_client",
             return_value=(mock_client, "my-model"),
-        ):
+        ) as mock_resolve:
             assert agent._try_activate_fallback() is True
             assert agent.client is mock_client
             assert agent.model == "my-model"
+            mock_resolve.assert_called_once_with(
+                "custom", model="my-model", raw_codex=True,
+                explicit_base_url="http://localhost:8080/v1",
+                explicit_api_key="custom-secret",
+            )
+
+    def test_api_key_env_resolved_when_api_key_absent(self):
+        """api_key_env is resolved from the environment when api_key is absent."""
+        agent = _make_agent(
+            fallback_model={
+                "provider": "custom",
+                "model": "my-model",
+                "base_url": "http://localhost:8080/v1",
+                "api_key_env": "MY_FALLBACK_KEY",
+            },
+        )
+        mock_client = _mock_resolve(
+            api_key="env-secret",
+            base_url="http://localhost:8080/v1",
+        )
+        with patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            return_value=(mock_client, "my-model"),
+        ) as mock_resolve, patch.dict(os.environ, {"MY_FALLBACK_KEY": "env-secret"}, clear=False):
+            assert agent._try_activate_fallback() is True
+            mock_resolve.assert_called_once_with(
+                "custom", model="my-model", raw_codex=True,
+                explicit_base_url="http://localhost:8080/v1",
+                explicit_api_key="env-secret",
+            )
+
+    def test_api_key_takes_priority_over_api_key_env(self):
+        """Literal api_key wins when both api_key and api_key_env are set."""
+        agent = _make_agent(
+            fallback_model={
+                "provider": "custom",
+                "model": "my-model",
+                "base_url": "http://localhost:8080/v1",
+                "api_key": "explicit-key",
+                "api_key_env": "MY_FALLBACK_KEY",
+            },
+        )
+        mock_client = _mock_resolve(
+            api_key="explicit-key",
+            base_url="http://localhost:8080/v1",
+        )
+        with patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            return_value=(mock_client, "my-model"),
+        ) as mock_resolve, patch.dict(os.environ, {"MY_FALLBACK_KEY": "env-secret"}, clear=False):
+            assert agent._try_activate_fallback() is True
+            mock_resolve.assert_called_once_with(
+                "custom", model="my-model", raw_codex=True,
+                explicit_base_url="http://localhost:8080/v1",
+                explicit_api_key="explicit-key",
+            )
+
+    def test_api_key_env_skips_fallback_when_env_var_missing(self):
+        """When api_key_env is set but the env var is absent, fallback is skipped."""
+        agent = _make_agent(
+            fallback_model={
+                "provider": "custom",
+                "model": "my-model",
+                "base_url": "http://localhost:8080/v1",
+                "api_key_env": "NONEXISTENT_FALLBACK_KEY",
+            },
+        )
+        env_without_key = {k: v for k, v in os.environ.items() if k != "NONEXISTENT_FALLBACK_KEY"}
+        with patch.dict(os.environ, env_without_key, clear=True):
+            result = agent._try_activate_fallback()
+        assert result is False
+        assert agent._fallback_activated is False
 
     def test_prompt_caching_enabled_for_claude_on_openrouter(self):
         agent = _make_agent(

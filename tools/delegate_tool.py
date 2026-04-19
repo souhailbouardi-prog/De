@@ -961,16 +961,28 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
     configured_provider = str(cfg.get("provider") or "").strip() or None
     configured_base_url = str(cfg.get("base_url") or "").strip() or None
     configured_api_key = str(cfg.get("api_key") or "").strip() or None
+    configured_api_key_env = str(cfg.get("api_key_env") or "").strip() or None
 
     if configured_base_url:
-        api_key = (
-            configured_api_key
-            or os.getenv("OPENAI_API_KEY", "").strip()
-        )
+        if configured_api_key:
+            api_key = configured_api_key
+        elif configured_api_key_env:
+            # api_key_env is explicit: fail fast rather than leaking OPENAI_API_KEY
+            # to a third-party endpoint when the named variable is unset.
+            api_key = os.getenv(configured_api_key_env, "").strip()
+            if not api_key:
+                raise ValueError(
+                    f"delegation.api_key_env is set to '{configured_api_key_env}' "
+                    f"but the environment variable is not set or empty. "
+                    f"Set {configured_api_key_env} in your environment or use "
+                    f"delegation.api_key instead."
+                )
+        else:
+            api_key = os.getenv("OPENAI_API_KEY", "").strip()
         if not api_key:
             raise ValueError(
                 "Delegation base_url is configured but no API key was found. "
-                "Set delegation.api_key or OPENAI_API_KEY."
+                "Set delegation.api_key, delegation.api_key_env, or OPENAI_API_KEY."
             )
 
         base_lower = configured_base_url.lower()
