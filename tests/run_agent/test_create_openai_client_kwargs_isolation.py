@@ -9,6 +9,16 @@ on every retry. That PR has since been reverted, but the underlying issue
 (#10324, connections hanging in CLOSE-WAIT) is still open, so another transport
 tweak inside this function is likely. This test pins the contract that the
 function must treat its input dict as read-only.
+
+#11249 reported the same class of bug: without the shallow-copy guard,
+``_create_openai_client()`` wrote ``http_client`` back into the caller's dict,
+so every subsequent ``dict(self._client_kwargs)`` shallow-copy shared the
+*same* ``httpx.Client`` instance that was created for the primary client.
+Closing any request-scoped OpenAI client would therefore also close the
+primary's underlying transport, causing ``RuntimeError: Cannot send a request,
+as the client has been closed`` on all calls after the first.  The fix —
+``client_kwargs = dict(client_kwargs)`` at the top of the method — ensures
+each invocation operates on an independent local copy.
 """
 from unittest.mock import MagicMock, patch
 

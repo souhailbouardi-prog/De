@@ -4653,7 +4653,9 @@ class AIAgent:
         # wrapped a closed transport and raised "Cannot send a request, as the client
         # has been closed" on every retry. The revert resolved that specific path; this
         # copy locks the contract so future transport/keepalive work can't reintroduce
-        # the same class of bug.
+        # the same class of bug. (#11249: the same in-place mutation also caused all
+        # per-request clients to share the primary's httpx.Client — closing any request
+        # client silently closed the primary too, breaking all subsequent calls.)
         client_kwargs = dict(client_kwargs)
         _validate_proxy_env_urls()
         _validate_base_url(client_kwargs.get("base_url"))
