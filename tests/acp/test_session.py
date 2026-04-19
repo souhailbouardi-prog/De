@@ -426,3 +426,51 @@ class TestPersistence:
 
         assert stdout_buf.getvalue() == ""
         assert stderr_buf.getvalue() == "ACP noise\n"
+
+
+# ---------------------------------------------------------------------------
+# WSL cwd translation
+# ---------------------------------------------------------------------------
+
+
+class TestWslCwdTranslation:
+    """Windows paths from ACP clients must be translated to /mnt/<drive>/... on WSL."""
+
+    def test_translate_wsl_cwd_converts_windows_path_when_wsl(self, monkeypatch):
+        monkeypatch.setattr("hermes_constants._wsl_detected", True)
+        from acp_adapter.session import _translate_wsl_cwd
+        assert _translate_wsl_cwd(r"C:\Users\foo\project") == "/mnt/c/Users/foo/project"
+
+    def test_translate_wsl_cwd_handles_forward_slash_separator(self, monkeypatch):
+        monkeypatch.setattr("hermes_constants._wsl_detected", True)
+        from acp_adapter.session import _translate_wsl_cwd
+        assert _translate_wsl_cwd("D:/work/project") == "/mnt/d/work/project"
+
+    def test_translate_wsl_cwd_leaves_posix_path_unchanged(self, monkeypatch):
+        monkeypatch.setattr("hermes_constants._wsl_detected", True)
+        from acp_adapter.session import _translate_wsl_cwd
+        assert _translate_wsl_cwd("/home/foo/project") == "/home/foo/project"
+
+    def test_translate_wsl_cwd_noop_when_not_wsl(self, monkeypatch):
+        monkeypatch.setattr("hermes_constants._wsl_detected", False)
+        from acp_adapter.session import _translate_wsl_cwd
+        assert _translate_wsl_cwd(r"C:\Users\foo\project") == r"C:\Users\foo\project"
+
+    def test_create_session_translates_windows_path_on_wsl(self, manager, monkeypatch):
+        monkeypatch.setattr("hermes_constants._wsl_detected", True)
+        state = manager.create_session(cwd=r"C:\Users\foo\project")
+        assert state.cwd == "/mnt/c/Users/foo/project"
+
+    def test_fork_session_translates_windows_path_on_wsl(self, manager, monkeypatch):
+        monkeypatch.setattr("hermes_constants._wsl_detected", True)
+        original = manager.create_session(cwd="/tmp/base")
+        forked = manager.fork_session(original.session_id, cwd=r"D:\work\project")
+        assert forked is not None
+        assert forked.cwd == "/mnt/d/work/project"
+
+    def test_update_cwd_translates_windows_path_on_wsl(self, manager, monkeypatch):
+        monkeypatch.setattr("hermes_constants._wsl_detected", True)
+        state = manager.create_session(cwd="/tmp/old")
+        updated = manager.update_cwd(state.session_id, cwd=r"E:\Projects\hermes")
+        assert updated is not None
+        assert updated.cwd == "/mnt/e/Projects/hermes"
