@@ -3394,6 +3394,16 @@ class GatewayRunner:
         if canonical == "personality":
             return await self._handle_personality_command(event)
 
+        if canonical == "cc":
+            return await self._handle_cc_command(event)
+
+        # While a session is in CC mode, ``/clear`` is redirected to the
+        # Claude Code session reset. Outside CC mode this command stays
+        # ``cli_only`` and falls through to the unknown-command notice as
+        # before, so non-CC users are unaffected.
+        if canonical == "clear" and self._session_key_for_source(event.source) in self._cc_mode:
+            return self._handle_cc_clear(event)
+
         if canonical == "plan":
             try:
                 from agent.skill_commands import build_plan_path, build_skill_invocation_message
@@ -3615,6 +3625,20 @@ class GatewayRunner:
         # Pending exec approvals are handled by /approve and /deny commands above.
         # No bare text matching — "yes" in normal conversation must not trigger
         # execution of a dangerous command.
+
+        # ── CC mode: route all non-command messages to Claude Code ──
+        # When a session has toggled into CC mode via bare /cc, bare text
+        # messages are forwarded to the local `claude` CLI instead of the
+        # Hermes agent. Slash commands still dispatch normally so the user
+        # can leave the mode.
+        _cc_session_key = self._session_key_for_source(event.source)
+        if _cc_session_key in self._cc_mode and not command:
+            msg_text = (event.text or "").strip()
+            if msg_text:
+                if msg_text.lower() in ("quit", "exit", "stop"):
+                    self._cc_mode.discard(_cc_session_key)
+                    return "📤 Left Claude Code mode — back to Hermes."
+                return await self._run_cc_task(_cc_session_key, msg_text, event)
 
         # ── Claim this session before any await ───────────────────────
         # Between here and _run_agent registering the real AIAgent, there
@@ -6720,6 +6744,106 @@ class GatewayRunner:
         if _save_config_key("agent.service_tier", saved_value):
             return f"⚡ ✓ Priority Processing: **{label}** (saved to config)\n_(takes effect on next message)_"
         return f"⚡ ✓ Priority Processing: **{label}** (this session only)"
+
+    # Per-session Claude Code session IDs, used for multi-turn continuity.
+    _cc_sessions: Dict[str, str] = {}
+    # Per-session CC-mode toggle. Non-command messages from sessions in this
+    # set are forwarded to `claude -p` instead of the Hermes agent.
+    _cc_mode: set = set()
+
+    async def _handle_cc_command(self, event: MessageEvent) -> str:
+        """Handle /cc — toggle sticky CC mode or execute a one-off task.
+
+        ``/cc`` with no args toggles the sticky mode for this session: while
+        enabled, all non-command messages are routed to Claude Code. ``/cc
+        <task>`` runs a single ``claude -p`` invocation without touching mode.
+        """
+        session_key = self._session_key_for_source(event.source)
+        task = event.get_command_args().strip()
+
+        if not task:
+            if session_key in self._cc_mode:
+                self._cc_mode.discard(session_key)
+                return "📤 Left Claude Code mode — back to Hermes."
+            self._cc_mode.add(session_key)
+            return (
+                "🤖 Claude Code mode ON (Max subscription). "
+                "Send messages directly; type /cc (or quit/exit/stop) to leave."
+            )
+
+        return await self._run_cc_task(session_key, task, event)
+
+    def _handle_cc_clear(self, event: MessageEvent) -> str:
+        """Handle ``/clear`` while in CC mode.
+
+        Drops the cached Claude Code ``session_id`` for this gateway session
+        so the next ``/cc`` invocation starts a fresh Claude Code conversation
+        (no ``--resume``). ``claude -p`` is a one-shot print mode and has no
+        interactive ``/clear`` of its own, so we implement the equivalent by
+        clearing the bridge's own session cache.
+        """
+        session_key = self._session_key_for_source(event.source)
+        had_session = self._cc_sessions.pop(session_key, None) is not None
+        if had_session:
+            return "🧹 Claude Code session cleared — next message starts fresh."
+        return "🧹 No active Claude Code session to clear."
+
+    async def _run_cc_task(self, session_key: str, task: str, event: MessageEvent) -> str:
+        """Invoke ``claude -p`` as a subprocess and format the JSON response.
+
+        Remembers the returned ``session_id`` per gateway session so the next
+        invocation can resume the Claude Code conversation with ``--resume``.
+        """
+        import subprocess
+
+        cmd = [
+            "claude", "-p", task,
+            "--output-format", "json",
+            "--max-turns", "20",
+        ]
+
+        prev_session = self._cc_sessions.get(session_key)
+        if prev_session:
+            cmd.extend(["--resume", prev_session])
+
+        logger.info(
+            "/cc: session=%s resume=%s task=%r",
+            session_key[:20], bool(prev_session), task[:80],
+        )
+
+        try:
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=300,
+                cwd=os.path.expanduser("~"),
+                env={**os.environ},
+            )
+        except subprocess.TimeoutExpired:
+            return "❌ Claude Code timed out (300 s)."
+        except FileNotFoundError:
+            return "❌ claude CLI not installed. Run: npm i -g @anthropic-ai/claude-code"
+
+        if result.returncode != 0:
+            error = result.stderr.strip()[:500] or "unknown error"
+            logger.error("/cc error (exit %d): %s", result.returncode, error)
+            return f"❌ Claude Code error:\n{error}"
+
+        try:
+            data = json.loads(result.stdout.strip())
+            response = data.get("result", "(no output)")
+            new_session_id = data.get("session_id", "")
+            turns = data.get("num_turns", 0)
+            cost = data.get("total_cost_usd", 0)
+
+            if new_session_id:
+                self._cc_sessions[session_key] = new_session_id
+
+            footer = f"\n\n---\n⏱ {turns} turns | 💰 ${cost:.4f}"
+            return response + footer
+        except (json.JSONDecodeError, KeyError):
+            return result.stdout.strip() or "(no output)"
 
     async def _handle_yolo_command(self, event: MessageEvent) -> str:
         """Handle /yolo — toggle dangerous command approval bypass for this session only."""
