@@ -70,6 +70,37 @@ _BLOCKED_DEVICE_PATHS = frozenset({
     "/dev/fd/0", "/dev/fd/1", "/dev/fd/2",
 })
 
+# Windows reserved device names (native ``os.name == "nt"``). WSL sessions
+# report as POSIX and continue to use the ``/dev/*`` rules above.
+_WIN_NT_RESERVED_DEVICE_STEMS: frozenset[str] = frozenset(
+    {"CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$"}
+    | {f"COM{i}" for i in range(1, 10)}
+    | {f"LPT{i}" for i in range(1, 10)}
+)
+
+
+def _is_nt_reserved_device_path(normalized: str) -> bool:
+    """Return True when *normalized* targets a classic Win32 reserved device.
+
+    Only active on native Windows (``os.name == "nt"``). Hermes users on WSL2
+    keep POSIX semantics; this guard closes the gap for Windows-native runs
+    where paths like ``CON`` or ``COM1`` map to console/serial devices.
+    """
+    if os.name != "nt":
+        return False
+    p = os.path.normcase(os.path.normpath(normalized))
+    p = p.replace("/", "\\")
+    if p.startswith("\\\\.\\") or p.startswith("\\\\?\\"):
+        inner = p[4:]
+        head = inner.split("\\", 1)[0]
+        stem = os.path.splitext(head)[0].upper()
+        if stem in _WIN_NT_RESERVED_DEVICE_STEMS:
+            return True
+        return head.upper() in _WIN_NT_RESERVED_DEVICE_STEMS
+    base = os.path.basename(p)
+    stem = os.path.splitext(base)[0].upper()
+    return stem in _WIN_NT_RESERVED_DEVICE_STEMS
+
 
 def _is_blocked_device(filepath: str) -> bool:
     """Return True if the path would hang the process (infinite output or blocking input).
@@ -81,6 +112,8 @@ def _is_blocked_device(filepath: str) -> bool:
     """
     normalized = os.path.expanduser(filepath)
     if normalized in _BLOCKED_DEVICE_PATHS:
+        return True
+    if _is_nt_reserved_device_path(normalized):
         return True
     # /proc/self/fd/0-2 and /proc/<pid>/fd/0-2 are Linux aliases for stdio
     if normalized.startswith("/proc/") and normalized.endswith(

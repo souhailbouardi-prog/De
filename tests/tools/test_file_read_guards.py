@@ -86,6 +86,27 @@ class TestDevicePathBlocking(unittest.TestCase):
         self.assertIn("error", result)
         self.assertIn("device file", result["error"])
 
+    @patch("tools.file_tools.os.name", "nt")
+    def test_nt_reserved_device_detection(self):
+        for dev in ("CON", "con", r"\\.\CON", r"\\.\NUL", r"C:\Windows\system32\con"):
+            self.assertTrue(_is_blocked_device(dev), f"{dev} should be blocked on NT")
+
+    @patch("tools.file_tools.os.name", "nt")
+    def test_nt_com_lpt_reserved(self):
+        self.assertTrue(_is_blocked_device("COM1"))
+        self.assertTrue(_is_blocked_device(r"C:\COM3.txt"))
+
+    @patch("tools.file_tools.os.name", "nt")
+    def test_nt_normal_file_not_blocked(self):
+        self.assertFalse(_is_blocked_device(r"C:\Users\me\readme.txt"))
+
+    @patch("tools.file_tools.os.name", "nt")
+    def test_read_file_tool_rejects_nt_reserved(self):
+        """Reserved NT device paths are rejected before resolve()/I/O."""
+        result = json.loads(read_file_tool("CON", task_id="nt_dev_test"))
+        self.assertIn("error", result)
+        self.assertIn("device file", result["error"])
+
 
 # ---------------------------------------------------------------------------
 # Character-count limits
