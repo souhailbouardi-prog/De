@@ -158,6 +158,29 @@ class TestDefaultContextLengths:
                 f"{key} should be {value}, got {DEFAULT_CONTEXT_LENGTHS[key]}"
             )
 
+    def test_gemma4_ollama_naming(self):
+        # Ollama uses "gemma4:31b" (no dash, tag format) while Google/AI Studio
+        # use "gemma-4-31b-it" (dashed). Both must resolve to 256K context.
+        # The "gemma4" catch-all (128K) covers e2b/e4b edge models.
+        from agent.model_metadata import get_model_context_length
+        from unittest.mock import patch as mock_patch
+
+        with mock_patch("agent.model_metadata.fetch_model_metadata", return_value={}),             mock_patch("agent.model_metadata.fetch_endpoint_model_metadata", return_value={}),             mock_patch("agent.model_metadata.get_cached_context_length", return_value=None):
+            cases = [
+                ("gemma4:31b", 256000),
+                ("gemma4:31b-cloud", 256000),   # Ollama Cloud variant
+                ("gemma4:26b", 256000),           # MoE variant
+                ("gemma4:e4b", 131072),           # Edge model → catch-all 128K
+                ("gemma4:e2b", 131072),           # Edge model → catch-all 128K
+                ("gemma-4-31b", 256000),          # Dashed Google naming
+                ("gemma-4-31b-it", 256000),       # Instruction-tuned variant
+            ]
+            for model_id, expected_ctx in cases:
+                actual = get_model_context_length(model_id)
+                assert actual == expected_ctx, (
+                    f"{model_id}: expected {expected_ctx}, got {actual}"
+                )
+
     def test_grok_substring_matching(self):
         # Longest-first substring matching must resolve the real xAI model
         # IDs to the correct fallback entries without 128k probe-down.

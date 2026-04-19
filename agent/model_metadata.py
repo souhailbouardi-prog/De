@@ -123,8 +123,12 @@ DEFAULT_CONTEXT_LENGTHS = {
     "gpt-4": 128000,
     # Google
     "gemini": 1048576,
-    # Gemma (open models served via AI Studio)
+    # Gemma (open models served via AI Studio / Ollama)
+    # Ollama uses "gemma4" (no dash); Google/AI Studio use "gemma-4"
     "gemma-4-31b": 256000,
+    "gemma4:31b": 256000,     # Ollama tag format
+    "gemma4:26b": 256000,     # Ollama tag format (MoE, 256K context)
+    "gemma4": 131072,          # Gemma 4 catch-all (e2b/e4b = 128K)
     "gemma-3": 131072,
     "gemma": 8192,  # fallback for older gemma models
     # DeepSeek
