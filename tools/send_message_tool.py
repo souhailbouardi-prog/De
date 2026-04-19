@@ -500,11 +500,26 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             last_result = result
         return last_result
 
-    # --- Non-Telegram/Discord platforms ---
+    # --- Feishu: pass media files to the adapter's send pipeline ---
+    if platform == Platform.FEISHU:
+        last_result = None
+        for i, chunk in enumerate(chunks):
+            is_last = (i == len(chunks) - 1)
+            result = await _send_feishu(
+                pconfig, chat_id, chunk,
+                media_files=media_files if is_last else [],
+                thread_id=thread_id,
+            )
+            if isinstance(result, dict) and result.get("error"):
+                return result
+            last_result = result
+        return last_result
+
+    # --- Non-Telegram/Discord/Feishu platforms ---
     if media_files and not message.strip():
         return {
             "error": (
-                f"send_message MEDIA delivery is currently only supported for telegram, discord, matrix, and weixin; "
+                f"send_message MEDIA delivery is currently only supported for telegram, discord, matrix, weixin, and feishu; "
                 f"target {platform.value} had only media attachments"
             )
         }
@@ -512,7 +527,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     if media_files:
         warning = (
             f"MEDIA attachments were omitted for {platform.value}; "
-            "native send_message media delivery is currently only supported for telegram, discord, matrix, and weixin"
+            "native send_message media delivery is currently only supported for telegram, discord, matrix, weixin, and feishu"
         )
 
     last_result = None
