@@ -54,6 +54,7 @@ export const zh: Translations = {
     },
     nav: {
       status: "状态",
+      memory: "记忆",
       sessions: "会话",
       analytics: "分析",
       logs: "日志",
@@ -62,6 +63,27 @@ export const zh: Translations = {
       config: "配置",
       keys: "密钥",
     },
+  },
+
+  memory: {
+    title: "记忆",
+    userProfile: "用户画像",
+    notes: "记忆笔记",
+    builtInOnly: "仅内置",
+    provider: "提供者",
+    builtIn: "内置",
+    directory: "目录",
+    target: "目标",
+    refresh: "刷新",
+    addEntry: "添加条目",
+    emptyStore: "暂无条目",
+    entryCount: "条",
+    chars: "字符",
+    edit: "编辑",
+    delete: "删除",
+    saveFailed: "保存记忆条目失败",
+    addFailed: "添加记忆条目失败",
+    deleteFailed: "删除记忆条目失败",
   },
 
   status: {
