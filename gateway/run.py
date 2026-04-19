@@ -2976,6 +2976,32 @@ class GatewayRunner:
             return None
         elif not self._is_user_authorized(source):
             logger.warning("Unauthorized user: %s (%s) on %s", source.user_id, source.user_name, source.platform.value)
+            # If an allowlist is configured for this platform, silently ignore
+            # rather than offering a pairing code (which could bypass the allowlist).
+            platform_env_map = {
+                Platform.TELEGRAM: "TELEGRAM_ALLOWED_USERS",
+                Platform.DISCORD: "DISCORD_ALLOWED_USERS",
+                Platform.WHATSAPP: "WHATSAPP_ALLOWED_USERS",
+                Platform.SLACK: "SLACK_ALLOWED_USERS",
+                Platform.SIGNAL: "SIGNAL_ALLOWED_USERS",
+                Platform.EMAIL: "EMAIL_ALLOWED_USERS",
+                Platform.SMS: "SMS_ALLOWED_USERS",
+                Platform.MATTERMOST: "MATTERMOST_ALLOWED_USERS",
+                Platform.MATRIX: "MATRIX_ALLOWED_USERS",
+                Platform.DINGTALK: "DINGTALK_ALLOWED_USERS",
+                Platform.FEISHU: "FEISHU_ALLOWED_USERS",
+                Platform.WECOM: "WECOM_ALLOWED_USERS",
+                Platform.WEIXIN: "WEIXIN_ALLOWED_USERS",
+                Platform.BLUEBUBBLES: "BLUEBUBBLES_ALLOWED_USERS",
+            }
+            allowlist_env = platform_env_map.get(source.platform)
+            allowlist_value = os.getenv(allowlist_env, "").strip() if allowlist_env else ""
+            global_allowlist_value = os.getenv("GATEWAY_ALLOWED_USERS", "").strip()
+            if (allowlist_value or global_allowlist_value) and source.chat_type == "dm":
+                # Allowlist is configured -- silently ignore unauthorized DMs
+                logger.info("Silently ignoring unauthorized DM from %s on %s (allowlist configured)",
+                            source.user_id, source.platform.value if source.platform else "unknown")
+                return None
             # In DMs: offer pairing code. In groups: silently ignore.
             if source.chat_type == "dm" and self._get_unauthorized_dm_behavior(source.platform) == "pair":
                 platform_name = source.platform.value if source.platform else "unknown"
