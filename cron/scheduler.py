@@ -876,6 +876,21 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             except Exception as e:
                 logger.debug("Job '%s': failed to load credential pool for %s: %s", job_id, runtime_provider, e)
 
+        # Auto-inherit compression model/provider from per-job settings (#5438).
+        # When a job specifies a custom provider, compression should use the
+        # same infrastructure instead of the global config default.
+        _job_provider = turn_route["runtime"].get("provider") or ""
+        _job_base_url = turn_route["runtime"].get("base_url") or ""
+        _restore_compression_env = {}
+        if _job_provider and _job_provider not in ("auto", "openrouter"):
+            for _env_key, _env_val in [
+                ("CONTEXT_COMPRESSION_PROVIDER", _job_provider),
+                ("AUXILIARY_COMPRESSION_BASE_URL", _job_base_url),
+            ]:
+                if _env_val:
+                    _restore_compression_env[_env_key] = os.environ.get(_env_key)
+                    os.environ[_env_key] = _env_val
+
         agent = AIAgent(
             model=turn_route["model"],
             api_key=turn_route["runtime"].get("api_key"),
@@ -1003,6 +1018,13 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
 """
         
         logger.info("Job '%s' completed successfully", job_name)
+        # Restore compression env vars overridden for this job (#5438)
+        for _env_key, _old_val in _restore_compression_env.items():
+            if _old_val is None:
+                os.environ.pop(_env_key, None)
+            else:
+                os.environ[_env_key] = _old_val
+
         return True, output, final_response, None
         
     except Exception as e:
