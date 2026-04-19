@@ -2106,6 +2106,49 @@ def validate_requested_model(
                 ),
             }
 
+    # Anthropic: /v1/models requires x-api-key (or Bearer for OAuth) plus
+    # anthropic-version headers.  The generic OpenAI-style probe uses plain
+    # Bearer auth and 401s against Anthropic, so dispatch to the native
+    # fetcher which handles both API keys and Claude-Code OAuth tokens.
+    if normalized == "anthropic":
+        anthropic_models = _fetch_anthropic_models()
+        if anthropic_models is not None:
+            if requested_for_lookup in set(anthropic_models):
+                return {
+                    "accepted": True,
+                    "persist": True,
+                    "recognized": True,
+                    "message": None,
+                }
+            auto = get_close_matches(requested_for_lookup, anthropic_models, n=1, cutoff=0.9)
+            if auto:
+                return {
+                    "accepted": True,
+                    "persist": True,
+                    "recognized": True,
+                    "corrected_model": auto[0],
+                    "message": f"Auto-corrected `{requested}` → `{auto[0]}`",
+                }
+            suggestions = get_close_matches(requested, anthropic_models, n=3, cutoff=0.5)
+            suggestion_text = ""
+            if suggestions:
+                suggestion_text = "\n  Similar models: " + ", ".join(f"`{s}`" for s in suggestions)
+            # Accept anyway — Anthropic sometimes gates newer/preview models
+            # (e.g. snapshot IDs, early-access releases) behind accounts
+            # even though they aren't listed on /v1/models.
+            return {
+                "accepted": True,
+                "persist": True,
+                "recognized": False,
+                "message": (
+                    f"Note: `{requested}` was not found in Anthropic's /v1/models listing. "
+                    f"It may still work if you have early-access or snapshot IDs."
+                    f"{suggestion_text}"
+                ),
+            }
+        # _fetch_anthropic_models returned None — no token resolvable or
+        # network failure.  Fall through to the generic warning below.
+
     # Probe the live API to check if the model actually exists
     api_models = fetch_api_models(api_key, base_url)
 
