@@ -1178,3 +1178,454 @@ class TestStatusRemoteGateway:
         assert data["gateway_running"] is True
         assert data["gateway_pid"] is None
         assert data["gateway_state"] == "running"
+
+
+# ---------------------------------------------------------------------------
+# /api/ws — WebSocket wire-compatible with stdio tui_gateway
+# ---------------------------------------------------------------------------
+
+
+class TestTuiGatewayWebSocket:
+    """E2E tests for /api/ws.
+
+    The WS endpoint multiplexes the same JSON-RPC protocol Ink speaks over
+    stdio onto a browser/iOS-friendly socket. These tests exercise the
+    transport boundary without booting a real AIAgent — handlers are
+    monkey-patched in for deterministic byte-level assertions.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _setup(self):
+        try:
+            from starlette.testclient import TestClient
+        except ImportError:
+            pytest.skip("fastapi/starlette not installed")
+        from hermes_cli.web_server import app, _SESSION_TOKEN
+        self.client = TestClient(app)
+        self.token = _SESSION_TOKEN
+
+    def _url(self, token=None):
+        tok = self.token if token is None else token
+        return f"/api/ws?token={tok}" if tok else "/api/ws"
+
+    def _drain_ready(self, ws):
+        """Skip the ``gateway.ready`` event emitted on accept."""
+        frame = ws.receive_json()
+        assert frame.get("method") == "event"
+        assert frame["params"]["type"] == "gateway.ready"
+        return frame
+
+    def test_handshake_emits_gateway_ready(self):
+        with self.client.websocket_connect(self._url()) as ws:
+            first = ws.receive_json()
+            assert first["jsonrpc"] == "2.0"
+            assert first["method"] == "event"
+            assert first["params"]["type"] == "gateway.ready"
+            assert "skin" in first["params"]["payload"]
+
+    def test_rejects_missing_token(self):
+        from starlette.websockets import WebSocketDisconnect
+        with pytest.raises(WebSocketDisconnect):
+            with self.client.websocket_connect(self._url(token="")) as ws:
+                ws.receive_json()
+
+    def test_rejects_bad_token(self):
+        from starlette.websockets import WebSocketDisconnect
+        with pytest.raises(WebSocketDisconnect):
+            with self.client.websocket_connect(self._url(token="bogus-token-xyz")) as ws:
+                ws.receive_json()
+
+    def test_parse_error_on_bad_frame(self):
+        with self.client.websocket_connect(self._url()) as ws:
+            self._drain_ready(ws)
+            ws.send_text("this is { not json")
+            resp = ws.receive_json()
+            assert resp["jsonrpc"] == "2.0"
+            assert resp["error"]["code"] == -32700
+            assert resp["error"]["message"] == "parse error"
+
+    def test_unknown_method_returns_rpc_error(self):
+        with self.client.websocket_connect(self._url()) as ws:
+            self._drain_ready(ws)
+            ws.send_json({"jsonrpc": "2.0", "id": "u1", "method": "does.not.exist"})
+            resp = ws.receive_json()
+            assert resp["id"] == "u1"
+            assert resp["error"]["code"] == -32601
+            assert "does.not.exist" in resp["error"]["message"]
+
+    def test_inline_handler_returns_response(self):
+        """An inline handler's result round-trips via the WS transport."""
+        from tui_gateway import server
+
+        sentinel = "_ws_inline_test"
+        server._methods[sentinel] = lambda rid, params: server._ok(rid, {"pong": params.get("ping")})
+        try:
+            with self.client.websocket_connect(self._url()) as ws:
+                self._drain_ready(ws)
+                ws.send_json({"jsonrpc": "2.0", "id": "i1", "method": sentinel, "params": {"ping": "PONG"}})
+                resp = ws.receive_json()
+                assert resp == {"jsonrpc": "2.0", "id": "i1", "result": {"pong": "PONG"}}
+        finally:
+            server._methods.pop(sentinel, None)
+
+    def test_pool_handler_response_arrives_via_ws(self):
+        """Long-handler responses written from the thread pool must reach the WS client."""
+        from tui_gateway import server
+
+        # Register a "slash.exec" replacement so we exercise the pool path
+        # (_LONG_HANDLERS includes "slash.exec").
+        original = server._methods.get("slash.exec")
+        server._methods["slash.exec"] = lambda rid, params: server._ok(rid, {"output": "async-ok"})
+        try:
+            with self.client.websocket_connect(self._url()) as ws:
+                self._drain_ready(ws)
+                ws.send_json({"jsonrpc": "2.0", "id": "p1", "method": "slash.exec", "params": {}})
+                resp = ws.receive_json()
+                assert resp["id"] == "p1"
+                assert resp["result"] == {"output": "async-ok"}
+        finally:
+            if original is not None:
+                server._methods["slash.exec"] = original
+            else:
+                server._methods.pop("slash.exec", None)
+
+    def test_session_events_route_to_owning_ws(self):
+        """Events emitted for a session created over WS land on that WS."""
+        from tui_gateway import server
+        from tui_gateway.transport import current_transport
+
+        sentinel_create = "_ws_emit_test_create"
+        sentinel_emit = "_ws_emit_test_fire"
+        created_sid = {"value": ""}
+
+        def create(rid, params):
+            sid = f"ws-emit-test-{uuid_hex()}"
+            created_sid["value"] = sid
+            server._sessions[sid] = {
+                "session_key": sid,
+                "transport": current_transport(),
+            }
+            return server._ok(rid, {"session_id": sid})
+
+        def fire(rid, params):
+            sid = params["session_id"]
+            server._emit("demo.event", sid, {"n": params.get("n", 0)})
+            return server._ok(rid, {"ok": True})
+
+        def uuid_hex():
+            import uuid
+            return uuid.uuid4().hex[:8]
+
+        server._methods[sentinel_create] = create
+        server._methods[sentinel_emit] = fire
+        try:
+            with self.client.websocket_connect(self._url()) as ws:
+                self._drain_ready(ws)
+
+                ws.send_json({"jsonrpc": "2.0", "id": "c1", "method": sentinel_create})
+                create_resp = ws.receive_json()
+                assert create_resp["id"] == "c1"
+                sid = create_resp["result"]["session_id"]
+                assert sid == created_sid["value"]
+
+                ws.send_json({
+                    "jsonrpc": "2.0",
+                    "id": "e1",
+                    "method": sentinel_emit,
+                    "params": {"session_id": sid, "n": 7},
+                })
+                # Event fires synchronously inside the handler, so it should
+                # arrive before the response.
+                frame1 = ws.receive_json()
+                frame2 = ws.receive_json()
+
+                event_frame = frame1 if frame1.get("method") == "event" else frame2
+                resp_frame = frame2 if frame2.get("id") == "e1" else frame1
+
+                assert event_frame["params"]["type"] == "demo.event"
+                assert event_frame["params"]["session_id"] == sid
+                assert event_frame["params"]["payload"] == {"n": 7}
+                assert resp_frame["result"] == {"ok": True}
+        finally:
+            server._methods.pop(sentinel_create, None)
+            server._methods.pop(sentinel_emit, None)
+            server._sessions.pop(created_sid["value"], None)
+
+    def test_ws_disconnect_resets_session_transport(self):
+        """After a WS hangs up, sessions it owned fall back to stdio so stray emits don't crash."""
+        from tui_gateway import server
+        from tui_gateway.transport import current_transport
+
+        sentinel = "_ws_disconnect_test"
+        captured = {"sid": "", "transport": None}
+
+        def create(rid, params):
+            sid = "ws-disconnect-sid"
+            captured["sid"] = sid
+            captured["transport"] = current_transport()
+            server._sessions[sid] = {
+                "session_key": sid,
+                "transport": captured["transport"],
+            }
+            return server._ok(rid, {"session_id": sid})
+
+        server._methods[sentinel] = create
+        try:
+            with self.client.websocket_connect(self._url()) as ws:
+                self._drain_ready(ws)
+                ws.send_json({"jsonrpc": "2.0", "id": "c1", "method": sentinel})
+                ws.receive_json()
+
+            # Give the server a moment to run the finally-block cleanup.
+            import time
+            for _ in range(50):
+                if server._sessions.get(captured["sid"], {}).get("transport") is not captured["transport"]:
+                    break
+                time.sleep(0.02)
+
+            sess = server._sessions.get(captured["sid"])
+            assert sess is not None
+            assert sess["transport"] is server._stdio_transport
+        finally:
+            server._methods.pop(sentinel, None)
+            server._sessions.pop(captured["sid"], None)
+
+
+# ---------------------------------------------------------------------------
+# Transport parity — same RPC, stdio vs WS, byte-identical envelopes
+# ---------------------------------------------------------------------------
+
+
+class TestTuiGatewayTransportParity:
+    """The whole point of the transport abstraction is that handlers don't
+    know what's on the other end. These tests lock that in: the response
+    envelope produced by ``server.handle_request`` directly (stdio fast path)
+    must match what a WS client receives for the same request.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _setup(self):
+        try:
+            from starlette.testclient import TestClient
+        except ImportError:
+            pytest.skip("fastapi/starlette not installed")
+        from hermes_cli.web_server import app, _SESSION_TOKEN
+        self.client = TestClient(app)
+        self.token = _SESSION_TOKEN
+
+    def _ws_roundtrip(self, req: dict) -> dict:
+        with self.client.websocket_connect(f"/api/ws?token={self.token}") as ws:
+            ready = ws.receive_json()
+            assert ready["params"]["type"] == "gateway.ready"
+            ws.send_json(req)
+            return ws.receive_json()
+
+    def test_parity_unknown_method(self):
+        from tui_gateway import server
+        req = {"jsonrpc": "2.0", "id": "p-unk", "method": "no.such.method"}
+        assert self._ws_roundtrip(req) == server.handle_request(req)
+
+    def test_parity_inline_handler(self):
+        from tui_gateway import server
+
+        sentinel = "_parity_inline"
+        server._methods[sentinel] = lambda rid, params: server._ok(rid, {
+            "echo": params,
+            "const": 42,
+            "nested": {"a": [1, 2, 3], "b": None},
+        })
+        try:
+            req = {
+                "jsonrpc": "2.0",
+                "id": "p-inline",
+                "method": sentinel,
+                "params": {"hello": "world", "n": 1},
+            }
+            assert self._ws_roundtrip(req) == server.handle_request(req)
+        finally:
+            server._methods.pop(sentinel, None)
+
+    def test_parity_error_envelope(self):
+        from tui_gateway import server
+
+        sentinel = "_parity_err"
+        server._methods[sentinel] = lambda rid, params: server._err(rid, 4242, "nope")
+        try:
+            req = {"jsonrpc": "2.0", "id": "p-err", "method": sentinel}
+            assert self._ws_roundtrip(req) == server.handle_request(req)
+        finally:
+            server._methods.pop(sentinel, None)
+
+    def test_parity_stdio_transport_also_works(self):
+        """Calling dispatch() with the stdio transport explicitly must match the default."""
+        from tui_gateway import server
+
+        sentinel = "_parity_stdio"
+        server._methods[sentinel] = lambda rid, params: server._ok(rid, {"ok": True, "p": params})
+        try:
+            req = {"jsonrpc": "2.0", "id": "p-std", "method": sentinel, "params": {"x": 1}}
+            # Default (no transport arg)
+            default_resp = server.dispatch(dict(req))
+            # Explicit stdio transport
+            explicit_resp = server.dispatch(dict(req), server._stdio_transport)
+            assert default_resp == explicit_resp
+            assert default_resp["result"] == {"ok": True, "p": {"x": 1}}
+        finally:
+            server._methods.pop(sentinel, None)
+
+
+# ---------------------------------------------------------------------------
+# E2E: drive the "Ink --tui" JSON-RPC surface over ANY transport
+# ---------------------------------------------------------------------------
+
+
+class TestTuiGatewayE2EAnyPort:
+    """Scripted multi-message conversations that exercise the real dispatcher.
+
+    The same scripted sequence runs over (a) direct ``handle_request`` calls
+    and (b) a live WebSocket. Both must produce the same response envelopes
+    in the same order. This is the "hermes --tui in any port" check.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _setup(self):
+        try:
+            from starlette.testclient import TestClient
+        except ImportError:
+            pytest.skip("fastapi/starlette not installed")
+        from hermes_cli.web_server import app, _SESSION_TOKEN
+        self.client = TestClient(app)
+        self.token = _SESSION_TOKEN
+
+    def _install_scripted_methods(self):
+        """Install a tiny surface that mimics what Ink exercises on startup:
+
+        - commands.ping         returns a deterministic pong
+        - session.sim_create    creates a fake session (no real agent)
+        - session.sim_close     tears down the session
+        - config.sim_get_value  reads a key
+        """
+        from tui_gateway import server
+        from tui_gateway.transport import current_transport
+
+        added = []
+
+        def ping(rid, params):
+            return server._ok(rid, {"pong": True, "id": rid})
+        server._methods["commands.ping"] = ping
+        added.append("commands.ping")
+
+        def sim_create(rid, params):
+            import uuid
+            sid = f"sim-{uuid.uuid4().hex[:6]}"
+            server._sessions[sid] = {
+                "session_key": sid,
+                "transport": current_transport(),
+                "agent": None,
+            }
+            return server._ok(rid, {"session_id": sid})
+        server._methods["session.sim_create"] = sim_create
+        added.append("session.sim_create")
+
+        def sim_close(rid, params):
+            sid = params.get("session_id", "")
+            removed = server._sessions.pop(sid, None) is not None
+            return server._ok(rid, {"closed": removed})
+        server._methods["session.sim_close"] = sim_close
+        added.append("session.sim_close")
+
+        def sim_get_value(rid, params):
+            return server._ok(rid, {"value": "deterministic", "key": params.get("key", "")})
+        server._methods["config.sim_get_value"] = sim_get_value
+        added.append("config.sim_get_value")
+
+        return added
+
+    def _uninstall(self, added):
+        from tui_gateway import server
+        for name in added:
+            server._methods.pop(name, None)
+
+    def _script(self):
+        return [
+            {"jsonrpc": "2.0", "id": "s1", "method": "commands.ping"},
+            {"jsonrpc": "2.0", "id": "s2", "method": "session.sim_create"},
+            {"jsonrpc": "2.0", "id": "s3", "method": "config.sim_get_value",
+             "params": {"key": "display.skin"}},
+        ]
+
+    def test_script_over_direct_and_ws_match(self):
+        from tui_gateway import server
+
+        added = self._install_scripted_methods()
+        try:
+            script = self._script()
+
+            # Run over direct dispatch
+            direct_resps = [server.handle_request(dict(req)) for req in script]
+            # Clean up the session.create we just made so we don't leak into
+            # the WS run.
+            for r in direct_resps:
+                sid = (r.get("result") or {}).get("session_id")
+                if sid:
+                    server._sessions.pop(sid, None)
+
+            # Run over WS
+            with self.client.websocket_connect(f"/api/ws?token={self.token}") as ws:
+                ready = ws.receive_json()
+                assert ready["params"]["type"] == "gateway.ready"
+
+                ws_resps = []
+                for req in script:
+                    ws.send_json(req)
+                    ws_resps.append(ws.receive_json())
+
+            # Result shapes (stripping session-identity fields) should match.
+            def normalize(r):
+                r = dict(r)
+                if "result" in r and isinstance(r["result"], dict):
+                    result = dict(r["result"])
+                    # session ids are random — compare only structure
+                    if "session_id" in result:
+                        result["session_id"] = "<random>"
+                    r["result"] = result
+                return r
+
+            assert [normalize(r) for r in direct_resps] == [normalize(r) for r in ws_resps]
+
+            # And both surfaces ACTUALLY executed their handlers.
+            assert all("result" in r for r in ws_resps)
+            assert ws_resps[0]["result"]["pong"] is True
+            assert ws_resps[2]["result"]["value"] == "deterministic"
+        finally:
+            # Clean up any sessions created during the WS run.
+            for sid in [
+                sid for sid, sess in list(server._sessions.items()) if sid.startswith("sim-")
+            ]:
+                server._sessions.pop(sid, None)
+            self._uninstall(added)
+
+    def test_session_lifecycle_over_ws(self):
+        """Open a session, then close it — via WS only."""
+        from tui_gateway import server
+
+        added = self._install_scripted_methods()
+        try:
+            with self.client.websocket_connect(f"/api/ws?token={self.token}") as ws:
+                ready = ws.receive_json()
+                assert ready["params"]["type"] == "gateway.ready"
+
+                ws.send_json({"jsonrpc": "2.0", "id": "c1", "method": "session.sim_create"})
+                create = ws.receive_json()
+                sid = create["result"]["session_id"]
+                assert sid in server._sessions
+
+                ws.send_json({
+                    "jsonrpc": "2.0", "id": "x1", "method": "session.sim_close",
+                    "params": {"session_id": sid},
+                })
+                close = ws.receive_json()
+                assert close["result"] == {"closed": True}
+                assert sid not in server._sessions
+        finally:
+            self._uninstall(added)

@@ -1,9 +1,11 @@
 import { useEffect, useState, useCallback, useRef } from "react";
+import { useNavigate } from "react-router-dom";
 import {
   ChevronDown,
   ChevronLeft,
   ChevronRight,
   MessageSquare,
+  Play,
   Search,
   Trash2,
   Clock,
@@ -177,6 +179,7 @@ function SessionRow({
   isExpanded,
   onToggle,
   onDelete,
+  onOpen,
 }: {
   session: SessionInfo;
   snippet?: string;
@@ -184,6 +187,7 @@ function SessionRow({
   isExpanded: boolean;
   onToggle: () => void;
   onDelete: () => void;
+  onOpen: () => void;
 }) {
   const [messages, setMessages] = useState<SessionMessage[] | null>(null);
   const [loading, setLoading] = useState(false);
@@ -257,6 +261,19 @@ function SessionRow({
           <Button
             variant="ghost"
             size="icon"
+            className="h-7 w-7 text-muted-foreground hover:text-primary"
+            aria-label="Open in chat"
+            title="Open in chat"
+            onClick={(e) => {
+              e.stopPropagation();
+              onOpen();
+            }}
+          >
+            <Play className="h-3.5 w-3.5" />
+          </Button>
+          <Button
+            variant="ghost"
+            size="icon"
             className="h-7 w-7 text-muted-foreground hover:text-destructive"
             aria-label={t.sessions.deleteSession}
             onClick={(e) => {
@@ -271,6 +288,12 @@ function SessionRow({
 
       {isExpanded && (
         <div className="border-t border-border bg-background/50 p-4">
+          <div className="flex items-center justify-end pb-3">
+            <Button size="sm" variant="outline" onClick={onOpen}>
+              <Play className="h-3 w-3 mr-1.5" />
+              Open in chat
+            </Button>
+          </div>
           {loading && (
             <div className="flex items-center justify-center py-8">
               <div className="h-5 w-5 animate-spin rounded-full border-2 border-primary border-t-transparent" />
@@ -303,6 +326,14 @@ export default function SessionsPage() {
   const [searching, setSearching] = useState(false);
   const debounceRef = useRef<ReturnType<typeof setTimeout>>(null);
   const { t } = useI18n();
+  const navigate = useNavigate();
+
+  const handleOpen = useCallback(
+    (id: string) => {
+      navigate(`/chat?resume=${encodeURIComponent(id)}`);
+    },
+    [navigate],
+  );
 
   const loadSessions = useCallback((p: number) => {
     setLoading(true);
@@ -436,6 +467,7 @@ export default function SessionsPage() {
                   setExpandedId((prev) => (prev === s.id ? null : s.id))
                 }
                 onDelete={() => handleDelete(s.id)}
+                onOpen={() => handleOpen(s.id)}
               />
             ))}
           </div>

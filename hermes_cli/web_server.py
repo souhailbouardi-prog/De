@@ -48,7 +48,7 @@ from hermes_cli.config import (
 from gateway.status import get_running_pid, read_runtime_status
 
 try:
-    from fastapi import FastAPI, HTTPException, Request
+    from fastapi import FastAPI, HTTPException, Request, WebSocket
     from fastapi.middleware.cors import CORSMiddleware
     from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
     from fastapi.staticfiles import StaticFiles
@@ -68,8 +68,13 @@ app = FastAPI(title="Hermes Agent", version=__version__)
 # Session token for protecting sensitive endpoints (reveal).
 # Generated fresh on every server start — dies when the process exits.
 # Injected into the SPA HTML so only the legitimate web UI can use it.
+#
+# Dev override: set HERMES_DASHBOARD_DEV_TOKEN to pin the token across
+# restarts so the Vite dev server (running on a different port than the
+# FastAPI backend) can inject the same value into its served index.html
+# and hit /api/* + /api/ws successfully. Not for production.
 # ---------------------------------------------------------------------------
-_SESSION_TOKEN = secrets.token_urlsafe(32)
+_SESSION_TOKEN = (os.environ.get("HERMES_DASHBOARD_DEV_TOKEN") or "").strip() or secrets.token_urlsafe(32)
 
 # Simple rate limiter for the reveal endpoint
 _reveal_timestamps: List[float] = []
@@ -2276,6 +2281,34 @@ def _mount_plugin_api_routes():
             _log.info("Mounted plugin API routes: /api/plugins/%s/", plugin["name"])
         except Exception as exc:
             _log.warning("Failed to load plugin %s API routes: %s", plugin["name"], exc)
+
+
+# ---------------------------------------------------------------------------
+# tui_gateway WebSocket — wire-compatible with `python -m tui_gateway.entry`.
+#
+# Same newline-delimited JSON-RPC protocol the Ink TUI speaks over stdio,
+# exposed over WebSocket so browser / iOS / Android clients can drive the
+# exact same handlers with zero dispatcher duplication.
+#
+# Auth: client supplies the ephemeral session token via ``?token=`` query
+# parameter, matching the REST auth model. Must be validated before ``accept``
+# so unauthorised clients never see any traffic.
+# ---------------------------------------------------------------------------
+
+
+@app.websocket("/api/ws")
+async def _tui_gateway_websocket(ws: WebSocket):
+    """WebSocket entrypoint that replays stdio tui_gateway over a socket."""
+    token = ws.query_params.get("token", "")
+    if not hmac.compare_digest(token.encode(), _SESSION_TOKEN.encode()):
+        await ws.close(code=4401)
+        return
+
+    # Imported lazily so this module can load in environments where
+    # tui_gateway isn't available (e.g. config-only tooling).
+    from tui_gateway.ws import handle_ws
+
+    await handle_ws(ws)
 
 
 # Mount plugin API routes before the SPA catch-all.

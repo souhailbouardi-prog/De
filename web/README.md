@@ -11,16 +11,22 @@ Browser-based dashboard for managing Hermes Agent configuration, API keys, and m
 ## Development
 
 ```bash
-# Start the backend API server
-cd ../
-python -m hermes_cli.main web --no-open
+# Pin a shared dev token so Vite (5173) and FastAPI (9119) agree.
+# Without this, the SPA can't authenticate against the backend in dev mode.
+export HERMES_DASHBOARD_DEV_TOKEN="dev-$(openssl rand -hex 16)"
 
-# In another terminal, start the Vite dev server (with HMR + API proxy)
+# Terminal 1 — backend on :9119
+hermes dashboard --no-open
+
+# Terminal 2 — Vite dev server on :5173 with HMR + /api proxy
 cd web/
 npm run dev
+# then open http://localhost:5173
 ```
 
-The Vite dev server proxies `/api` requests to `http://127.0.0.1:9119` (the FastAPI backend).
+The Vite dev server proxies `/api` and `/api/ws` (WebSocket) requests to `http://127.0.0.1:9119` (the FastAPI backend). The dev token is injected into the served `index.html` so the SPA's `window.__HERMES_SESSION_TOKEN__` matches what the backend expects.
+
+For a one-shot demo without HMR, skip the env var and just run `hermes dashboard` — it builds and serves the SPA directly on :9119 with a fresh random token injected.
 
 ## Build
 
