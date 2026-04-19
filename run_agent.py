@@ -3436,6 +3436,19 @@ class AIAgent:
         """Return the last captured RateLimitState, or None."""
         return self._rate_limit_state
 
+    def _maybe_rpm_throttle(self) -> float:
+        """Pre-emptive RPM throttle — sleep if near the provider's RPM limit.
+
+        Called before each LLM API call.  Returns seconds slept (0.0 if none).
+        """
+        try:
+            from agent.rpm_throttler import maybe_throttle
+            return maybe_throttle(self._rate_limit_state, self.provider or "")
+        except (KeyboardInterrupt, SystemExit):
+            raise
+        except Exception:
+            return 0.0  # Never let throttle logic break the agent loop
+
     def get_activity_summary(self) -> dict:
         """Return a snapshot of the agent's current activity for diagnostics.
 
@@ -5524,7 +5537,19 @@ class AIAgent:
                 raise InterruptedError("Agent interrupted during API call")
         if result["error"] is not None:
             raise result["error"]
-        return result["response"]
+        # Capture rate limit headers from non-streaming responses.
+        # The streaming path already captures via stream.response (line ~4597);
+        # non-streaming OpenAI/Anthropic SDK responses expose the underlying
+        # httpx response as .response or ._response.
+        resp = result["response"]
+        if resp is not None:
+            http_resp = getattr(resp, "response", None) or getattr(resp, "_response", None)
+            if http_resp is not None:
+                self._capture_rate_limits(http_resp)
+            else:
+                logger.debug("Could not extract HTTP response from %s for rate limit capture",
+                             type(resp).__name__)
+        return resp
 
     # ── Unified streaming API call ─────────────────────────────────────────
 
@@ -9349,6 +9374,11 @@ class AIAgent:
 
                     if env_var_enabled("HERMES_DUMP_REQUESTS"):
                         self._dump_api_request_debug(api_kwargs, reason="preflight")
+
+                    # Pre-emptive RPM throttle: if the last response showed
+                    # we're near the provider's RPM limit, sleep until the
+                    # window resets rather than eating a 429.
+                    self._maybe_rpm_throttle()
 
                     # Always prefer the streaming path — even without stream
                     # consumers.  Streaming gives us fine-grained health
