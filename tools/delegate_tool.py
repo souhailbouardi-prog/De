@@ -92,6 +92,7 @@ def _build_child_system_prompt(
     context: Optional[str] = None,
     *,
     workspace_path: Optional[str] = None,
+    available_tools: Optional[List[str]] = None,
 ) -> str:
     """Build a focused system prompt for a child agent."""
     parts = [
@@ -107,8 +108,24 @@ def _build_child_system_prompt(
             f"{workspace_path}\n"
             "Use this exact path for local repository/workdir operations unless the task explicitly says otherwise."
         )
+    # Inject concrete tool names so the model knows exactly which functions exist.
+    # This is critical for providers (e.g. GLM) whose function calling is
+    # unreliable without explicit tool-name anchoring in the system prompt.
+    if available_tools:
+        parts.append(
+            "\nYOUR AVAILABLE TOOLS (call these by name via function calling):\n"
+            + "\n".join(f"- {name}" for name in available_tools)
+        )
     parts.append(
-        "\nComplete this task using the tools available to you. "
+        "\n## CRITICAL: Tool Usage Rules\n"
+        "You MUST use the tools provided to you via function calling (the tools API). "
+        "Never simulate, guess, or fabricate tool results in plain text. "
+        "Never write XML/JSON snippets that look like tool calls — actually invoke the tool.\n"
+        "For example:\n"
+        "- To browse a webpage: call `browser_navigate` with the URL.\n"
+        "- To run a command: call `terminal` with the command.\n"
+        "- To read a file: call `read_file` with the path.\n"
+        "Do NOT describe what you would do — DO it by calling the tool.\n\n"
         "When finished, provide a clear, concise summary of:\n"
         "- What you did\n"
         "- What you found or accomplished\n"
@@ -319,6 +336,8 @@ def _build_child_agent(
         child_toolsets = _strip_blocked_tools(DEFAULT_TOOLSETS)
 
     workspace_hint = _resolve_workspace_hint(parent_agent)
+    # Build prompt WITHOUT tool names first — we'll inject them after
+    # the AIAgent is constructed (because tool resolution happens inside __init__).
     child_prompt = _build_child_system_prompt(goal, context, workspace_path=workspace_hint)
     # Extract parent's API key so subagents inherit auth (e.g. Nous Portal).
     parent_api_key = getattr(parent_agent, "api_key", None)
@@ -406,6 +425,17 @@ def _build_child_agent(
     child._print_fn = getattr(parent_agent, '_print_fn', None)
     # Set delegation depth so children can't spawn grandchildren
     child._delegate_depth = getattr(parent_agent, '_delegate_depth', 0) + 1
+
+    # Post-construction: inject resolved tool names into the ephemeral system
+    # prompt.  This anchors the model to the exact function names it can call,
+    # which is critical for providers whose function calling is unreliable
+    # without explicit tool-name hints (e.g. GLM-5 via ZAI).
+    if child.valid_tool_names:
+        child.ephemeral_system_prompt = _build_child_system_prompt(
+            goal, context,
+            workspace_path=workspace_hint,
+            available_tools=sorted(child.valid_tool_names),
+        )
 
     # Share a credential pool with the child when possible so subagents can
     # rotate credentials on rate limits instead of getting pinned to one key.
