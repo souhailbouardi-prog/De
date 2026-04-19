@@ -290,7 +290,7 @@ class WebhookAdapter(BasePlatformAdapter):
                 ", ".join(self._dynamic_routes.keys()) or "(none)",
             )
         except Exception as e:
-            logger.error("[webhook] Failed to reload dynamic routes: %s", e)
+            logger.error("[webhook] Failed to reload dynamic routes: %s", e, exc_info=True)
 
     async def _handle_webhook(self, request: "web.Request") -> "web.Response":
         """POST /webhooks/{route_name} — receive and process a webhook event."""
@@ -327,7 +327,7 @@ class WebhookAdapter(BasePlatformAdapter):
         try:
             raw_body = await request.read()
         except Exception as e:
-            logger.error("[webhook] Failed to read body: %s", e)
+            logger.error("[webhook] Failed to read body: %s", e, exc_info=True)
             return web.json_response({"error": "Bad request"}, status=400)
 
         # Validate HMAC signature (skip for INSECURE_NO_AUTH testing mode)
@@ -409,7 +409,7 @@ class WebhookAdapter(BasePlatformAdapter):
                             "[webhook] Skill '%s' not found", skill_name
                         )
             except Exception as e:
-                logger.warning("[webhook] Skill loading failed: %s", e)
+                logger.warning("[webhook] Skill loading failed: %s", e, exc_info=True)
 
         # Build a unique delivery ID
         delivery_id = request.headers.get(
@@ -726,7 +726,7 @@ class WebhookAdapter(BasePlatformAdapter):
                 success=False, error="gh CLI not installed"
             )
         except Exception as e:
-            logger.error("[webhook] github_comment delivery error: %s", e)
+            logger.error("[webhook] github_comment delivery error: %s", e, exc_info=True)
             return SendResult(success=False, error=str(e))
 
     async def _deliver_cross_platform(
