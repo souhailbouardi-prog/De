@@ -710,8 +710,10 @@ class MattermostAdapter(BasePlatformAdapter):
             elif media_types:
                 msg_type = MessageType.DOCUMENT
 
+        channel_name = data.get("channel_display_name") or None
         source = self.build_source(
             chat_id=channel_id,
+            chat_name=channel_name,
             chat_type=chat_type,
             user_id=sender_id,
             user_name=sender_name,
