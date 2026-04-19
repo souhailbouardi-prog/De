@@ -1,0 +1,4 @@
+name: vector_store
+description: >
+  Local pluggable vector memory (Python / FAISS / Chroma / Qdrant / Pinecone)
+  with optional sentence-transformers embeddings. Uses memory.vector_store in config.yaml.

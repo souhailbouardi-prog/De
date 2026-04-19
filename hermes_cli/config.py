@@ -663,9 +663,26 @@ DEFAULT_CONFIG = {
         "user_char_limit": 1375,     # ~500 tokens at 2.75 chars/token
         # External memory provider plugin (empty = built-in only).
         # Set to a provider name to activate: "openviking", "mem0",
-        # "hindsight", "holographic", "retaindb", "byterover".
+        # "hindsight", "holographic", "retaindb", "byterover", "vector_store".
         # Only ONE external provider is allowed at a time.
         "provider": "",
+        # Optional local vector index when memory.provider is "vector_store".
+        # type: python (zero-dep), faiss, chroma, qdrant, pinecone
+        "vector_store": {
+            "type": "python",
+            "collection": "hermes_vectors",
+            "path": "vector/chroma",
+            "url": "",
+            "api_key": "",
+            "embedding_model": "",
+            "embed_dim": 64,
+            "embed_batch_size": 8,
+            "max_docs": 5000,
+            "ttl_seconds": 0,
+            "prefetch_top_k": 5,
+            "upsert_min_chars": 40,
+            "session_chunk_chars": 800,
+        },
     },
 
     # Subagent delegation — override the provider:model used by delegate_task

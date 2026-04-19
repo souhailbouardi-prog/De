@@ -1,12 +1,12 @@
 ---
 sidebar_position: 4
 title: "Memory Providers"
-description: "External memory provider plugins — Honcho, OpenViking, Mem0, Hindsight, Holographic, RetainDB, ByteRover, Supermemory"
+description: "External memory provider plugins — Honcho, OpenViking, Mem0, Hindsight, Holographic, RetainDB, ByteRover, Supermemory, Vector store"
 ---
 
 # Memory Providers
 
-Hermes Agent ships with 8 external memory provider plugins that give the agent persistent, cross-session knowledge beyond the built-in MEMORY.md and USER.md. Only **one** external provider can be active at a time — the built-in memory is always active alongside it.
+Hermes Agent ships with bundled external memory provider plugins that give the agent persistent, cross-session knowledge beyond the built-in MEMORY.md and USER.md. Only **one** external provider can be active at a time — the built-in memory is always active alongside it.
 
 ## Quick Start
 
@@ -22,7 +22,7 @@ Or set manually in `~/.hermes/config.yaml`:
 
 ```yaml
 memory:
-  provider: openviking   # or honcho, mem0, hindsight, holographic, retaindb, byterover, supermemory
+  provider: openviking   # or honcho, mem0, hindsight, holographic, retaindb, byterover, supermemory, vector_store
 ```
 
 ## How It Works
@@ -39,6 +39,20 @@ When a memory provider is active, Hermes automatically:
 The built-in memory (MEMORY.md / USER.md) continues to work exactly as before. The external provider is additive.
 
 ## Available Providers
+
+### Vector store (local)
+
+Semantic recall backed by an in-process **python** cosine index by default (no extra packages). Optional backends: **faiss**, **chroma**, **qdrant**, **pinecone**, controlled under `memory.vector_store`. Optional `sentence-transformers` via `embedding_model`; otherwise a deterministic hash embedding is used (fine for CI, weak for production quality).
+
+| | |
+|---|---|
+| **Best for** | Long sessions, delegation traces, cheap local semantic prefetch |
+| **Requires** | Nothing for `type: python`; extras for `hermes-agent[vector-faiss]` / `[vector-chroma]` / `[vector-qdrant]` / `[vector-pinecone]` / `[vector-embed]` |
+| **Data storage** | In-process, or paths you configure under `HERMES_HOME` for Chroma / Qdrant local |
+
+**Tool (1):** `vector_memory_search`
+
+**Config:** See `plugins/memory/vector_store/README.md` and `memory.vector_store` defaults in `hermes_cli/config.py`.
 
 ### Honcho
 
