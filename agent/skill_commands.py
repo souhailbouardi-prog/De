@@ -5,6 +5,7 @@ can invoke skills via /skill-name commands and prompt-only built-ins like
 /plan.
 """
 
+import concurrent.futures
 import json
 import logging
 import re
@@ -206,11 +207,77 @@ def _build_skill_message(
     return "\n".join(parts)
 
 
+# ── Disk snapshot cache for skill commands ────────────────────────────────
+
+_SKILLS_CMD_SNAPSHOT_VERSION = 1
+
+
+def _skills_cmd_snapshot_path() -> Path:
+    """Return path to the skill commands disk snapshot."""
+    from hermes_constants import get_hermes_home
+    return get_hermes_home() / ".skill_commands_snapshot.json"
+
+
+def _build_skills_cmd_manifest(dirs: list) -> dict:
+    """Build mtime/size manifest of all SKILL.md files for cache validation."""
+    manifest = {}
+    for scan_dir in dirs:
+        if not scan_dir.exists():
+            continue
+        for skill_md in scan_dir.rglob("SKILL.md"):
+            if any(part in ('.git', '.github', '.hub') for part in skill_md.parts):
+                continue
+            try:
+                st = skill_md.stat()
+                key = str(skill_md.relative_to(scan_dir))
+                manifest[key] = [st.st_mtime_ns, st.st_size]
+            except OSError:
+                continue
+    return manifest
+
+
+def _load_skills_cmd_snapshot(dirs: list) -> dict | None:
+    """Load disk snapshot if manifest matches current files."""
+    snapshot_path = _skills_cmd_snapshot_path()
+    if not snapshot_path.exists():
+        return None
+    try:
+        snapshot = json.loads(snapshot_path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    if not isinstance(snapshot, dict):
+        return None
+    if snapshot.get("version") != _SKILLS_CMD_SNAPSHOT_VERSION:
+        return None
+    if snapshot.get("manifest") != _build_skills_cmd_manifest(dirs):
+        return None
+    return snapshot
+
+
+def _write_skills_cmd_snapshot(dirs: list, commands: dict) -> None:
+    """Persist skill commands to disk for fast cold-start reuse."""
+    payload = {
+        "version": _SKILLS_CMD_SNAPSHOT_VERSION,
+        "manifest": _build_skills_cmd_manifest(dirs),
+        "commands": commands,
+    }
+    try:
+        snapshot_path = _skills_cmd_snapshot_path()
+        tmp = snapshot_path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(payload), encoding="utf-8")
+        tmp.replace(snapshot_path)
+    except Exception:
+        pass
+
+
 def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
     """Scan ~/.hermes/skills/ and return a mapping of /command -> skill info.
 
     Returns:
         Dict mapping "/skill-name" to {name, description, skill_md_path, skill_dir}.
+
+    Uses a disk snapshot cache validated by file mtime/size manifest.
+    Falls back to parallel file reads on cache miss.
     """
     global _skill_commands
     _skill_commands = {}
@@ -220,52 +287,75 @@ def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
         disabled = _get_disabled_skill_names()
         seen_names: set = set()
 
-        # Scan local dir first, then external dirs
         dirs_to_scan = []
         if SKILLS_DIR.exists():
             dirs_to_scan.append(SKILLS_DIR)
         dirs_to_scan.extend(get_external_skills_dirs())
 
+        # ── Layer 1: disk snapshot cache ──
+        snapshot = _load_skills_cmd_snapshot(dirs_to_scan)
+        if snapshot is not None:
+            _skill_commands = snapshot.get("commands", {})
+            return _skill_commands
+
+        # ── Layer 2: parallel file read on cache miss ──
+        skill_files: list[tuple[Path, Path]] = []
         for scan_dir in dirs_to_scan:
+            if not scan_dir.exists():
+                continue
             for skill_md in scan_dir.rglob("SKILL.md"):
                 if any(part in ('.git', '.github', '.hub') for part in skill_md.parts):
                     continue
-                try:
-                    content = skill_md.read_text(encoding='utf-8')
-                    frontmatter, body = _parse_frontmatter(content)
-                    # Skip skills incompatible with the current OS platform
-                    if not skill_matches_platform(frontmatter):
-                        continue
-                    name = frontmatter.get('name', skill_md.parent.name)
-                    if name in seen_names:
-                        continue
-                    # Respect user's disabled skills config
-                    if name in disabled:
-                        continue
-                    description = frontmatter.get('description', '')
-                    if not description:
-                        for line in body.strip().split('\n'):
-                            line = line.strip()
-                            if line and not line.startswith('#'):
-                                description = line[:80]
-                                break
-                    seen_names.add(name)
-                    # Normalize to hyphen-separated slug, stripping
-                    # non-alnum chars (e.g. +, /) to avoid invalid
-                    # Telegram command names downstream.
-                    cmd_name = name.lower().replace(' ', '-').replace('_', '-')
-                    cmd_name = _SKILL_INVALID_CHARS.sub('', cmd_name)
-                    cmd_name = _SKILL_MULTI_HYPHEN.sub('-', cmd_name).strip('-')
-                    if not cmd_name:
-                        continue
-                    _skill_commands[f"/{cmd_name}"] = {
-                        "name": name,
-                        "description": description or f"Invoke the {name} skill",
-                        "skill_md_path": str(skill_md),
-                        "skill_dir": str(skill_md.parent),
-                    }
-                except Exception:
+                skill_files.append((skill_md, scan_dir))
+
+        def _read_one(args: tuple[Path, Path]) -> tuple | None:
+            skill_md, scan_dir = args
+            try:
+                content = skill_md.read_text(encoding='utf-8')
+                frontmatter, body = _parse_frontmatter(content)
+                return (skill_md, scan_dir, frontmatter, body)
+            except Exception:
+                return None
+
+        results = []
+        with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
+            for result in executor.map(_read_one, skill_files):
+                if result is not None:
+                    results.append(result)
+
+        for skill_md, scan_dir, frontmatter, body in results:
+            try:
+                if not skill_matches_platform(frontmatter):
                     continue
+                name = frontmatter.get('name', skill_md.parent.name)
+                if name in seen_names:
+                    continue
+                if name in disabled:
+                    continue
+                description = frontmatter.get('description', '')
+                if not description:
+                    for line in body.strip().split('\n'):
+                        line = line.strip()
+                        if line and not line.startswith('#'):
+                            description = line[:80]
+                            break
+                seen_names.add(name)
+                cmd_name = name.lower().replace(' ', '-').replace('_', '-')
+                cmd_name = _SKILL_INVALID_CHARS.sub('', cmd_name)
+                cmd_name = _SKILL_MULTI_HYPHEN.sub('-', cmd_name).strip('-')
+                if not cmd_name:
+                    continue
+                _skill_commands[f"/{cmd_name}"] = {
+                    "name": name,
+                    "description": description or f"Invoke the {name} skill",
+                    "skill_md_path": str(skill_md),
+                    "skill_dir": str(skill_md.parent),
+                }
+            except Exception:
+                continue
+
+        _write_skills_cmd_snapshot(dirs_to_scan, _skill_commands)
+
     except Exception:
         pass
     return _skill_commands
