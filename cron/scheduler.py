@@ -14,6 +14,7 @@ import contextvars
 import json
 import logging
 import os
+import re
 import subprocess
 import sys
 
@@ -692,6 +693,11 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
     return "\n".join(parts)
 
 
+def _slug(raw: str) -> str:
+    """Lowercase, strip non-[a-z0-9-], collapse runs of hyphens."""
+    return re.sub(r'-+', '-', re.sub(r'[^a-z0-9-]', '-', raw.lower())).strip('-')
+
+
 def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
     """
     Execute a single cron job.
@@ -896,7 +902,11 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             disabled_toolsets=["cronjob", "messaging", "clarify"],
             quiet_mode=True,
             skip_context_files=True,  # Don't inject SOUL.md/AGENTS.md from scheduler cwd
-            skip_memory=True,  # Cron system prompts would corrupt user representations
+            # Each cron job gets its own Honcho peer (cron-{name}) so Honcho builds a
+            # coherent representation of what each scheduled behavior does over time. The
+            # assistant's own responses still attribute to the aiPeer, so the agent's
+            # self-model accumulates cron actions as its own.
+            user_id=f"cron-{_slug(job.get('name') or job['id'][:8])}",
             platform="cron",
             session_id=_cron_session_id,
             session_db=_session_db,
@@ -1028,6 +1038,12 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         return False, output, "", error_msg
 
     finally:
+        # Flush memory providers so the last sync_turn / aretain_batch aren't
+        # dropped when the thread pool shuts down.
+        try:
+            agent.shutdown_memory_provider()
+        except Exception as e:
+            logger.debug("Job '%s': memory provider shutdown failed: %s", job_id, e)
         # Clean up injected env vars so they don't leak to other jobs
         for key in (
             "HERMES_SESSION_PLATFORM",

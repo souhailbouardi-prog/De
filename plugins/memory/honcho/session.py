@@ -593,7 +593,12 @@ class HonchoSessionManager:
         with self._prefetch_cache_lock:
             return self._context_cache.pop(session_key, {})
 
-    def get_prefetch_context(self, session_key: str, user_message: str | None = None) -> dict[str, str]:
+    def get_prefetch_context(
+        self,
+        session_key: str,
+        user_message: str | None = None,
+        legacy_peer_ids: list[str] | None = None,
+    ) -> dict[str, str]:
         """
         Pre-fetch user and AI peer context from Honcho.
 
@@ -603,13 +608,18 @@ class HonchoSessionManager:
         consume, and passing the raw message exposes conversation content in
         server access logs.
 
+        When legacy_peer_ids is provided (owner unification), also fetches
+        context from historical transport-level peers and merges into
+        'legacy_representations'.
+
         Args:
             session_key: The session key to get context for.
             user_message: Unused; kept for call-site compatibility.
+            legacy_peer_ids: Historical transport-level peer IDs for dual-read.
 
         Returns:
             Dictionary with 'representation', 'card', 'ai_representation',
-            'ai_card', and optionally 'summary' keys.
+            'ai_card', and optionally 'summary' and 'legacy_representations' keys.
         """
         session = self._cache.get(session_key)
         if not session:
@@ -644,6 +654,21 @@ class HonchoSessionManager:
             result["ai_card"] = "\n".join(ai_ctx["card"])
         except Exception as e:
             logger.debug("Failed to fetch AI peer context from Honcho: %s", e)
+
+        # Dual-read: fetch legacy transport-level peer representations so
+        # owner history from before unification is visible in context.
+        if legacy_peer_ids:
+            legacy_reps = []
+            for peer_id in legacy_peer_ids:
+                try:
+                    legacy_ctx = self._fetch_peer_context(peer_id)
+                    rep = legacy_ctx.get("representation", "")
+                    if rep:
+                        legacy_reps.append(f"[from {peer_id}]\n{rep}")
+                except Exception as e:
+                    logger.debug("Legacy peer '%s' context fetch failed: %s", peer_id, e)
+            if legacy_reps:
+                result["legacy_representations"] = "\n\n".join(legacy_reps)
 
         return result
 
