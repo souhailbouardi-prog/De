@@ -408,7 +408,7 @@ class TelegramAdapter(BasePlatformAdapter):
         # giving up, so the old session has time to expire.
         self._polling_conflict_count += 1
 
-        MAX_CONFLICT_RETRIES = 3
+        MAX_CONFLICT_RETRIES = 5
         RETRY_DELAY = 10  # seconds
 
         if self._polling_conflict_count <= MAX_CONFLICT_RETRIES:
@@ -639,7 +639,35 @@ class TelegramAdapter(BasePlatformAdapter):
             return False
         
         try:
-            if not self._acquire_platform_lock('telegram-bot-token', self.config.token, 'Telegram bot token'):
+            # Retry lock acquisition to handle startup races where multiple
+            # gateway instances (launchd + agent-spawned nohup) compete for
+            # the same Telegram bot token.  The competing gateway will either
+            # complete startup and claim the token (we lose gracefully) or
+            # exit after its own startup conflict (we acquire the lock on retry).
+            _LOCK_MAX_RETRIES = 5
+            _LOCK_RETRY_DELAY = 5.0
+            _lock_acquired = False
+            for _lock_attempt in range(_LOCK_MAX_RETRIES):
+                # Clear any fatal error from a previous lock attempt so the
+                # adapter isn't permanently marked as broken.
+                self._fatal_error_code = None
+                self._fatal_error_message = None
+                self._fatal_error_retryable = False
+                if self._acquire_platform_lock('telegram-bot-token', self.config.token, 'Telegram bot token'):
+                    _lock_acquired = True
+                    break
+                if _lock_attempt < _LOCK_MAX_RETRIES - 1:
+                    logger.warning(
+                        "[%s] Telegram bot token lock busy (attempt %d/%d), retrying in %.0fs…",
+                        self.name, _lock_attempt + 1, _LOCK_MAX_RETRIES, _LOCK_RETRY_DELAY,
+                    )
+                    await asyncio.sleep(_LOCK_RETRY_DELAY)
+            if not _lock_acquired:
+                # Make the lock failure retryable so the gateway stays alive
+                # for background reconnection instead of exiting immediately.
+                # During startup races (launchd + agent nohup), the competing
+                # gateway will eventually release the lock.
+                self._fatal_error_retryable = True
                 return False
 
             # Build the application

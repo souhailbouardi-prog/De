@@ -10608,6 +10608,47 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     existing_pid = get_running_pid()
     if existing_pid is not None and existing_pid != os.getpid():
         if replace:
+            # ── Freshness guard ──────────────────────────────────────
+            # If the PID file was written very recently, the existing gateway
+            # is likely a brand-new instance started by launchd or another
+            # orchestrator.  Killing it creates a race: the orchestrator
+            # respawns another gateway, which competes with us for the
+            # Telegram bot token lock.  Instead of killing a fresh gateway,
+            # wait briefly for it to finish startup.  If it's still alive
+            # after the grace period, proceed with the replace as normal.
+            _FRESHNESS_THRESHOLD = 30  # seconds
+            _pid_path = get_hermes_home() / "gateway.pid"
+            try:
+                _pid_mtime = _pid_path.stat().st_mtime
+                _pid_age = _time.time() - _pid_mtime
+            except (OSError, AttributeError):
+                _pid_age = float("inf")  # can't determine age — don't skip replace
+
+            if 0 < _pid_age < _FRESHNESS_THRESHOLD:
+                logger.info(
+                    "Existing gateway (PID %d) started just %.0fs ago — "
+                    "deferring replace to avoid startup race. "
+                    "Waiting up to %.0fs for it to finish startup.",
+                    existing_pid, _pid_age, _FRESHNESS_THRESHOLD - _pid_age,
+                )
+                # Wait for the remaining freshness window to expire
+                _wait = _FRESHNESS_THRESHOLD - _pid_age
+                for _ in range(int(_wait) + 1):
+                    _time.sleep(1.0)
+                    # Recheck — the new gateway may have crashed/exited
+                    try:
+                        os.kill(existing_pid, 0)
+                    except (ProcessLookupError, PermissionError):
+                        logger.info("Existing gateway (PID %d) exited during wait.", existing_pid)
+                        remove_pid_file()
+                        break
+                else:
+                    # Still alive after the grace period — proceed with replace
+                    logger.info(
+                        "Existing gateway (PID %d) is still alive after grace period. Proceeding with replace.",
+                        existing_pid,
+                    )
+
             logger.info(
                 "Replacing existing gateway instance (PID %d) with --replace.",
                 existing_pid,
