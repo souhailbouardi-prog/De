@@ -1194,7 +1194,11 @@ def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) 
             path_entries.append(resolved_node_dir)
 
     common_bin_paths = ["/usr/local/sbin", "/usr/local/bin", "/usr/sbin", "/usr/bin", "/sbin", "/bin"]
-    restart_timeout = max(60, int(_get_restart_drain_timeout() or 0))
+    # TimeoutStopSec must exceed drain timeout + cleanup overhead.
+    # If equal to drain timeout, systemd SIGKILLs the gateway before it
+    # can emit exit code 75, breaking the /restart → service-restart path.
+    _drain = int(_get_restart_drain_timeout() or 0)
+    restart_timeout = max(120, _drain * 2 if _drain else 120)
 
     if system:
         username, group_name, home_dir = _system_service_identity(run_as_user)
