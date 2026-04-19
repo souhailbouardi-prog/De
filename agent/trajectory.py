@@ -53,4 +53,4 @@ def save_trajectory(trajectory: List[Dict[str, Any]], model: str,
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")
         logger.info("Trajectory saved to %s", filename)
     except Exception as e:
-        logger.warning("Failed to save trajectory: %s", e)
+        logger.warning("Failed to save trajectory: %s", e, exc_info=True)

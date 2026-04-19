@@ -551,7 +551,7 @@ def _parse_skill_file(skill_file: Path) -> tuple[bool, dict, str]:
 
         return True, frontmatter, extract_skill_description(frontmatter)
     except Exception as e:
-        logger.warning("Failed to parse skill file %s: %s", skill_file, e)
+        logger.warning("Failed to parse skill file %s: %s", skill_file, e, exc_info=True)
         return True, {}, ""
 
 
