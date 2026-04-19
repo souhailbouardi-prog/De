@@ -67,6 +67,35 @@ class TestHermesTokenStorage:
         client_path = tmp_path / "mcp-tokens" / "test-server.client.json"
         assert client_path.exists()
 
+    def test_set_tokens_overwrites_existing_file_without_path_rename(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        storage = HermesTokenStorage("test-server")
+        import asyncio
+
+        first_token = MagicMock()
+        first_token.model_dump.return_value = {
+            "access_token": "first-token",
+            "token_type": "Bearer",
+        }
+        asyncio.run(storage.set_tokens(first_token))
+
+        second_token = MagicMock()
+        second_token.model_dump.return_value = {
+            "access_token": "second-token",
+            "token_type": "Bearer",
+        }
+
+        def _fail_if_rename_called(self, target):
+            raise AssertionError("Path.rename should not be used for OAuth token writes")
+
+        monkeypatch.setattr(Path, "rename", _fail_if_rename_called)
+
+        asyncio.run(storage.set_tokens(second_token))
+
+        token_path = tmp_path / "mcp-tokens" / "test-server.json"
+        data = json.loads(token_path.read_text())
+        assert data["access_token"] == "second-token"
+
     def test_remove_cleans_up(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         storage = HermesTokenStorage("test-server")

@@ -161,7 +161,7 @@ def _write_json(path: Path, data: dict) -> None:
     try:
         tmp.write_text(json.dumps(data, indent=2, default=str), encoding="utf-8")
         os.chmod(tmp, 0o600)
-        tmp.rename(path)
+        os.replace(tmp, path)
     except OSError:
         tmp.unlink(missing_ok=True)
         raise
