@@ -33,6 +33,61 @@ def _cleanup(task_id="ssh_test"):
     cleanup_vm(task_id)
 
 
+class TestSocketPathLength:
+    """Regression test for #11840: socket path must fit within macOS's 104-char limit."""
+
+    @pytest.fixture(autouse=True)
+    def _mock_connection(self, monkeypatch):
+        monkeypatch.setattr("tools.environments.ssh.subprocess.run",
+                            lambda *a, **k: subprocess.CompletedProcess([], 0))
+        monkeypatch.setattr("tools.environments.ssh.subprocess.Popen",
+                            lambda *a, **k: MagicMock(stdout=iter([]),
+                                                      stderr=iter([]),
+                                                      stdin=MagicMock()))
+        monkeypatch.setattr("tools.environments.base.time.sleep", lambda _: None)
+
+    def test_ipv6_socket_path_under_macos_limit(self, monkeypatch):
+        """IPv6 hosts must not generate socket paths exceeding macOS's 104-char limit."""
+        # macOS temp dir can be long: /var/folders/xx/.../T/
+        long_temp = "/var/folders/2t/wbkw5yb158jc3zhswgl7tz9c0000gn/T"
+        monkeypatch.setattr("tools.environments.ssh.tempfile.gettempdir", lambda: long_temp)
+
+        # IPv6 address from the original bug report
+        ipv6_host = "9373:9b91:4480:558d:708e:e601:24e8:d8d0"
+        env = SSHEnvironment(host=ipv6_host, user="user", port=22)
+
+        socket_path = str(env.control_socket)
+        # macOS's sun_path limit is 104 chars (including null terminator)
+        assert len(socket_path) < 104, f"Socket path too long: {socket_path} ({len(socket_path)} chars)"
+
+    def test_ipv4_socket_path_under_macos_limit(self, monkeypatch):
+        """IPv4 hosts should also generate short socket paths."""
+        long_temp = "/var/folders/2t/wbkw5yb158jc3zhswgl7tz9c0000gn/T"
+        monkeypatch.setattr("tools.environments.ssh.tempfile.gettempdir", lambda: long_temp)
+
+        env = SSHEnvironment(host="192.168.1.1", user="user", port=22)
+        socket_path = str(env.control_socket)
+        assert len(socket_path) < 104, f"Socket path too long: {socket_path} ({len(socket_path)} chars)"
+
+    def test_socket_path_is_deterministic(self, monkeypatch):
+        """Same connection params should always generate the same socket path."""
+        monkeypatch.setattr("tools.environments.ssh.tempfile.gettempdir", lambda: "/tmp")
+
+        env1 = SSHEnvironment(host="example.com", user="alice", port=22)
+        env2 = SSHEnvironment(host="example.com", user="alice", port=22)
+
+        assert env1.control_socket == env2.control_socket
+
+    def test_different_hosts_have_different_sockets(self, monkeypatch):
+        """Different hosts should have different socket paths."""
+        monkeypatch.setattr("tools.environments.ssh.tempfile.gettempdir", lambda: "/tmp")
+
+        env1 = SSHEnvironment(host="host1.com", user="alice", port=22)
+        env2 = SSHEnvironment(host="host2.com", user="alice", port=22)
+
+        assert env1.control_socket != env2.control_socket
+
+
 class TestBuildSSHCommand:
 
     @pytest.fixture(autouse=True)

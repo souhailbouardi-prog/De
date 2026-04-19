@@ -1,5 +1,6 @@
 """SSH remote execution environment with ControlMaster connection persistence."""
 
+import hashlib
 import logging
 import os
 import shlex
@@ -47,7 +48,10 @@ class SSHEnvironment(BaseEnvironment):
 
         self.control_dir = Path(tempfile.gettempdir()) / "hermes-ssh"
         self.control_dir.mkdir(parents=True, exist_ok=True)
-        self.control_socket = self.control_dir / f"{user}@{host}:{port}.sock"
+        # Use a hash-based socket name to avoid macOS's 104-char Unix socket path limit
+        # when connecting to IPv6 hosts (e.g., "user@9373:9b91:...:d8d0:22.sock" is too long)
+        socket_id = hashlib.sha256(f"{user}@{host}:{port}".encode()).hexdigest()[:12]
+        self.control_socket = self.control_dir / f"{socket_id}.sock"
         _ensure_ssh_available()
         self._establish_connection()
         self._remote_home = self._detect_remote_home()
