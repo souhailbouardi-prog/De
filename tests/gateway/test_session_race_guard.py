@@ -361,6 +361,7 @@ async def test_stop_during_sentinel_force_cleans_session():
         assert session_key not in runner._running_agents, (
             "/stop must remove sentinel so the session is unlocked"
         )
+        runner.session_store.suspend_session.assert_not_called()
 
         # Should NOT be queued as pending
         adapter = runner.adapters[Platform.TELEGRAM]
@@ -411,6 +412,7 @@ async def test_stop_hard_kills_running_agent():
     # Must return a confirmation
     assert result is not None
     assert "stopped" in result.lower()
+    runner.session_store.suspend_session.assert_not_called()
 
 
 # ------------------------------------------------------------------
@@ -442,6 +444,7 @@ async def test_stop_clears_pending_messages():
     # Pending messages must be cleared
     assert session_key not in runner._pending_messages
     adapter.get_pending_message.assert_called_once_with(session_key)
+    runner.session_store.suspend_session.assert_not_called()
 
 
 # ------------------------------------------------------------------
