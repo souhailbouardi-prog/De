@@ -6766,6 +6766,19 @@ class AIAgent:
         base = (getattr(self, "base_url", "") or "").lower()
         return "dashscope" in base or "aliyuncs" in base or "minimax" in base or "opencode.ai/zen/" in base or "bigmodel.cn" in base
 
+    def _is_zai_direct(self) -> bool:
+        """Return True when using z.ai/Zhipu directly (not via OpenRouter).
+
+        Detects the zai provider or known z.ai/bigmodel endpoint URLs.
+        Used to inject the z.ai-native ``thinking`` parameter for preserved
+        thinking and to re-inject ``reasoning_content`` on assistant messages
+        for multi-turn reasoning continuity.
+        """
+        if (getattr(self, "provider", "") or "").lower() == "zai":
+            return True
+        base = (getattr(self, "base_url", "") or "").lower()
+        return "bigmodel.cn" in base or "api.z.ai" in base
+
     def _is_qwen_portal(self) -> bool:
         """Return True when the base URL targets Qwen Portal."""
         return "portal.qwen.ai" in self._base_url_lower
@@ -7151,6 +7164,32 @@ class AIAgent:
 
         if self._is_qwen_portal():
             extra_body["vl_high_resolution_images"] = True
+
+        # z.ai/Zhipu GLM-5/4.7 preserved thinking mode.
+        # z.ai uses a top-level ``thinking`` parameter (not OpenRouter's
+        # ``reasoning`` in extra_body).  When ``type`` is ``enabled`` the
+        # model always produces ``reasoning_content`` in its response.
+        # ``compact_history: false`` ensures reasoning survives across
+        # multi-turn agent loops.
+        if self._is_zai_direct():
+            _model_lower = (self.model or "").lower()
+            # GLM-5.x, GLM-5-turbo, GLM-4.7 support compulsory thinking.
+            # Older models (4.6, 4.5) auto-determine whether to think.
+            if any(p in _model_lower for p in ("glm-5", "glm-4.7")):
+                if self.reasoning_config and isinstance(self.reasoning_config, dict):
+                    if self.reasoning_config.get("enabled") is False:
+                        extra_body["thinking"] = {"type": "disabled"}
+                    else:
+                        extra_body["thinking"] = {
+                            "type": "enabled",
+                            "compact_history": False,
+                        }
+                else:
+                    # Default: enable preserved thinking for reasoning-capable GLM.
+                    extra_body["thinking"] = {
+                        "type": "enabled",
+                        "compact_history": False,
+                    }
 
         if extra_body:
             api_kwargs["extra_body"] = extra_body
@@ -8521,6 +8560,12 @@ class AIAgent:
                 api_msg = msg.copy()
                 for internal_field in ("reasoning", "finish_reason", "_thinking_prefill"):
                     api_msg.pop(internal_field, None)
+                # z.ai/GLM: re-inject reasoning as reasoning_content for
+                # preserved thinking.  The ``thinking`` parameter with
+                # compact_history=false requires the previous turn's
+                # reasoning_content to be present on assistant messages.
+                if self._is_zai_direct() and msg.get("role") == "assistant" and msg.get("reasoning"):
+                    api_msg["reasoning_content"] = msg["reasoning"]
                 if _needs_sanitize:
                     self._sanitize_tool_calls_for_strict_api(api_msg)
                 api_messages.append(api_msg)
