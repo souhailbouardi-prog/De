@@ -10158,7 +10158,19 @@ class HermesCLI:
             call _kill_process (SIGTERM + 1 s wait + SIGKILL if needed) →
             return from _wait_for_process.  ``time.sleep`` releases the
             GIL so the daemon actually runs during the window.
+
+            Reentrancy guard: once shutdown is in flight we must NOT
+            raise KeyboardInterrupt again.  A second SIGINT/SIGTERM
+            arriving while prompt_toolkit is inside its final
+            ``_redraw(render_as_done=True)`` lands in the middle of
+            ``_get_tui_prompt_symbols`` (``stripped.split()``) and
+            then cascades into ``renderer.reset()`` → stdout.flush(),
+            which fails with ``OSError: [Errno 5] Input/output error``
+            because the terminal is already being torn down.
             """
+            if getattr(self, "_shutdown_signal_received", False):
+                return  # already shutting down — swallow reentrant signal
+            self._shutdown_signal_received = True
             logger.debug("Received signal %s, triggering graceful shutdown", signum)
             try:
                 if getattr(self, "agent", None) and getattr(self, "_agent_running", False):
