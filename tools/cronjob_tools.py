@@ -215,6 +215,8 @@ def _format_job(job: Dict[str, Any]) -> Dict[str, Any]:
     }
     if job.get("script"):
         result["script"] = job["script"]
+    if job.get("interpreter"):
+        result["interpreter"] = job["interpreter"]
     return result
 
 
@@ -234,6 +236,7 @@ def cronjob(
     base_url: Optional[str] = None,
     reason: Optional[str] = None,
     script: Optional[str] = None,
+    interpreter: Optional[str] = None,
     task_id: str = None,
 ) -> str:
     """Unified cron job management tool."""
@@ -271,6 +274,7 @@ def cronjob(
                 provider=_normalize_optional_job_value(provider),
                 base_url=_normalize_optional_job_value(base_url, strip_trailing_slash=True),
                 script=_normalize_optional_job_value(script),
+                interpreter=_normalize_optional_job_value(interpreter),
             )
             return json.dumps(
                 {
@@ -360,6 +364,8 @@ def cronjob(
                     if script_error:
                         return tool_error(script_error, success=False)
                 updates["script"] = _normalize_optional_job_value(script) if script else None
+            if interpreter is not None:
+                updates["interpreter"] = _normalize_optional_job_value(interpreter)
             if repeat is not None:
                 # Normalize: treat 0 or negative as None (infinite)
                 normalized_repeat = None if repeat <= 0 else repeat
@@ -459,6 +465,10 @@ Important safety rule: cron-run sessions should not recursively schedule more cr
                 "type": "string",
                 "description": f"Optional path to a Python script that runs before each cron job execution. Its stdout is injected into the prompt as context. Use for data collection and change detection. Relative paths resolve under {display_hermes_home()}/scripts/. On update, pass empty string to clear."
             },
+            "interpreter": {
+                "type": "string",
+                "description": "Optional Python interpreter/executable for the pre-run script, such as '~/workspace/.venv/bin/python3'. If omitted, Hermes uses its own runtime Python. On update, pass empty string to clear."
+            },
         },
         "required": ["action"]
     }
@@ -503,6 +513,7 @@ registry.register(
         base_url=args.get("base_url"),
         reason=args.get("reason"),
         script=args.get("script"),
+        interpreter=args.get("interpreter"),
         task_id=kw.get("task_id"),
     ))(),
     check_fn=check_cronjob_requirements,
