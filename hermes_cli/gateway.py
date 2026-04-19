@@ -1527,7 +1527,28 @@ def systemd_restart(system: bool = False):
             except (ProcessLookupError, PermissionError):
                 break  # old process is gone
         else:
-            print(f"⚠ Old process (PID {pid}) still alive after 90s")
+            # The gateway didn't respond to SIGUSR1 within the drain window.
+            # This happens when the asyncio loop is dead/frozen (crash-loop,
+            # wedged event loop, etc.) and the restart signal handler can't
+            # execute — leaving us with a hung process that systemd cannot
+            # recover on its own (#12438). Force-kill and ask systemd to
+            # restart explicitly so `hermes gateway restart` still works in
+            # crashed/unresponsive states.
+            print(f"⚠ Old process (PID {pid}) still alive after 90s — forcing termination")
+            try:
+                terminate_pid(pid, force=True)
+            except (ProcessLookupError, PermissionError, OSError):
+                pass
+            try:
+                _run_systemctl(
+                    ["restart", svc],
+                    system=system,
+                    check=True,
+                    timeout=90,
+                )
+            except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
+                # Phase 2 will surface the final state below if this also fails.
+                pass
 
         # Phase 2: wait for systemd to start the new process
         print(f"⏳ Waiting for {svc} to restart...")

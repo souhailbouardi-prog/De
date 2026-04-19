@@ -497,6 +497,71 @@ class TestGatewaySystemServiceRouting:
         out = capsys.readouterr().out.lower()
         assert "restarted" in out
 
+    def test_systemd_restart_force_kills_unresponsive_gateway_and_triggers_restart(self, monkeypatch, capsys):
+        """#12438: when SIGUSR1 is sent but the gateway is crashed/unresponsive,
+        the drain wait times out at 90s and we must force-kill the process and
+        explicitly ask systemd to restart the service, rather than silently
+        falling into is-active polling against a dead asyncio loop."""
+        import time as time_mod
+
+        calls = []
+
+        monkeypatch.setattr(gateway_cli, "_select_systemd_scope", lambda system=False: False)
+        monkeypatch.setattr(gateway_cli, "refresh_systemd_unit_if_needed", lambda system=False: None)
+        monkeypatch.setattr("gateway.status.get_running_pid", lambda: 4242)
+        monkeypatch.setattr(
+            gateway_cli,
+            "_request_gateway_self_restart",
+            lambda pid: True,
+        )
+
+        # Fake time so the 90s drain deadline hits on the second tick, rather
+        # than actually sleeping for 90s in CI.
+        t = {"now": 1000.0}
+        monkeypatch.setattr(time_mod, "time", lambda: t["now"])
+        monkeypatch.setattr(time_mod, "sleep", lambda s: t.update(now=t["now"] + 100))
+
+        # os.kill(pid, 0) always succeeds — simulates a stuck process that
+        # never processes SIGUSR1.
+        monkeypatch.setattr(os, "kill", lambda pid, sig: None)
+
+        # Record force-termination.
+        def fake_terminate(pid, *, force=False):
+            calls.append(("terminate", pid, force))
+        monkeypatch.setattr(gateway_cli, "terminate_pid", fake_terminate)
+
+        # Record the explicit systemctl restart call, and treat it as success.
+        def fake_run_systemctl(cmd, system=False, check=False, **kwargs):
+            calls.append(("systemctl", tuple(cmd)))
+            return SimpleNamespace(returncode=0, stdout="active\n", stderr="")
+        monkeypatch.setattr(gateway_cli, "_run_systemctl", fake_run_systemctl)
+
+        # Phase 2 is-active polling goes through subprocess.run directly.
+        def fake_subprocess_run(cmd, **kwargs):
+            return SimpleNamespace(stdout="active\n", returncode=0)
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_subprocess_run)
+
+        # Phase 2's get_running_pid must return a new PID so the "it restarted"
+        # branch fires.
+        pid_calls = {"n": 0}
+        def fake_get_pid():
+            pid_calls["n"] += 1
+            return 9999 if pid_calls["n"] > 1 else 4242
+        monkeypatch.setattr("gateway.status.get_running_pid", fake_get_pid)
+
+        gateway_cli.systemd_restart()
+
+        assert ("terminate", 4242, True) in calls, (
+            "unresponsive gateway must be force-killed after drain timeout"
+        )
+        assert any(
+            kind == "systemctl" and cmd[0] == "restart"
+            for kind, cmd in (c for c in calls if c[0] == "systemctl")
+        ), "unresponsive gateway must trigger an explicit systemctl restart"
+
+        out = capsys.readouterr().out
+        assert "forcing termination" in out
+
     def test_gateway_install_passes_system_flags(self, monkeypatch):
         monkeypatch.setattr(gateway_cli, "supports_systemd_services", lambda: True)
         monkeypatch.setattr(gateway_cli, "is_termux", lambda: False)
