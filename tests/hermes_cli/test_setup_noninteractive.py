@@ -144,6 +144,43 @@ class TestNonInteractiveSetup:
         out = capsys.readouterr().out
         assert "hermes config set model.provider custom" in out
 
+    def test_chat_interactive_mode_requires_tty(self, capsys):
+        """Interactive chat should fail fast with a clear TTY error in headless environments."""
+        from hermes_cli.main import cmd_chat
+
+        args = _make_chat_args()
+
+        with (
+            patch("hermes_cli.main._has_any_provider_configured", return_value=True),
+            patch("sys.stdin") as mock_stdin,
+            patch("cli.main") as mock_cli_main,
+        ):
+            mock_stdin.isatty.return_value = False
+            with pytest.raises(SystemExit) as exc:
+                cmd_chat(args)
+
+        assert exc.value.code == 1
+        mock_cli_main.assert_not_called()
+        err = capsys.readouterr().err
+        assert "requires an interactive terminal" in err
+        assert "hermes chat" in err
+
+    def test_chat_query_mode_allows_headless_execution(self):
+        """Single-query mode should remain available without an interactive TTY."""
+        from hermes_cli.main import cmd_chat
+
+        args = _make_chat_args(query="hello")
+
+        with (
+            patch("hermes_cli.main._has_any_provider_configured", return_value=True),
+            patch("sys.stdin") as mock_stdin,
+            patch("cli.main") as mock_cli_main,
+        ):
+            mock_stdin.isatty.return_value = False
+            cmd_chat(args)
+
+        mock_cli_main.assert_called_once()
+
     def test_returning_user_terminal_menu_choice_dispatches_terminal_section(self, tmp_path):
         """Returning-user menu should map Terminal Backend to the terminal setup, not TTS."""
         from hermes_cli import setup as setup_mod

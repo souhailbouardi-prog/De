@@ -1075,6 +1075,10 @@ def cmd_chat(args):
         print("You can run 'hermes setup' at any time to configure.")
         sys.exit(1)
 
+    # Interactive mode requires a TTY; single-query mode (-q/--image) does not.
+    if getattr(args, "query", None) is None and getattr(args, "image", None) is None:
+        _require_tty("chat")
+
     # Start update check in background (runs while other init happens)
     try:
         from hermes_cli.banner import prefetch_update_check
