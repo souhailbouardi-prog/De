@@ -309,8 +309,25 @@ TOOLSETS = {
     },
     
     "hermes-whatsapp": {
-        "description": "WhatsApp bot toolset - similar to Telegram (personal messaging, more trusted)",
-        "tools": _HERMES_CORE_TOOLS,
+        "description": "WhatsApp bot toolset - similar to Telegram (personal messaging, more trusted). Includes group management, polls, reactions, search, backfill, and stickers.",
+        "tools": _HERMES_CORE_TOOLS + [
+            "whatsapp_search",
+            "whatsapp_backfill",
+            "whatsapp_list_groups",
+            "whatsapp_create_group",
+            "whatsapp_group_rename",
+            "whatsapp_group_description",
+            "whatsapp_group_participants_add",
+            "whatsapp_group_participants_remove",
+            "whatsapp_group_participants_promote",
+            "whatsapp_group_invite_link",
+            "whatsapp_group_invite_link_revoke",
+            "whatsapp_group_leave",
+            "whatsapp_send_reaction",
+            "whatsapp_send_poll",
+            "whatsapp_send_sticker",
+            "whatsapp_unsend_message",
+        ],
         "includes": []
     },
     

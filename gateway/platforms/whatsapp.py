@@ -824,7 +824,281 @@ class WhatsAppAdapter(BasePlatformAdapter):
             logger.debug("Could not get WhatsApp chat info for %s: %s", chat_id, e)
         
         return {"name": chat_id, "type": "dm"}
-    
+
+    async def whatsapp_search(self, query: str, chat_id: Optional[str] = None, limit: int = 50) -> Dict[str, Any]:
+        """Search messages via FTS5 in local SQLite storage."""
+        if not self._running or not self._http_session:
+            return {"error": "Not connected"}
+        if await self._check_managed_bridge_exit():
+            return {"error": "Bridge exited"}
+        try:
+            import aiohttp
+            params = {"q": query, "limit": str(limit)}
+            if chat_id:
+                params["chat_id"] = chat_id
+            async with self._http_session.get(
+                f"http://127.0.0.1:{self._bridge_port}/search",
+                params=params,
+                timeout=aiohttp.ClientTimeout(total=15)
+            ) as resp:
+                return await resp.json()
+        except Exception as e:
+            return {"error": str(e)}
+
+    async def whatsapp_backfill(self, chat_id: str, limit: int = 50) -> Dict[str, Any]:
+        """Backfill historical messages from WhatsApp into local SQLite storage."""
+        if not self._running or not self._http_session:
+            return {"error": "Not connected"}
+        if await self._check_managed_bridge_exit():
+            return {"error": "Bridge exited"}
+        try:
+            import aiohttp
+            async with self._http_session.post(
+                f"http://127.0.0.1:{self._bridge_port}/backfill",
+                json={"chat_id": chat_id, "limit": limit},
+                timeout=aiohttp.ClientTimeout(total=60)
+            ) as resp:
+                return await resp.json()
+        except Exception as e:
+            return {"error": str(e)}
+
+    async def whatsapp_list_groups(self) -> Dict[str, Any]:
+        """List all WhatsApp groups with metadata."""
+        if not self._running or not self._http_session:
+            return {"error": "Not connected"}
+        if await self._check_managed_bridge_exit():
+            return {"error": "Bridge exited"}
+        try:
+            import aiohttp
+            async with self._http_session.get(
+                f"http://127.0.0.1:{self._bridge_port}/groups",
+                timeout=aiohttp.ClientTimeout(total=15)
+            ) as resp:
+                return await resp.json()
+        except Exception as e:
+            return {"error": str(e)}
+
+    async def whatsapp_create_group(self, name: str, participants: list[str]) -> Dict[str, Any]:
+        """Create a WhatsApp group."""
+        if not self._running or not self._http_session:
+            return {"error": "Not connected"}
+        if await self._check_managed_bridge_exit():
+            return {"error": "Bridge exited"}
+        try:
+            import aiohttp
+            async with self._http_session.post(
+                f"http://127.0.0.1:{self._bridge_port}/group/create",
+                json={"name": name, "participants": participants},
+                timeout=aiohttp.ClientTimeout(total=15)
+            ) as resp:
+                return await resp.json()
+        except Exception as e:
+            return {"error": str(e)}
+
+    async def whatsapp_group_rename(self, chat_id: str, name: str) -> Dict[str, Any]:
+        """Rename a WhatsApp group (change subject)."""
+        if not self._running or not self._http_session:
+            return {"error": "Not connected"}
+        if await self._check_managed_bridge_exit():
+            return {"error": "Bridge exited"}
+        try:
+            import aiohttp
+            async with self._http_session.post(
+                f"http://127.0.0.1:{self._bridge_port}/group/rename",
+                json={"chat_id": chat_id, "name": name},
+                timeout=aiohttp.ClientTimeout(total=15)
+            ) as resp:
+                return await resp.json()
+        except Exception as e:
+            return {"error": str(e)}
+
+    async def whatsapp_group_description(self, chat_id: str, description: str) -> Dict[str, Any]:
+        """Set a WhatsApp group's description."""
+        if not self._running or not self._http_session:
+            return {"error": "Not connected"}
+        if await self._check_managed_bridge_exit():
+            return {"error": "Bridge exited"}
+        try:
+            import aiohttp
+            async with self._http_session.post(
+                f"http://127.0.0.1:{self._bridge_port}/group/description",
+                json={"chat_id": chat_id, "description": description},
+                timeout=aiohttp.ClientTimeout(total=15)
+            ) as resp:
+                return await resp.json()
+        except Exception as e:
+            return {"error": str(e)}
+
+    async def whatsapp_group_participants_add(self, chat_id: str, participants: list[str]) -> Dict[str, Any]:
+        """Add participants to a WhatsApp group."""
+        if not self._running or not self._http_session:
+            return {"error": "Not connected"}
+        if await self._check_managed_bridge_exit():
+            return {"error": "Bridge exited"}
+        try:
+            import aiohttp
+            async with self._http_session.post(
+                f"http://127.0.0.1:{self._bridge_port}/group/participants/add",
+                json={"chat_id": chat_id, "participants": participants},
+                timeout=aiohttp.ClientTimeout(total=15)
+            ) as resp:
+                return await resp.json()
+        except Exception as e:
+            return {"error": str(e)}
+
+    async def whatsapp_group_participants_remove(self, chat_id: str, participants: list[str]) -> Dict[str, Any]:
+        """Remove participants from a WhatsApp group."""
+        if not self._running or not self._http_session:
+            return {"error": "Not connected"}
+        if await self._check_managed_bridge_exit():
+            return {"error": "Bridge exited"}
+        try:
+            import aiohttp
+            async with self._http_session.post(
+                f"http://127.0.0.1:{self._bridge_port}/group/participants/remove",
+                json={"chat_id": chat_id, "participants": participants},
+                timeout=aiohttp.ClientTimeout(total=15)
+            ) as resp:
+                return await resp.json()
+        except Exception as e:
+            return {"error": str(e)}
+
+    async def whatsapp_group_participants_promote(self, chat_id: str, participants: list[str]) -> Dict[str, Any]:
+        """Promote participants to admin in a WhatsApp group."""
+        if not self._running or not self._http_session:
+            return {"error": "Not connected"}
+        if await self._check_managed_bridge_exit():
+            return {"error": "Bridge exited"}
+        try:
+            import aiohttp
+            async with self._http_session.post(
+                f"http://127.0.0.1:{self._bridge_port}/group/participants/promote",
+                json={"chat_id": chat_id, "participants": participants},
+                timeout=aiohttp.ClientTimeout(total=15)
+            ) as resp:
+                return await resp.json()
+        except Exception as e:
+            return {"error": str(e)}
+
+    async def whatsapp_group_invite_link(self, chat_id: str) -> Dict[str, Any]:
+        """Get the invite link for a WhatsApp group."""
+        if not self._running or not self._http_session:
+            return {"error": "Not connected"}
+        if await self._check_managed_bridge_exit():
+            return {"error": "Bridge exited"}
+        try:
+            import aiohttp
+            async with self._http_session.get(
+                f"http://127.0.0.1:{self._bridge_port}/group/invite-link",
+                params={"chat_id": chat_id},
+                timeout=aiohttp.ClientTimeout(total=15)
+            ) as resp:
+                return await resp.json()
+        except Exception as e:
+            return {"error": str(e)}
+
+    async def whatsapp_group_invite_link_revoke(self, chat_id: str) -> Dict[str, Any]:
+        """Revoke and regenerate the invite link for a WhatsApp group."""
+        if not self._running or not self._http_session:
+            return {"error": "Not connected"}
+        if await self._check_managed_bridge_exit():
+            return {"error": "Bridge exited"}
+        try:
+            import aiohttp
+            async with self._http_session.post(
+                f"http://127.0.0.1:{self._bridge_port}/group/invite-link/revoke",
+                json={"chat_id": chat_id},
+                timeout=aiohttp.ClientTimeout(total=15)
+            ) as resp:
+                return await resp.json()
+        except Exception as e:
+            return {"error": str(e)}
+
+    async def whatsapp_group_leave(self, chat_id: str) -> Dict[str, Any]:
+        """Leave a WhatsApp group."""
+        if not self._running or not self._http_session:
+            return {"error": "Not connected"}
+        if await self._check_managed_bridge_exit():
+            return {"error": "Bridge exited"}
+        try:
+            import aiohttp
+            async with self._http_session.post(
+                f"http://127.0.0.1:{self._bridge_port}/group/leave",
+                json={"chat_id": chat_id},
+                timeout=aiohttp.ClientTimeout(total=15)
+            ) as resp:
+                return await resp.json()
+        except Exception as e:
+            return {"error": str(e)}
+
+    async def whatsapp_send_reaction(self, chat_id: str, message_id: str, emoji: str) -> Dict[str, Any]:
+        """Send an emoji reaction to a specific message."""
+        if not self._running or not self._http_session:
+            return {"error": "Not connected"}
+        if await self._check_managed_bridge_exit():
+            return {"error": "Bridge exited"}
+        try:
+            import aiohttp
+            async with self._http_session.post(
+                f"http://127.0.0.1:{self._bridge_port}/react",
+                json={"chat_id": chat_id, "message_id": message_id, "emoji": emoji},
+                timeout=aiohttp.ClientTimeout(total=10)
+            ) as resp:
+                return await resp.json()
+        except Exception as e:
+            return {"error": str(e)}
+
+    async def whatsapp_send_poll(self, chat_id: str, question: str, options: list[str], multiple_answers: bool = False) -> Dict[str, Any]:
+        """Send a poll to a WhatsApp chat."""
+        if not self._running or not self._http_session:
+            return {"error": "Not connected"}
+        if await self._check_managed_bridge_exit():
+            return {"error": "Bridge exited"}
+        try:
+            import aiohttp
+            async with self._http_session.post(
+                f"http://127.0.0.1:{self._bridge_port}/poll",
+                json={"chat_id": chat_id, "question": question, "options": options, "multiple_answers": multiple_answers},
+                timeout=aiohttp.ClientTimeout(total=15)
+            ) as resp:
+                return await resp.json()
+        except Exception as e:
+            return {"error": str(e)}
+
+    async def whatsapp_send_sticker(self, chat_id: str, file_path: str) -> Dict[str, Any]:
+        """Send a .webp sticker to a WhatsApp chat."""
+        if not self._running or not self._http_session:
+            return {"error": "Not connected"}
+        if await self._check_managed_bridge_exit():
+            return {"error": "Bridge exited"}
+        try:
+            import aiohttp
+            async with self._http_session.post(
+                f"http://127.0.0.1:{self._bridge_port}/sticker",
+                json={"chat_id": chat_id, "file_path": file_path},
+                timeout=aiohttp.ClientTimeout(total=30)
+            ) as resp:
+                return await resp.json()
+        except Exception as e:
+            return {"error": str(e)}
+
+    async def whatsapp_unsend_message(self, chat_id: str, message_id: str) -> Dict[str, Any]:
+        """Unsend (delete for everyone) a message."""
+        if not self._running or not self._http_session:
+            return {"error": "Not connected"}
+        if await self._check_managed_bridge_exit():
+            return {"error": "Bridge exited"}
+        try:
+            import aiohttp
+            async with self._http_session.delete(
+                f"http://127.0.0.1:{self._bridge_port}/message",
+                json={"chat_id": chat_id, "message_id": message_id},
+                timeout=aiohttp.ClientTimeout(total=10)
+            ) as resp:
+                return await resp.json()
+        except Exception as e:
+            return {"error": str(e)}
+
     async def _poll_messages(self) -> None:
         """Poll the bridge for incoming messages."""
         import aiohttp

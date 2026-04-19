@@ -1946,16 +1946,37 @@ def _setup_whatsapp():
     existing = get_env_value("WHATSAPP_ENABLED")
     if existing:
         print_info("WhatsApp: already enabled")
+        ultimate_existing = get_env_value("WHATSAPP_ULTIMATE")
+        print_info(f"WhatsApp mode: {'Ultimate' if ultimate_existing == 'true' else 'Standard'}")
         return
 
     print_info("WhatsApp connects via a built-in bridge (Baileys).")
     print_info("Requires Node.js. Run 'hermes whatsapp' for guided setup.")
     print()
+
+    # Ask which mode: Standard vs Ultimate
+    mode_desc = [
+        "Standard — send/receive only, no local message storage",
+        "Ultimate  — SQLite storage, FTS5 search, group mgmt, polls, reactions",
+    ]
+    mode_idx = prompt_choice(
+        "Which WhatsApp mode?",
+        ["Standard (lightweight)", "WhatsApp Ultimate (full-featured)"],
+        default=0,
+        description=mode_desc,
+    )
+    is_ultimate = mode_idx == 1
+
     if prompt_yes_no("Enable WhatsApp now?", True):
         save_env_value("WHATSAPP_ENABLED", "true")
-        print_success("WhatsApp enabled")
-        print_info("Run 'hermes whatsapp' to choose your mode (separate bot number")
-        print_info("or personal self-chat) and pair via QR code.")
+        if is_ultimate:
+            save_env_value("WHATSAPP_ULTIMATE", "true")
+            print_success("WhatsApp enabled (Ultimate mode)")
+        else:
+            # Clear any stale Ultimate flag
+            save_env_value("WHATSAPP_ULTIMATE", "false")
+            print_success("WhatsApp enabled (Standard mode)")
+        print_info("Run 'hermes whatsapp' to pair via QR code.")
 
 
 def _setup_weixin():
