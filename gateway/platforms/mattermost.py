@@ -121,7 +121,7 @@ class MattermostAdapter(BasePlatformAdapter):
                     return {}
                 return await resp.json()
         except aiohttp.ClientError as exc:
-            logger.error("MM API GET %s network error: %s", path, exc)
+            logger.error("MM API GET %s network error: %s", path, exc, exc_info=True)
             return {}
 
     async def _api_post(
@@ -141,7 +141,7 @@ class MattermostAdapter(BasePlatformAdapter):
                     return {}
                 return await resp.json()
         except aiohttp.ClientError as exc:
-            logger.error("MM API POST %s network error: %s", path, exc)
+            logger.error("MM API POST %s network error: %s", path, exc, exc_info=True)
             return {}
 
     async def _api_put(
@@ -160,7 +160,7 @@ class MattermostAdapter(BasePlatformAdapter):
                     return {}
                 return await resp.json()
         except aiohttp.ClientError as exc:
-            logger.error("MM API PUT %s network error: %s", path, exc)
+            logger.error("MM API PUT %s network error: %s", path, exc, exc_info=True)
             return {}
 
     async def _upload_file(
@@ -436,7 +436,7 @@ class MattermostAdapter(BasePlatformAdapter):
                 if attempt < 2:
                     await asyncio.sleep(1.5 * (attempt + 1))
                     continue
-                logger.warning("Mattermost: failed to download %s after %d attempts: %s", url, attempt + 1, exc)
+                logger.warning("Mattermost: failed to download %s after %d attempts: %s", url, attempt + 1, exc, exc_info=True)
                 return await self.send(chat_id, f"{caption or ''}\n{url}".strip(), reply_to)
 
         if file_data is None:
@@ -523,9 +523,9 @@ class MattermostAdapter(BasePlatformAdapter):
                     logger.error("Mattermost WS auth failed (HTTP %d) — stopping reconnect", exc.status)
                     return
                 if "401" in err_str or "403" in err_str or "unauthorized" in err_str:
-                    logger.error("Mattermost WS permanent error: %s — stopping reconnect", exc)
+                    logger.error("Mattermost WS permanent error: %s — stopping reconnect", exc, exc_info=True)
                     return
-                logger.warning("Mattermost WS error: %s — reconnecting in %.0fs", exc, delay)
+                logger.warning("Mattermost WS error: %s — reconnecting in %.0fs", exc, delay, exc_info=True)
 
             if self._closing:
                 return
@@ -699,7 +699,7 @@ class MattermostAdapter(BasePlatformAdapter):
                     else:
                         logger.warning("Mattermost: failed to download file %s: HTTP %s", fid, resp.status)
             except Exception as exc:
-                logger.warning("Mattermost: error downloading file %s: %s", fid, exc)
+                logger.warning("Mattermost: error downloading file %s: %s", fid, exc, exc_info=True)
 
         # Set message type based on downloaded media types.
         if media_types and msg_type == MessageType.TEXT:
