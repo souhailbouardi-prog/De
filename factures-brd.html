@@ -697,14 +697,18 @@
 </div>
 
 <script>
-    /* ===== INVOICE COUNTER ===== */
+    /* ===== INVOICE COUNTER (localStorage optionnel) ===== */
     function getCounter() {
-        const y = new Date().getFullYear();
-        return { year: y, n: parseInt(localStorage.getItem('brd_inv_' + y) || '0') };
+        try {
+            var y = new Date().getFullYear();
+            return { year: y, n: parseInt(localStorage.getItem('brd_inv_' + y) || '0') };
+        } catch(e) {
+            return { year: new Date().getFullYear(), n: 0 };
+        }
     }
 
     function saveCounter(year, n) {
-        localStorage.setItem('brd_inv_' + year, n);
+        try { localStorage.setItem('brd_inv_' + year, n); } catch(e) {}
     }
 
     function fmtNum(year, n) {
@@ -712,11 +716,11 @@
     }
 
     /* ===== INIT ===== */
-    window.addEventListener('DOMContentLoaded', () => {
-        const today = new Date().toISOString().split('T')[0];
+    window.addEventListener('DOMContentLoaded', function() {
+        var today = new Date().toISOString().split('T')[0];
         document.getElementById('f-date').value = today;
-        const { year, n } = getCounter();
-        document.getElementById('f-num').value = fmtNum(year, n + 1);
+        var c = getCounter();
+        document.getElementById('f-num').value = fmtNum(c.year, c.n + 1);
     });
 
     /* ===== FORMATTING ===== */
@@ -734,30 +738,31 @@
 
     /* ===== GENERATE ===== */
     function genInvoice() {
-        const num      = document.getElementById('f-num').value.trim();
-        const date     = document.getElementById('f-date').value;
-        const client   = document.getElementById('f-client').value.trim();
-        const addr     = document.getElementById('f-addr').value.trim();
-        const itin     = document.getElementById('f-itinerary').value.trim();
-        const ht       = parseFloat(document.getElementById('f-ht').value) || 0;
-        const tvaRate  = parseFloat(document.getElementById('f-tva').value) ?? 10;
+        try {
+        var num      = document.getElementById('f-num').value.trim();
+        var date     = document.getElementById('f-date').value;
+        var client   = document.getElementById('f-client').value.trim();
+        var addr     = document.getElementById('f-addr').value.trim();
+        var itin     = document.getElementById('f-itinerary').value.trim();
+        var ht       = parseFloat(document.getElementById('f-ht').value) || 0;
+        var tvaRate  = parseFloat(document.getElementById('f-tva').value) || 10;
 
-        if (!client)      { alert('⚠️ Veuillez renseigner le nom du client.'); return; }
-        if (!itin)        { alert('⚠️ Veuillez décrire l\'itinéraire ou la prestation.'); return; }
-        if (ht <= 0)      { alert('⚠️ Veuillez saisir un prix H.T. valide.'); return; }
+        if (!client)  { alert('Veuillez renseigner le nom du client.'); return; }
+        if (!itin)    { alert('Veuillez decrire l\'itineraire ou la prestation.'); return; }
+        if (ht <= 0)  { alert('Veuillez saisir un prix H.T. valide.'); return; }
 
-        const tvaAmt = ht * (tvaRate / 100);
-        const ttc    = ht + tvaAmt;
+        var tvaAmt = ht * (tvaRate / 100);
+        var ttc    = ht + tvaAmt;
 
         /* Save counter */
-        const { year, n } = getCounter();
-        const match = num.match(/(\d{4})-(\d+)/);
+        var c = getCounter();
+        var match = num.match(/(\d{4})-(\d+)/);
         if (match) {
-            const newN = parseInt(match[2]);
-            if (newN >= n) saveCounter(parseInt(match[1]), newN);
+            var newN = parseInt(match[2]);
+            if (newN >= c.n) saveCounter(parseInt(match[1]), newN);
         }
 
-        const itinHtml = itin.replace(/\n/g, '<br>');
+        var itinHtml = itin.replace(/\n/g, '<br>');
 
         document.getElementById('invoice-doc').innerHTML = `
 
@@ -893,6 +898,7 @@
         document.getElementById('form-section').style.display = 'none';
         document.getElementById('invoice-section').style.display = 'block';
         window.scrollTo(0, 0);
+        } catch(err) { alert('Erreur: ' + err.message); }
     }
 
     /* ===== CLOSE ===== */
@@ -900,16 +906,13 @@
         document.getElementById('invoice-section').style.display = 'none';
         document.getElementById('form-section').style.display = 'block';
         window.scrollTo(0, 0);
-        /* Propose next number */
-        const { year, n } = getCounter();
-        document.getElementById('f-num').value = fmtNum(year, n + 1);
-        /* Reset form */
+        var c = getCounter();
+        document.getElementById('f-num').value = fmtNum(c.year, c.n + 1);
         document.getElementById('f-client').value = '';
         document.getElementById('f-addr').value = '';
         document.getElementById('f-itinerary').value = '';
         document.getElementById('f-ht').value = '';
-        const today = new Date().toISOString().split('T')[0];
-        document.getElementById('f-date').value = today;
+        document.getElementById('f-date').value = new Date().toISOString().split('T')[0];
     }
 </script>
 
