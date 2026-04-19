@@ -114,6 +114,22 @@ class _BadRequestError(Exception):
         self.status_code = 400
 
 
+class _ExtraUsageError(Exception):
+    """Simulates Anthropic 400 extra-usage exhaustion on subscription auth."""
+    def __init__(self):
+        message = "You're out of extra usage. Add more at claude.ai/settings/usage and keep going."
+        super().__init__(message)
+        self.status_code = 400
+        self.body = {
+            "type": "error",
+            "error": {
+                "type": "invalid_request_error",
+                "message": message,
+            },
+            "request_id": "",
+        }
+
+
 class _UnauthorizedError(Exception):
     """Simulates Anthropic 401 unauthorized error."""
     def __init__(self):
@@ -282,6 +298,20 @@ def test_400_bad_request_is_non_retryable(monkeypatch):
     result = _run_with_agent(monkeypatch, agent_cls)
     assert result["api_calls"] == 1
     assert "400" in str(result.get("final_response", ""))
+
+
+def test_400_extra_usage_error_gets_actionable_guidance(monkeypatch):
+    """Anthropic extra-usage exhaustion should surface specific next steps."""
+    agent_cls = _make_agent_cls(_ExtraUsageError)
+    result = _run_with_agent(monkeypatch, agent_cls)
+    response = str(result.get("final_response", ""))
+
+    assert result["api_calls"] == 1
+    assert "extra usage" in response.lower()
+    assert "third-party" in response.lower()
+    assert "claude.ai/settings/usage" in response
+    assert "hermes model" in response
+    assert "hermes auth add anthropic" in response
 
 
 def test_500_server_error_is_retried_and_recovers(monkeypatch):

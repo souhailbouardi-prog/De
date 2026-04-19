@@ -2915,6 +2915,19 @@ class AIAgent:
         _save_trajectory_to_file(trajectory, self.model, completed)
     
     @staticmethod
+    def _extract_api_error_message(error: Exception) -> Optional[str]:
+        """Extract the most useful provider-supplied error message, if present."""
+        body = getattr(error, "body", None)
+        if isinstance(body, dict):
+            payload = body.get("error") if isinstance(body.get("error"), dict) else body
+            if isinstance(payload, dict):
+                for key in ("message", "error_description", "detail"):
+                    value = payload.get(key)
+                    if isinstance(value, str) and value.strip():
+                        return value.strip()
+        return None
+
+    @staticmethod
     def _summarize_api_error(error: Exception) -> str:
         """Extract a human-readable one-liner from an API error.
 
@@ -2942,18 +2955,64 @@ class AIAgent:
             return " — ".join(parts)
 
         # JSON body errors from OpenAI/Anthropic SDKs
-        body = getattr(error, "body", None)
-        if isinstance(body, dict):
-            msg = body.get("error", {}).get("message") if isinstance(body.get("error"), dict) else body.get("message")
-            if msg:
-                status_code = getattr(error, "status_code", None)
-                prefix = f"HTTP {status_code}: " if status_code else ""
-                return f"{prefix}{msg[:300]}"
+        msg = AIAgent._extract_api_error_message(error)
+        if msg:
+            status_code = getattr(error, "status_code", None)
+            prefix = f"HTTP {status_code}: " if status_code else ""
+            return f"{prefix}{msg[:300]}"
 
         # Fallback: truncate the raw string but give more room than 200 chars
         status_code = getattr(error, "status_code", None)
         prefix = f"HTTP {status_code}: " if status_code else ""
         return f"{prefix}{raw[:500]}"
+
+    @staticmethod
+    def _is_anthropic_extra_usage_exhausted(
+        error: Exception,
+        *,
+        provider: Optional[str] = None,
+        base_url: Optional[str] = None,
+    ) -> bool:
+        """Detect Anthropic's subscription/OAuth extra-usage exhaustion error."""
+        if getattr(error, "status_code", None) != 400:
+            return False
+
+        provider_lower = (provider or "").lower()
+        base_lower = (base_url or "").lower()
+        if provider_lower != "anthropic" and "anthropic.com" not in base_lower:
+            return False
+
+        error_msg = (AIAgent._extract_api_error_message(error) or str(error)).lower()
+        return (
+            ("out of extra usage" in error_msg or "claude.ai/settings/usage" in error_msg)
+            and "long context" not in error_msg
+        )
+
+    def _format_user_visible_api_error(
+        self,
+        error: Exception,
+        *,
+        provider: Optional[str] = None,
+        model: Optional[str] = None,
+        base_url: Optional[str] = None,
+    ) -> str:
+        """Format an actionable user-facing error string for failed API calls."""
+        if self._is_anthropic_extra_usage_exhausted(
+            error,
+            provider=provider,
+            base_url=base_url,
+        ):
+            summary = self._summarize_api_error(error)
+            return (
+                "Anthropic reported that this account is out of extra usage for the "
+                "API path Hermes uses (Claude subscription/OAuth via third-party "
+                f"clients). Provider message: {summary}. Restarting or re-authenticating "
+                "usually will not fix it until usage is added or you switch auth/provider. "
+                "Next steps: add usage at https://claude.ai/settings/usage, switch to "
+                "another provider with `hermes model`, or add an Anthropic API key "
+                "with `hermes auth add anthropic`."
+            )
+        return str(error)
 
     def _mask_api_key_for_logs(self, key: Optional[str]) -> Optional[str]:
         if not key:
@@ -10694,9 +10753,23 @@ class AIAgent:
                     ) and not is_context_length_error
 
                     if is_client_error:
+                        anthropic_extra_usage_error = self._is_anthropic_extra_usage_exhausted(
+                            api_error,
+                            provider=_provider,
+                            base_url=_base,
+                        )
+                        user_visible_error = self._format_user_visible_api_error(
+                            api_error,
+                            provider=_provider,
+                            model=_model,
+                            base_url=_base,
+                        )
                         # Try fallback before aborting — a different provider
                         # may not have the same issue (rate limit, auth, etc.)
-                        self._emit_status(f"⚠️ Non-retryable error (HTTP {status_code}) — trying fallback...")
+                        if anthropic_extra_usage_error:
+                            self._emit_status("⚠️ Anthropic extra usage is exhausted for this API path — trying fallback...")
+                        else:
+                            self._emit_status(f"⚠️ Non-retryable error (HTTP {status_code}) — trying fallback...")
                         if self._try_activate_fallback():
                             retry_count = 0
                             compression_attempts = 0
@@ -10726,6 +10799,24 @@ class AIAgent:
                                 self._vprint(f"{self.log_prefix}      • Does your account have access to {_model}?", force=True)
                                 if "openrouter" in str(_base).lower():
                                     self._vprint(f"{self.log_prefix}      • Check credits: https://openrouter.ai/settings/credits", force=True)
+                        elif anthropic_extra_usage_error:
+                            self._vprint(
+                                f"{self.log_prefix}   💡 Anthropic says this account is out of extra usage for "
+                                f"Hermes / third-party API requests.",
+                                force=True,
+                            )
+                            self._vprint(
+                                f"{self.log_prefix}      • Add usage: https://claude.ai/settings/usage",
+                                force=True,
+                            )
+                            self._vprint(
+                                f"{self.log_prefix}      • Switch provider: hermes model",
+                                force=True,
+                            )
+                            self._vprint(
+                                f"{self.log_prefix}      • Or add an Anthropic API key: hermes auth add anthropic",
+                                force=True,
+                            )
                         else:
                             self._vprint(f"{self.log_prefix}   💡 This type of error won't be fixed by retrying.", force=True)
                         logging.error(f"{self.log_prefix}Non-retryable client error: {api_error}")
@@ -10748,7 +10839,7 @@ class AIAgent:
                             "api_calls": api_call_count,
                             "completed": False,
                             "failed": True,
-                            "error": str(api_error),
+                            "error": user_visible_error,
                         }
 
                     if retry_count >= max_retries:
