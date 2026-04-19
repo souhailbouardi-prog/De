@@ -201,8 +201,13 @@ def run_dump(args):
             load_dotenv(env_path, encoding="utf-8")
         except UnicodeDecodeError:
             load_dotenv(env_path, encoding="latin-1")
-    # Also try project .env as dev fallback
-    load_dotenv(get_project_root() / ".env", override=False, encoding="utf-8")
+    # Also try project .env as dev fallback (Windows may save as cp1252)
+    _proj_env = get_project_root() / ".env"
+    if _proj_env.exists():
+        try:
+            load_dotenv(_proj_env, override=False, encoding="utf-8")
+        except UnicodeDecodeError:
+            load_dotenv(_proj_env, override=False, encoding="latin-1")
 
     project_root = get_project_root()
     hermes_home = get_hermes_home()
