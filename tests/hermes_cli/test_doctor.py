@@ -31,6 +31,37 @@ class TestDoctorPlatformHints:
         assert doctor._system_package_install_cmd("ripgrep") == "sudo apt install ripgrep"
 
 
+class TestDoctorStdoutFallback:
+    class _FakeStdout:
+        def __init__(self, encoding: str | None, errors: str = "strict"):
+            self.encoding = encoding
+            self.errors = errors
+            self.calls = []
+
+        def reconfigure(self, **kwargs):
+            self.calls.append(kwargs)
+            if "errors" in kwargs:
+                self.errors = kwargs["errors"]
+
+    def test_enables_replace_mode_for_gbk_stdout(self, monkeypatch):
+        fake = self._FakeStdout("gbk")
+        monkeypatch.setattr(sys, "stdout", fake)
+
+        doctor._enable_stdout_fallback_for_doctor()
+
+        assert fake.calls == [{"errors": "replace"}]
+        assert fake.errors == "replace"
+
+    def test_leaves_utf8_stdout_unchanged(self, monkeypatch):
+        fake = self._FakeStdout("utf-8")
+        monkeypatch.setattr(sys, "stdout", fake)
+
+        doctor._enable_stdout_fallback_for_doctor()
+
+        assert fake.calls == []
+        assert fake.errors == "strict"
+
+
 class TestProviderEnvDetection:
     def test_detects_openai_api_key(self):
         content = "OPENAI_BASE_URL=http://localhost:1234/v1\nOPENAI_API_KEY=***"

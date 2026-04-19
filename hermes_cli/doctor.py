@@ -56,6 +56,7 @@ _PROVIDER_ENV_HINTS = (
     "XIAOMI_API_KEY",
 )
 
+_DOCTOR_UNICODE_SENTINEL = "—→─│┌┐└┘◆⚠✓✗🎉🩺"
 
 from hermes_constants import is_termux as _is_termux
 
@@ -81,6 +82,28 @@ def _termux_browser_setup_steps(node_installed: bool) -> list[str]:
     steps.append(f"{step}) npm install -g agent-browser")
     steps.append(f"{step + 1}) agent-browser install")
     return steps
+
+
+def _enable_stdout_fallback_for_doctor() -> None:
+    """Avoid UnicodeEncodeError on narrow Windows console encodings.
+
+    Some Windows terminals still default to GBK/CP936, which cannot encode
+    the doctor command's decorative Unicode glyphs. Switching stdout to
+    ``errors='replace'`` preserves the diagnostic output while avoiding a hard
+    crash in the middle of the command.
+    """
+    stream = getattr(sys, "stdout", None)
+    encoding = getattr(stream, "encoding", None)
+    if stream is None or not encoding or not hasattr(stream, "reconfigure"):
+        return
+
+    try:
+        _DOCTOR_UNICODE_SENTINEL.encode(encoding)
+    except (LookupError, UnicodeEncodeError):
+        try:
+            stream.reconfigure(errors="replace")
+        except Exception:
+            pass
 
 
 def _has_provider_env_config(content: str) -> bool:
@@ -163,6 +186,7 @@ def _check_gateway_service_linger(issues: list[str]) -> None:
 
 def run_doctor(args):
     """Run diagnostic checks."""
+    _enable_stdout_fallback_for_doctor()
     should_fix = getattr(args, 'fix', False)
 
     # Doctor runs from the interactive CLI, so CLI-gated tool availability
