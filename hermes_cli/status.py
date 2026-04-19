@@ -295,7 +295,9 @@ def show_status(args):
         print(f"  Daytona Image: {daytona_image}")
     
     sudo_password = os.getenv("SUDO_PASSWORD", "")
-    print(f"  Sudo:         {check_mark(bool(sudo_password))} {'enabled' if sudo_password else 'disabled'}")
+    sudo_configured = "SUDO_PASSWORD" in os.environ
+    sudo_enabled = bool(sudo_password) or sudo_configured
+    print(f"  Sudo:         {check_mark(sudo_enabled)} {'enabled' if sudo_enabled else 'disabled'}")
     
     # =========================================================================
     # Messaging Platforms
