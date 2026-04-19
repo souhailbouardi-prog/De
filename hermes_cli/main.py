@@ -41,6 +41,10 @@ Usage:
     hermes sessions browse     Interactive session picker with search
 
     hermes claw migrate --dry-run  # Preview migration without changes
+    hermes migrate export -o backup.tar.gz  Export Hermes to migration bundle
+    hermes migrate import -i backup.tar.gz  Import from migration bundle
+    hermes migrate verify -i backup.tar.gz  Verify a migration bundle
+    hermes migrate doctor                   Check environment for migration readiness
 """
 
 import argparse
@@ -4105,6 +4109,15 @@ def cmd_backup(args):
         from hermes_cli.backup import run_backup
 
         run_backup(args)
+
+
+def cmd_migrate(args):
+    """Unified migration command — export, import, verify, doctor."""
+    from hermes_cli import migrate as migrate_module
+    action = getattr(args, "action", None)
+    result = migrate_module.run_migrate(args)
+    if action in ("verify", "doctor") and not result:
+        sys.exit(1)
 
 
 def cmd_import(args):
@@ -8241,6 +8254,68 @@ Examples:
     )
 
     profile_parser.set_defaults(func=cmd_profile)
+
+    # =========================================================================
+    # migrate command
+    # =========================================================================
+    migrate_parser = subparsers.add_parser(
+        "migrate",
+        help="Unified migration: export, import, verify, and doctor commands",
+        description="Cross-machine, cross-platform migration tool for Hermes Agent",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  hermes migrate export -o backup.tar.gz            Export to migration bundle
+  hermes migrate import -i backup.tar.gz --dry-run  Preview import (no changes)
+  hermes migrate import -i backup.tar.gz --interactive  Guided import
+  hermes migrate verify -i backup.tar.gz            Verify a bundle
+  hermes migrate doctor                             Check migration readiness
+""",
+    )
+    migrate_subparsers = migrate_parser.add_subparsers(dest="action", help="Migration action")
+
+    # migrate export
+    migrate_export = migrate_subparsers.add_parser("export", help="Export Hermes to migration bundle")
+    migrate_export.add_argument(
+        "--preset",
+        choices=["safe", "full"],
+        default="safe",
+        help="Preset: 'safe' excludes secrets (default), 'full' includes them"
+    )
+    migrate_export.add_argument(
+        "--output", "-o",
+        help="Output .tar.gz path (default: hermes-migration-{timestamp}.tar.gz)"
+    )
+
+    # migrate import
+    migrate_import = migrate_subparsers.add_parser("import", help="Import from migration bundle")
+    migrate_import.add_argument(
+        "--input", "-i",
+        required=True,
+        help="Input .tar.gz bundle path"
+    )
+    migrate_import.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Show what would be imported without applying"
+    )
+    migrate_import.add_argument(
+        "--interactive",
+        action="store_true",
+        help="Run guided interactive import with step-by-step prompts"
+    )
+
+    # migrate verify
+    migrate_verify = migrate_subparsers.add_parser("verify", help="Verify bundle or installation")
+    migrate_verify.add_argument(
+        "--input", "-i",
+        help="Bundle to verify (if omitted, verifies current installation)"
+    )
+
+    # migrate doctor
+    migrate_subparsers.add_parser("doctor", help="Check environment health")
+
+    migrate_parser.set_defaults(func=cmd_migrate)
 
     # =========================================================================
     # completion command
