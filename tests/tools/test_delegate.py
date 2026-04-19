@@ -219,6 +219,55 @@ class TestDelegateTask(unittest.TestCase):
             delegate_task(goal="Test depth", parent_agent=parent)
             self.assertEqual(mock_child._delegate_depth, 1)
 
+    def test_acp_override_bypasses_parent_toolset_intersection(self):
+        """ACP child agents should use requested toolsets directly."""
+        parent = _make_mock_parent()
+        parent.enabled_toolsets = ["terminal", "file"]
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            MockAgent.return_value = MagicMock()
+
+            _build_child_agent(
+                task_index=0,
+                goal="Use browser tools",
+                context=None,
+                toolsets=["browser", "skills", "session_search", "delegation"],
+                model=None,
+                max_iterations=10,
+                parent_agent=parent,
+                override_acp_command="hermes",
+                override_acp_args=["acp"],
+            )
+
+        call_kwargs = MockAgent.call_args.kwargs
+        self.assertEqual(
+            call_kwargs["enabled_toolsets"],
+            ["browser", "skills", "session_search"],
+        )
+
+    def test_parent_acp_command_uses_hermes_acp_default_without_intersection(self):
+        """If parent already uses ACP transport, child defaults to hermes-acp."""
+        parent = _make_mock_parent()
+        parent.enabled_toolsets = ["terminal", "file"]
+        parent.acp_command = "hermes"
+        parent.acp_args = ["acp"]
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            MockAgent.return_value = MagicMock()
+
+            _build_child_agent(
+                task_index=0,
+                goal="Use native ACP tools",
+                context=None,
+                toolsets=None,
+                model=None,
+                max_iterations=10,
+                parent_agent=parent,
+            )
+
+        call_kwargs = MockAgent.call_args.kwargs
+        self.assertEqual(call_kwargs["enabled_toolsets"], ["hermes-acp"])
+
     def test_active_children_tracking(self):
         """Verify children are registered/unregistered for interrupt propagation."""
         parent = _make_mock_parent(depth=0)
