@@ -1883,7 +1883,7 @@ class GatewayRunner:
         except Exception:
             pass
         
-        # Warn if no user allowlists are configured and open access is not opted in
+        # Warn if no user authorization mode is configured.
         _any_allowlist = any(
             os.getenv(v)
             for v in ("TELEGRAM_ALLOWED_USERS", "DISCORD_ALLOWED_USERS",
@@ -1914,7 +1914,17 @@ class GatewayRunner:
                        "BLUEBUBBLES_ALLOW_ALL_USERS",
                        "QQ_ALLOW_ALL_USERS")
         )
-        if not _any_allowlist and not _allow_all:
+        _pairing_enabled = any(
+            os.getenv(v, "").strip().lower() == "pairing"
+            for v in ("WECOM_DM_POLICY", "WEIXIN_DM_POLICY")
+        )
+        _has_paired_users = False
+        try:
+            _has_paired_users = bool(self.pairing_store.list_approved())
+        except Exception:
+            pass
+
+        if not _any_allowlist and not _allow_all and not _pairing_enabled and not _has_paired_users:
             logger.warning(
                 "No user allowlists configured. All unauthorized users will be denied. "
                 "Set GATEWAY_ALLOW_ALL_USERS=true in ~/.hermes/.env to allow open access, "
