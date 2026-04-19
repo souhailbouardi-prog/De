@@ -59,6 +59,44 @@ def test_fill_first_selection_skips_recently_exhausted_entry(tmp_path, monkeypat
     assert pool.current().id == "cred-2"
 
 
+def test_env_seeded_anthropic_oauth_credential_is_pruned_when_env_is_missing(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("ANTHROPIC_TOKEN", raising=False)
+    monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "credential_pool": {
+                "anthropic": [
+                    {
+                        "id": "cred-1",
+                        "label": "claude-code",
+                        "auth_type": "oauth",
+                        "priority": 0,
+                        "source": "env:CLAUDE_CODE_OAUTH_TOKEN",
+                        "access_token": "stale-access-token",
+                        "refresh_token": "stale-refresh-token",
+                        "expires_at_ms": int(time.time() * 1000) + 60_000,
+                    }
+                ]
+            },
+        },
+    )
+
+    monkeypatch.setattr("agent.anthropic_adapter.read_hermes_oauth_credentials", lambda: None)
+    monkeypatch.setattr("agent.anthropic_adapter.read_claude_code_credentials", lambda: None)
+
+    from agent.credential_pool import load_pool
+
+    pool = load_pool("anthropic")
+
+    assert pool.entries() == []
+    auth_payload = json.loads((tmp_path / "hermes" / "auth.json").read_text())
+    assert auth_payload["credential_pool"]["anthropic"] == []
+
+
 def test_env_seeded_opencode_go_credential_is_not_pruned_when_env_is_missing(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
     monkeypatch.delenv("OPENCODE_GO_API_KEY", raising=False)
