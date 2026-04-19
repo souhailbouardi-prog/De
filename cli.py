@@ -1744,6 +1744,7 @@ class HermesCLI:
         _config_model = (_model_config.get("default") or _model_config.get("model") or "") if isinstance(_model_config, dict) else (_model_config or "")
         _DEFAULT_CONFIG_MODEL = ""
         self.model = model or _config_model or _DEFAULT_CONFIG_MODEL
+        self._user_model_override = False  # set True when user explicitly switches via /model
         # Auto-detect model from local server if still on default
         if self.model == _DEFAULT_CONFIG_MODEL:
             _base_url = (_model_config.get("base_url") or "") if isinstance(_model_config, dict) else ""
@@ -2850,8 +2851,9 @@ class HermesCLI:
         # `hermes chat --model <provider-name>` sends the provider name
         # (e.g. "my-provider") as the model string to the API instead of
         # the configured model (e.g. "qwen3.6-plus"), causing 400 errors.
+        # Skip if the user explicitly switched models via /model command.
         runtime_model = runtime.get("model")
-        if runtime_model and isinstance(runtime_model, str):
+        if runtime_model and isinstance(runtime_model, str) and not self._user_model_override:
             self.model = runtime_model
 
         # If model is still empty (e.g. user ran `hermes auth add openai-codex`
@@ -4702,6 +4704,7 @@ class HermesCLI:
 
         old_model = self.model
         self.model = result.new_model
+        self._user_model_override = True
         self.provider = result.target_provider
         self.requested_provider = result.target_provider
         if result.api_key:
@@ -4922,6 +4925,7 @@ class HermesCLI:
         # overwrite the switch on the next turn (it re-resolves from this).
         old_model = self.model
         self.model = result.new_model
+        self._user_model_override = True
         self.provider = result.target_provider
         self.requested_provider = result.target_provider
         if result.api_key:
