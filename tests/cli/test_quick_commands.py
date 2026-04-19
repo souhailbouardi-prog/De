@@ -4,6 +4,10 @@ from unittest.mock import MagicMock, patch, AsyncMock
 from rich.text import Text
 import pytest
 
+from gateway.config import Platform
+from gateway.platforms.base import MessageEvent, MessageType
+from gateway.session import SessionSource
+
 
 # ── CLI tests ──────────────────────────────────────────────────────────────
 
@@ -200,3 +204,38 @@ class TestGatewayQuickCommands:
         event = self._make_event("limits")
         result = await runner._handle_message(event)
         assert result == "ok"
+
+    @pytest.mark.asyncio
+    async def test_alias_command_re_dispatches_to_builtin_handler(self):
+        from gateway.run import GatewayRunner
+
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner.config = {"quick_commands": {"shortcut": {"type": "alias", "target": "/help"}}}
+        runner._running_agents = {}
+        runner._running_agents_ts = {}
+        runner._busy_ack_ts = {}
+        runner._pending_messages = {}
+        runner._pending_approvals = {}
+        runner._is_user_authorized = MagicMock(return_value=True)
+        runner._handle_help_command = AsyncMock(side_effect=lambda ev: ev.text)
+        runner._handle_message_with_agent = AsyncMock(return_value="agent")
+        runner.hooks = MagicMock()
+        runner.hooks.emit = AsyncMock()
+
+        event = MessageEvent(
+            text="/shortcut extra args",
+            message_type=MessageType.TEXT,
+            source=SessionSource(
+                platform=Platform.TELEGRAM,
+                user_id="test_user",
+                user_name="Test User",
+                chat_id="123",
+                chat_type="dm",
+            ),
+        )
+
+        result = await runner._handle_message(event)
+
+        assert result == "/help extra args"
+        runner._handle_help_command.assert_awaited_once()
+        runner._handle_message_with_agent.assert_not_awaited()

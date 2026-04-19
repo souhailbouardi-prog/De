@@ -3520,11 +3520,11 @@ class GatewayRunner:
                     target = qcmd.get("target", "").strip()
                     if target:
                         target = target if target.startswith("/") else f"/{target}"
-                        target_command = target.lstrip("/")
                         user_args = event.get_command_args().strip()
                         event.text = f"{target} {user_args}".strip()
-                        command = target_command
-                        # Fall through to normal command dispatch below
+                        # Re-dispatch so aliased built-ins follow the same
+                        # command path as if the user had typed the target.
+                        return await self._handle_message(event)
                     else:
                         return f"Quick command '/{command}' has no target defined."
                 else:
