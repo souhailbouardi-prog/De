@@ -478,6 +478,10 @@ def memory_tool(
     if target not in ("memory", "user"):
         return tool_error(f"Invalid target '{target}'. Use 'memory' or 'user'.", success=False)
 
+    # Normalize: for 'add' action, old_text is not meaningful — treat empty/absent as None
+    if action == "add":
+        old_text = None
+
     if action == "add":
         if not content:
             return tool_error("Content is required for 'add' action.", success=False)
@@ -554,10 +558,10 @@ MEMORY_SCHEMA = {
             },
             "old_text": {
                 "type": "string",
-                "description": "Short unique substring identifying the entry to replace or remove."
+                "description": "Required for 'replace' and 'remove'. Short unique substring identifying the entry to replace or remove."
             },
         },
-        "required": ["action", "target"],
+        "required": ["action", "target", "old_text"],
     },
 }
 
