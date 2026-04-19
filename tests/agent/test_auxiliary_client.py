@@ -447,6 +447,63 @@ class TestExplicitProviderRouting:
             adapter = client.chat.completions
             assert adapter._is_oauth is False
 
+
+class TestBedrockAuxiliary:
+    """Bedrock auxiliary client — uses AnthropicBedrock + boto3, exposes the
+    same .chat.completions.create() shape as direct Anthropic via the
+    AnthropicAuxiliaryClient wrapper."""
+
+    @pytest.mark.parametrize(
+        "cfg,expected_region",
+        [
+            ({}, "us-east-1"),
+            ({"bedrock": {"region": "eu-central-1"}}, "eu-central-1"),
+        ],
+    )
+    def test_try_bedrock_builds_wrapped_client(self, cfg, expected_region):
+        """Happy path: AWS creds present → build AnthropicBedrock, wrap with
+        AnthropicAuxiliaryClient, preserve_dots=True so the Haiku 4.5
+        inference profile ID survives normalization. config.yaml
+        bedrock.region wins over resolve_bedrock_region() fallback."""
+        with (
+            patch("agent.bedrock_adapter.has_aws_credentials", return_value=True),
+            patch("agent.bedrock_adapter.resolve_bedrock_region", return_value="us-east-1"),
+            patch("agent.anthropic_adapter.build_anthropic_bedrock_client") as mock_build,
+            patch("hermes_cli.config.load_config", return_value=cfg),
+        ):
+            mock_build.return_value = MagicMock()
+            from agent.auxiliary_client import _try_bedrock, AnthropicAuxiliaryClient
+            client, model = _try_bedrock()
+        assert isinstance(client, AnthropicAuxiliaryClient)
+        assert model == "us.anthropic.claude-haiku-4-5-20251001-v1:0"
+        assert client.api_key == "aws-sdk"
+        assert f"bedrock-runtime.{expected_region}.amazonaws.com" in client.base_url
+        assert client.chat.completions._preserve_dots is True
+        mock_build.assert_called_once_with(expected_region)
+
+    def test_resolve_provider_client_bedrock_happy_path(self):
+        """provider='bedrock' routes through the aws_sdk branch and returns
+        an AnthropicAuxiliaryClient — no silent fall-through to auto-detect."""
+        with (
+            patch("agent.bedrock_adapter.has_aws_credentials", return_value=True),
+            patch("agent.bedrock_adapter.resolve_bedrock_region", return_value="eu-central-1"),
+            patch("agent.anthropic_adapter.build_anthropic_bedrock_client") as mock_build,
+            patch("hermes_cli.config.load_config", return_value={}),
+        ):
+            mock_build.return_value = MagicMock()
+            from agent.auxiliary_client import AnthropicAuxiliaryClient
+            client, model = resolve_provider_client("bedrock")
+        assert isinstance(client, AnthropicAuxiliaryClient)
+        assert "haiku" in model.lower()
+
+    def test_resolve_provider_client_bedrock_missing_credentials(self):
+        """No AWS creds → (None, None), caller can fall back explicitly."""
+        with patch("agent.bedrock_adapter.has_aws_credentials", return_value=False):
+            client, model = resolve_provider_client("bedrock")
+        assert client is None
+        assert model is None
+
+
 class TestGetTextAuxiliaryClient:
     """Test the full resolution chain for get_text_auxiliary_client."""
 

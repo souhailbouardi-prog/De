@@ -151,6 +151,7 @@ _API_KEY_PROVIDER_AUX_MODELS: Dict[str, str] = {
     "minimax": "MiniMax-M2.7",
     "minimax-cn": "MiniMax-M2.7",
     "anthropic": "claude-haiku-4-5-20251001",
+    "bedrock": "us.anthropic.claude-haiku-4-5-20251001-v1:0",
     "ai-gateway": "google/gemini-3-flash",
     "opencode-zen": "gemini-3-flash",
     "opencode-go": "glm-5",
@@ -532,10 +533,17 @@ class AsyncCodexAuxiliaryClient:
 class _AnthropicCompletionsAdapter:
     """OpenAI-client-compatible adapter for Anthropic Messages API."""
 
-    def __init__(self, real_client: Any, model: str, is_oauth: bool = False):
+    def __init__(
+        self,
+        real_client: Any,
+        model: str,
+        is_oauth: bool = False,
+        preserve_dots: bool = False,
+    ):
         self._client = real_client
         self._model = model
         self._is_oauth = is_oauth
+        self._preserve_dots = preserve_dots
 
     def create(self, **kwargs) -> Any:
         from agent.anthropic_adapter import build_anthropic_kwargs, normalize_anthropic_response
@@ -565,6 +573,7 @@ class _AnthropicCompletionsAdapter:
             reasoning_config=None,
             tool_choice=normalized_tool_choice,
             is_oauth=self._is_oauth,
+            preserve_dots=self._preserve_dots,
         )
         # Opus 4.7+ rejects any non-default temperature/top_p/top_k; only set
         # temperature for models that still accept it. build_anthropic_kwargs
@@ -606,11 +615,25 @@ class _AnthropicChatShim:
 
 
 class AnthropicAuxiliaryClient:
-    """OpenAI-client-compatible wrapper over a native Anthropic client."""
+    """OpenAI-client-compatible wrapper over a native Anthropic-style client.
 
-    def __init__(self, real_client: Any, model: str, api_key: str, base_url: str, is_oauth: bool = False):
+    Accepts either ``anthropic.Anthropic`` or ``anthropic.AnthropicBedrock``;
+    both expose the same ``messages.create()`` surface.
+    """
+
+    def __init__(
+        self,
+        real_client: Any,
+        model: str,
+        api_key: str,
+        base_url: str,
+        is_oauth: bool = False,
+        preserve_dots: bool = False,
+    ):
         self._real_client = real_client
-        adapter = _AnthropicCompletionsAdapter(real_client, model, is_oauth=is_oauth)
+        adapter = _AnthropicCompletionsAdapter(
+            real_client, model, is_oauth=is_oauth, preserve_dots=preserve_dots,
+        )
         self.chat = _AnthropicChatShim(adapter)
         self.api_key = api_key
         self.base_url = base_url
@@ -1102,6 +1125,52 @@ def _try_anthropic() -> Tuple[Optional[Any], Optional[str]]:
         # when _anthropic_sdk is None.  Treat as unavailable.
         return None, None
     return AnthropicAuxiliaryClient(real_client, model, token, base_url, is_oauth=is_oauth), model
+
+
+def _try_bedrock() -> Tuple[Optional[Any], Optional[str]]:
+    """Build an auxiliary client backed by AnthropicBedrock + boto3."""
+    try:
+        from agent.anthropic_adapter import build_anthropic_bedrock_client
+        from agent.bedrock_adapter import has_aws_credentials, resolve_bedrock_region
+    except ImportError:
+        return None, None
+
+    if not has_aws_credentials():
+        logger.debug("Auxiliary client: Bedrock requested but no AWS credentials found")
+        return None, None
+
+    # config.yaml bedrock.region wins over env, mirroring the inference path
+    # in hermes_cli/runtime_provider.py → resolve_bedrock_runtime.
+    region = ""
+    try:
+        from hermes_cli.config import load_config
+        region = str((load_config().get("bedrock") or {}).get("region") or "").strip()
+    except Exception:
+        pass
+    region = region or resolve_bedrock_region()
+
+    model = _API_KEY_PROVIDER_AUX_MODELS["bedrock"]
+    logger.debug("Auxiliary client: Bedrock (%s) region=%s", model, region)
+
+    try:
+        real_client = build_anthropic_bedrock_client(region)
+    except ImportError:
+        # anthropic SDK missing AnthropicBedrock (older version).
+        return None, None
+    except Exception as exc:
+        logger.debug("Auxiliary client: Bedrock init failed: %s", exc)
+        return None, None
+
+    return (
+        AnthropicAuxiliaryClient(
+            real_client,
+            model,
+            api_key="aws-sdk",
+            base_url=f"https://bedrock-runtime.{region}.amazonaws.com",
+            preserve_dots=True,
+        ),
+        model,
+    )
 
 
 _AUTO_PROVIDER_LABELS = {
@@ -1612,6 +1681,17 @@ def resolve_provider_client(
     if pconfig is None:
         logger.warning("resolve_provider_client: unknown provider %r", provider)
         return None, None
+
+    if pconfig.auth_type == "aws_sdk":
+        client, default_model = _try_bedrock()
+        if client is None:
+            logger.warning(
+                "resolve_provider_client: bedrock requested but AWS credentials "
+                "or boto3/anthropic SDK are unavailable"
+            )
+            return None, None
+        final_model = _normalize_resolved_model(model or default_model, provider)
+        return (_to_async_client(client, final_model) if async_mode else (client, final_model))
 
     if pconfig.auth_type == "api_key":
         if provider == "anthropic":
