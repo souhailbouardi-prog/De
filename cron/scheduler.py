@@ -531,7 +531,7 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
 
     try:
         result = subprocess.run(
-            [sys.executable, str(path)],
+            [str(path)],
             capture_output=True,
             text=True,
             timeout=script_timeout,
