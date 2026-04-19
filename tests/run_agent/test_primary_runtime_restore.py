@@ -112,6 +112,58 @@ class TestPrimaryRuntimeSnapshot:
         rt = agent._primary_runtime
         assert "anthropic_api_key" not in rt
 
+    def test_snapshot_consistent_after_resolve_provider_client_backfills_model(self):
+        """When model is initially empty and resolve_provider_client resolves it,
+        _primary_runtime must capture the resolved model (fixes #12078)."""
+        mock_client = _mock_resolve(base_url="https://openrouter.ai/api/v1", api_key="rtr-key")
+        with (
+            patch("run_agent.get_tool_definitions", return_value=_make_tool_defs("web_search")),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+            patch("agent.auxiliary_client.resolve_provider_client",
+                  return_value=(mock_client, "google/gemini-2.5-flash")),
+        ):
+            agent = AIAgent(
+                api_key="",       # empty — triggers resolve path
+                base_url="",      # empty — triggers resolve path
+                model="",         # empty — should be back-filled
+                provider="",      # empty — "auto" used, stays empty
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+        rt = agent._primary_runtime
+        # Model must be the resolved value, not empty
+        assert rt["model"] == "google/gemini-2.5-flash"
+        assert agent.model == "google/gemini-2.5-flash"
+        # base_url must match what the router returned
+        assert rt["base_url"] == "https://openrouter.ai/api/v1"
+
+    def test_snapshot_consistent_after_resolve_provider_client_backfills_provider(self):
+        """When provider is initially empty but resolve_provider_client is called
+        with a concrete provider, _primary_runtime must capture it (#12078)."""
+        mock_client = _mock_resolve(base_url="https://api.nous.ai/v1", api_key="nous-key")
+        with (
+            patch("run_agent.get_tool_definitions", return_value=_make_tool_defs("web_search")),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+            patch("agent.auxiliary_client.resolve_provider_client",
+                  return_value=(mock_client, "hermes-3-405b")),
+        ):
+            agent = AIAgent(
+                api_key="",
+                base_url="",
+                model="",
+                provider="nous",  # explicit provider — should be preserved
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+        rt = agent._primary_runtime
+        assert rt["provider"] == "nous"
+        assert rt["model"] == "hermes-3-405b"
+        assert rt["base_url"] == "https://api.nous.ai/v1"
+
 
 # =============================================================================
 # _restore_primary_runtime()
