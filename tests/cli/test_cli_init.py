@@ -149,6 +149,46 @@ class TestBusyInputMode:
         assert cli._pending_input.empty()
 
 
+class TestInputDisplayConfig:
+    def test_input_max_lines_and_collapse_large_pastes_are_loaded_from_config(self):
+        cli = _make_cli(config_overrides={
+            "display": {
+                "input_max_lines": 40,
+                "collapse_large_pastes": False,
+            }
+        })
+
+        assert cli.input_max_lines == 40
+        assert cli.collapse_large_pastes is False
+
+    def test_string_false_disables_large_paste_collapse(self):
+        cli = _make_cli(config_overrides={
+            "display": {
+                "collapse_large_pastes": "false",
+            }
+        })
+
+        assert cli.collapse_large_pastes is False
+
+    def test_invalid_input_max_lines_falls_back_to_default(self):
+        cli = _make_cli(config_overrides={
+            "display": {
+                "input_max_lines": "bogus",
+            }
+        })
+
+        assert cli.input_max_lines == 8
+
+    def test_input_max_lines_is_clamped_to_at_least_one(self):
+        cli = _make_cli(config_overrides={
+            "display": {
+                "input_max_lines": 0,
+            }
+        })
+
+        assert cli.input_max_lines == 1
+
+
 class TestSingleQueryState:
     def test_voice_and_interrupt_state_initialized_before_run(self):
         """Single-query mode calls chat() without going through run()."""

@@ -166,6 +166,43 @@ class TestCLIStatusBar:
             assert _input_height() == 2
         mock_shutil.assert_not_called()
 
+    def test_cap_input_visual_lines_uses_configured_limit(self):
+        cli_obj = _make_cli()
+        cli_obj.input_max_lines = 40
+
+        assert cli_obj._cap_input_visual_lines(100) == 40
+        assert cli_obj._cap_input_visual_lines(0) == 1
+
+    def test_should_collapse_paste_respects_config_flag(self):
+        cli_obj = _make_cli()
+        cli_obj.collapse_large_pastes = False
+
+        assert cli_obj._should_collapse_paste(
+            "a\nb\nc\nd\ne",
+            existing_buffer_text="",
+            is_paste=True,
+        ) is False
+
+    def test_small_paste_into_existing_multiline_buffer_does_not_collapse(self):
+        cli_obj = _make_cli()
+
+        assert cli_obj._should_collapse_paste(
+            "line1\nline2\nline3\nline4\nline5\nline6x",
+            existing_buffer_text="line1\nline2\nline3\nline4\nline5\nline6",
+            is_paste=True,
+            newline_count=0,
+        ) is False
+
+    def test_newline_delta_controls_fallback_paste_collapse(self):
+        cli_obj = _make_cli()
+
+        assert cli_obj._should_collapse_paste(
+            "line1\nline2\nline3\nline4\nline5\nline6",
+            existing_buffer_text="prefix",
+            is_paste=True,
+            newline_count=5,
+        ) is True
+
     def test_build_status_bar_text_no_cost_in_status_bar(self):
         cli_obj = _attach_agent(
             _make_cli(),

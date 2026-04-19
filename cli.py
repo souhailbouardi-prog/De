@@ -74,6 +74,7 @@ _COMMAND_SPINNER_FRAMES = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧
 # User-managed env files should override stale shell exports on restart.
 from hermes_constants import get_hermes_home, display_hermes_home
 from hermes_cli.env_loader import load_hermes_dotenv
+from utils import is_truthy_value
 
 _hermes_home = get_hermes_home()
 _project_env = Path(__file__).parent / '.env'
@@ -347,6 +348,8 @@ def load_cli_config() -> Dict[str, Any]:
             "show_reasoning": False,
             "streaming": True,
             "busy_input_mode": "interrupt",
+            "collapse_large_pastes": True,
+            "input_max_lines": 8,
 
             "skin": "default",
         },
@@ -1719,6 +1722,15 @@ class HermesCLI:
         # busy_input_mode: "interrupt" (Enter interrupts current run) or "queue" (Enter queues for next turn)
         _bim = CLI_CONFIG["display"].get("busy_input_mode", "interrupt")
         self.busy_input_mode = "queue" if str(_bim).strip().lower() == "queue" else "interrupt"
+        self.collapse_large_pastes = is_truthy_value(
+            CLI_CONFIG["display"].get("collapse_large_pastes", True),
+            default=True,
+        )
+        try:
+            self.input_max_lines = int(CLI_CONFIG["display"].get("input_max_lines", 8))
+        except (TypeError, ValueError):
+            self.input_max_lines = 8
+        self.input_max_lines = max(1, self.input_max_lines)
 
         self.verbose = verbose if verbose is not None else (self.tool_progress_mode == "verbose")
         
@@ -2093,6 +2105,34 @@ class HermesCLI:
         if position == "top":
             return 1
         return 0 if self._use_minimal_tui_chrome(width=width) else 1
+
+    def _cap_input_visual_lines(self, visual_lines: int) -> int:
+        """Clamp rendered input height to the configured multiline limit."""
+        try:
+            limit = int(getattr(self, "input_max_lines", 8))
+        except (TypeError, ValueError):
+            limit = 8
+        limit = max(1, limit)
+        return min(max(int(visual_lines), 1), limit)
+
+    def _should_collapse_paste(
+        self,
+        text: str,
+        *,
+        existing_buffer_text: str = "",
+        is_paste: bool = True,
+        newline_count: Optional[int] = None,
+    ) -> bool:
+        """Return True when a large pasted text block should collapse to a file reference."""
+        if not getattr(self, "collapse_large_pastes", True):
+            return False
+        if not is_paste:
+            return False
+        if (existing_buffer_text or "").strip().startswith("/"):
+            return False
+        if newline_count is None:
+            newline_count = (text or "").count("\n")
+        return max(int(newline_count), 0) >= 5
 
     def _agent_spacer_height(self, width: Optional[int] = None) -> int:
         """Return the spacer height shown above the status bar while the agent runs."""
@@ -9171,7 +9211,11 @@ class HermesCLI:
                 pasted_text = _sanitize_surrogates(pasted_text)
                 line_count = pasted_text.count('\n')
                 buf = event.current_buffer
-                if line_count >= 5 and not buf.text.strip().startswith('/'):
+                if self._should_collapse_paste(
+                    pasted_text,
+                    existing_buffer_text=buf.text,
+                    is_paste=True,
+                ):
                     _paste_counter[0] += 1
                     paste_dir = _hermes_home / "pastes"
                     paste_dir.mkdir(parents=True, exist_ok=True)
@@ -9232,7 +9276,7 @@ class HermesCLI:
             command_filter=cli_ref._command_available,
         )
         input_area = TextArea(
-            height=Dimension(min=1, max=8, preferred=1),
+            height=Dimension(min=1, max=self.input_max_lines, preferred=1),
             prompt=get_prompt,
             style='class:input-area',
             multiline=True,
@@ -9264,14 +9308,13 @@ class HermesCLI:
                     available_width = 40
                 visual_lines = 0
                 for line in doc.lines:
-                    # Each logical line takes at least 1 visual row; long lines wrap.
                     # Use prompt_toolkit's cell width so CJK wide characters count as 2.
                     line_width = get_cwidth(line)
                     if line_width <= 0:
                         visual_lines += 1
                     else:
                         visual_lines += max(1, -(-line_width // available_width))  # ceil division
-                return min(max(visual_lines, 1), 8)
+                return self._cap_input_visual_lines(visual_lines)
             except Exception:
                 return 1
 
@@ -9281,6 +9324,7 @@ class HermesCLI:
         _paste_counter = [0]
         _prev_text_len = [0]
         _prev_newline_count = [0]
+        _prev_buffer_text = [""]
         _paste_just_collapsed = [False]
 
         def _on_text_changed(buf):
@@ -9299,6 +9343,8 @@ class HermesCLI:
                event so it never triggers this.
             """
             text = buf.text
+            previous_text = _prev_buffer_text[0]
+            _prev_buffer_text[0] = text
             chars_added = len(text) - _prev_text_len[0]
             _prev_text_len[0] = len(text)
             if _paste_just_collapsed[0]:
@@ -9309,7 +9355,12 @@ class HermesCLI:
             newlines_added = line_count - _prev_newline_count[0]
             _prev_newline_count[0] = line_count
             is_paste = chars_added > 1 or newlines_added >= 4
-            if line_count >= 5 and is_paste and not text.startswith('/'):
+            if self._should_collapse_paste(
+                text,
+                existing_buffer_text=previous_text,
+                is_paste=is_paste,
+                newline_count=newlines_added,
+            ):
                 _paste_counter[0] += 1
                 # Save to temp file
                 paste_dir = _hermes_home / "pastes"
