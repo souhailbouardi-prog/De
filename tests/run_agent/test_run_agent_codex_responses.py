@@ -1079,6 +1079,53 @@ def test_normalize_codex_response_marks_reasoning_only_as_incomplete(monkeypatch
     assert assistant_message.codex_reasoning_items[0]["encrypted_content"] == "enc_abc123"
 
 
+def test_normalize_codex_response_drops_transient_tmp_reasoning_items(monkeypatch):
+    """Transient rs_tmp_* reasoning ids should not be persisted for later replay."""
+    agent = _build_agent(monkeypatch)
+    response = _codex_reasoning_only_response(encrypted_content="enc_tmp", summary_text="Thinking...")
+    response.output[0].id = "rs_tmp_123"
+
+    assistant_message, finish_reason = agent._normalize_codex_response(response)
+
+    assert finish_reason == "incomplete"
+    assert assistant_message.content == ""
+    assert assistant_message.codex_reasoning_items is None
+
+
+def test_normalize_codex_response_tmp_reasoning_without_summary_stays_incomplete(monkeypatch):
+    """Dropping transient replay state must not turn reasoning-only responses into stop."""
+    agent = _build_agent(monkeypatch)
+    response = _codex_reasoning_only_response(encrypted_content="enc_tmp", summary_text="Thinking...")
+    response.output[0].id = "rs_tmp_456"
+    response.output[0].summary = []
+
+    assistant_message, finish_reason = agent._normalize_codex_response(response)
+
+    assert finish_reason == "incomplete"
+    assert assistant_message.content == ""
+    assert assistant_message.reasoning in (None, "")
+    assert assistant_message.codex_reasoning_items is None
+
+
+def test_normalize_codex_response_preserves_stable_reasoning_items(monkeypatch):
+    """Stable rs_* reasoning ids must continue to be persisted for valid replay."""
+    agent = _build_agent(monkeypatch)
+
+    assistant_message, finish_reason = agent._normalize_codex_response(
+        _codex_reasoning_only_response(encrypted_content="enc_stable", summary_text="Thinking...")
+    )
+
+    assert finish_reason == "incomplete"
+    assert assistant_message.codex_reasoning_items == [
+        {
+            "type": "reasoning",
+            "encrypted_content": "enc_stable",
+            "id": "rs_001",
+            "summary": [{"type": "summary_text", "text": "Thinking..."}],
+        }
+    ]
+
+
 def test_normalize_codex_response_reasoning_with_content_is_stop(monkeypatch):
     """If a response has both reasoning and message content, it should still be 'stop'."""
     agent = _build_agent(monkeypatch)
