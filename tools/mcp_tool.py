@@ -96,6 +96,7 @@ _MCP_MESSAGE_HANDLER_SUPPORTED = False
 try:
     from mcp import ClientSession, StdioServerParameters
     from mcp.client.stdio import stdio_client
+    from mcp.shared.exceptions import McpError
     _MCP_AVAILABLE = True
     try:
         from mcp.client.streamable_http import streamablehttp_client
@@ -1745,6 +1746,11 @@ def _make_list_resources_handler(server_name: str, tool_timeout: float):
         except InterruptedError:
             return _interrupted_call_result()
         except Exception as exc:
+            # -32601 (Method not found) means the server doesn't implement the
+            # optional resources capability — expected, not an error.
+            if isinstance(exc, McpError) and getattr(exc, "error", None) and exc.error.code == -32601:
+                logger.debug("MCP %s/list_resources: server does not support resources (Method not found)", server_name)
+                return json.dumps({"resources": []})
             recovered = _handle_auth_error_and_retry(
                 server_name, exc, _call_once, "resources/list",
             )
@@ -1856,6 +1862,11 @@ def _make_list_prompts_handler(server_name: str, tool_timeout: float):
         except InterruptedError:
             return _interrupted_call_result()
         except Exception as exc:
+            # -32601 (Method not found) means the server doesn't implement the
+            # optional prompts capability — expected, not an error.
+            if isinstance(exc, McpError) and getattr(exc, "error", None) and exc.error.code == -32601:
+                logger.debug("MCP %s/list_prompts: server does not support prompts (Method not found)", server_name)
+                return json.dumps({"prompts": []})
             recovered = _handle_auth_error_and_retry(
                 server_name, exc, _call_once, "prompts/list",
             )
@@ -2340,7 +2351,19 @@ def register_mcp_servers(servers: Dict[str, dict]) -> List[str]:
 
     # Per-server timeouts are handled inside _discover_and_register_server.
     # The outer timeout is generous: 120s total for parallel discovery.
-    _run_on_mcp_loop(_discover_all(), timeout=120)
+    #
+    # Temporarily clear the interrupt flag on the current thread so that MCP
+    # discovery is never cancelled by a stale interrupt from a prior agent
+    # session (executor threads get reused and may carry old interrupt state).
+    from tools.interrupt import is_interrupted as _is_interrupted, set_interrupt as _set_interrupt
+    _was_interrupted = _is_interrupted()
+    if _was_interrupted:
+        _set_interrupt(False)
+    try:
+        _run_on_mcp_loop(_discover_all(), timeout=120)
+    finally:
+        if _was_interrupted:
+            _set_interrupt(True)
 
     # Log a summary so ACP callers get visibility into what was registered.
     with _lock:

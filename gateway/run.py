@@ -7327,8 +7327,8 @@ class GatewayRunner:
             return "\n".join(lines)
 
         except Exception as e:
-            logger.warning("MCP reload failed: %s", e)
-            return f"❌ MCP reload failed: {e}"
+            logger.warning("MCP reload failed: %s", repr(e))
+            return f"❌ MCP reload failed: {repr(e)}"
 
     # ------------------------------------------------------------------
     # /approve & /deny — explicit dangerous-command approval
