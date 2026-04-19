@@ -106,7 +106,15 @@ all = [
   "hermes-agent[homeassistant]",
   "hermes-agent[sms]",
   "hermes-agent[acp]",
-  "hermes-agent[voice]",
+  # voice: faster-whisper pulls in ctranslate2 / onnxruntime, which ship no
+  # prebuilt wheels for 32-bit ARM (armv6l / armv7l). Building from source
+  # either OOMs or fills tmpfs on 1GB-RAM devices like Raspberry Pi 3B / Zero,
+  # so `pip install -e .[all]` hangs for those users. Gate voice out of the
+  # [all] profile on 32-bit ARM — mirrors the `termux` extras' rationale and
+  # follows the same marker pattern already used for [matrix]. Users on
+  # armv6l/armv7l who still want voice can install it explicitly:
+  #   pip install -e '.[voice]'
+  "hermes-agent[voice] ; platform_machine != 'armv6l' and platform_machine != 'armv7l'",
   "hermes-agent[dingtalk]",
   "hermes-agent[feishu]",
   "hermes-agent[mistral]",
