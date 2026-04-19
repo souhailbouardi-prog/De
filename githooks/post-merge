@@ -1,0 +1,37 @@
+#!/bin/bash
+# Clear stale __pycache__ after git pull/merge to prevent ImportError
+# from mismatched .pyc bytecode and updated .py source files.
+#
+# Root cause: Python loads .pyc from __pycache__ if it exists, even when
+# the .py source has changed. After upstream renames/moves/adds functions
+# or changes imports, the old .pyc references names that no longer exist,
+# causing ImportError at module load time — which cascades and kills the
+# gateway entirely.
+#
+# Install: git config core.hooksPath githooks
+
+repo_root="$(git rev-parse --show-toplevel)"
+cleared=0
+
+# Only clear project pycache (skip venv/, node_modules/, .git/)
+while IFS= read -r -d '' dir; do
+    case "$dir" in
+        */venv/*|*/node_modules/*|*/.git/*) continue ;;
+    esac
+    rm -rf "$dir"
+    cleared=$((cleared + 1))
+done < <(find "$repo_root" -type d -name "__pycache__" -print0 2>/dev/null)
+
+if [ "$cleared" -gt 0 ]; then
+    echo "[post-merge] Cleared $cleared __pycache__ director$([ "$cleared" -eq 1 ] && echo "y" || echo "ies")."
+fi
+
+# Verify critical imports still work after clearing
+if ! "$repo_root/venv/bin/python" -c "
+from tools.environments.base import _load_json_store
+from hermes_constants import is_termux
+from tools.terminal_tool import cleanup_vm
+print('[post-merge] Import chain OK')
+" 2>/dev/null; then
+    echo "[post-merge] WARNING: Import chain verification failed! Check source files."
+fi
