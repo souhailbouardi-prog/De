@@ -345,6 +345,30 @@ class TestMinimaxPreserveDots:
         # Without preserve_dots, dots become hyphens (broken for MiniMax)
         assert normalize_model_name("MiniMax-M2.7", preserve_dots=False) == "MiniMax-M2-7"
 
+    def test_bedrock_provider_preserves_dots(self):
+        """Bedrock inference-profile IDs contain dots that must not be collapsed."""
+        from types import SimpleNamespace
+        agent = SimpleNamespace(provider="bedrock", base_url="")
+        from run_agent import AIAgent
+        assert AIAgent._anthropic_preserve_dots(agent) is True
+
+    def test_bedrock_url_preserves_dots(self):
+        """Bedrock base URLs (bedrock-runtime) should also preserve dots."""
+        from types import SimpleNamespace
+        agent = SimpleNamespace(provider="custom", base_url="https://bedrock-runtime.us-east-1.amazonaws.com")
+        from run_agent import AIAgent
+        assert AIAgent._anthropic_preserve_dots(agent) is True
+
+    def test_normalize_preserves_bedrock_inference_profile_dots(self):
+        from agent.anthropic_adapter import normalize_model_name
+        # A real Bedrock inference-profile ID must retain its dots
+        assert normalize_model_name("us.anthropic.claude-sonnet-4-5-20250929-v1:0", preserve_dots=True) == "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
+
+    def test_normalize_bedrock_dots_broken_without_preserve(self):
+        from agent.anthropic_adapter import normalize_model_name
+        # Without preserve_dots the ID is mangled — this is the bug we are fixing
+        assert normalize_model_name("us.anthropic.claude-sonnet-4-5-20250929-v1:0", preserve_dots=False) == "us-anthropic-claude-sonnet-4-5-20250929-v1:0"
+
 
 class TestMinimaxSwitchModelCredentialGuard:
     """Verify switch_model() does not leak Anthropic credentials to MiniMax.
