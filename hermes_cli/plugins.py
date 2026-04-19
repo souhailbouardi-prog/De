@@ -474,7 +474,7 @@ class PluginManager:
                 if yaml is None:
                     logger.warning("PyYAML not installed – cannot load %s", manifest_file)
                     continue
-                data = yaml.safe_load(manifest_file.read_text()) or {}
+                data = yaml.safe_load(manifest_file.read_text(encoding="utf-8")) or {}
                 manifest = PluginManifest(
                     name=data.get("name", child.name),
                     version=str(data.get("version", "")),
