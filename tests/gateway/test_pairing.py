@@ -354,3 +354,58 @@ class TestListAndClear:
             store.generate_code("discord", "user2")
             count = store.clear_pending()
         assert count == 2
+
+
+# ---------------------------------------------------------------------------
+# Regression: None values in _cmd_list (#7392)
+# ---------------------------------------------------------------------------
+
+
+class TestCmdListNoneValues:
+    """Regression: hermes pairing list must not crash when fields are None (#7392)."""
+
+    def test_pending_with_none_user_name(self, tmp_path, capsys):
+        """user_name=None should not raise TypeError."""
+        from unittest.mock import patch
+        from hermes_cli.pairing import _cmd_list
+
+        store = _make_store(tmp_path)
+        # Inject a pending entry with None user_name
+        store._pending = {"telegram": {
+            "ABCD": {"user_id": "123", "user_name": None, "age_minutes": 5}
+        }}
+        with patch.object(store, "list_pending", return_value=[
+            {"platform": "telegram", "code": "ABCD", "user_id": "123",
+             "user_name": None, "age_minutes": 5}
+        ]), patch.object(store, "list_approved", return_value=[]):
+            _cmd_list(store)
+        out = capsys.readouterr().out
+        assert "ABCD" in out
+        assert "123" in out
+
+    def test_approved_with_none_user_name(self, tmp_path, capsys):
+        """Approved user with user_name=None should not crash."""
+        from unittest.mock import patch
+        from hermes_cli.pairing import _cmd_list
+
+        store = _make_store(tmp_path)
+        with patch.object(store, "list_pending", return_value=[]), \
+             patch.object(store, "list_approved", return_value=[
+                 {"platform": "discord", "user_id": "456", "user_name": None}
+             ]):
+            _cmd_list(store)
+        out = capsys.readouterr().out
+        assert "456" in out
+
+    def test_pending_with_none_platform(self, tmp_path, capsys):
+        """All fields as None should not crash."""
+        from unittest.mock import patch
+        from hermes_cli.pairing import _cmd_list
+
+        store = _make_store(tmp_path)
+        with patch.object(store, "list_pending", return_value=[
+            {"platform": None, "code": None, "user_id": None,
+             "user_name": None, "age_minutes": 0}
+        ]), patch.object(store, "list_approved", return_value=[]):
+            _cmd_list(store)
+        # Should not crash
