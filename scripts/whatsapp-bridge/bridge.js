@@ -27,6 +27,7 @@ import { mkdirSync, readFileSync, writeFileSync, existsSync, readdirSync } from 
 import { randomBytes } from 'crypto';
 import qrcode from 'qrcode-terminal';
 import { matchesAllowedUser, parseAllowedUsers } from './allowlist.js';
+import { shouldSendReadReceipt } from './read_receipts.js';
 
 // Parse CLI args
 const args = process.argv.slice(2);
@@ -40,6 +41,10 @@ const WHATSAPP_DEBUG =
   process.env &&
   typeof process.env.WHATSAPP_DEBUG === 'string' &&
   ['1', 'true', 'yes', 'on'].includes(process.env.WHATSAPP_DEBUG.toLowerCase());
+
+const WHATSAPP_SEND_READ_RECEIPTS = !['0', 'false', 'no', 'off'].includes(
+  String(process.env.WHATSAPP_SEND_READ_RECEIPTS || '').toLowerCase()
+);
 
 const PORT = parseInt(getArg('port', '3000'), 10);
 const SESSION_DIR = getArg('session', path.join(process.env.HOME || '~', '.hermes', 'whatsapp', 'session'));
@@ -238,6 +243,14 @@ async function startSocket() {
           }));
         } catch {}
         continue;
+      }
+
+      if (shouldSendReadReceipt(msg, { enabled: WHATSAPP_SEND_READ_RECEIPTS })) {
+        sock.readMessages([msg.key]).catch((err) => {
+          if (WHATSAPP_DEBUG) {
+            console.error('[bridge] readMessages failed:', err?.message || err);
+          }
+        });
       }
 
       const messageContent = getMessageContent(msg);

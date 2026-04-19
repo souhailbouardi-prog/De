@@ -99,6 +99,9 @@ WHATSAPP_MODE=bot                          # "bot" or "self-chat"
 WHATSAPP_ALLOWED_USERS=15551234567         # Comma-separated phone numbers (with country code, no +)
 # WHATSAPP_ALLOWED_USERS=*                 # OR use * to allow everyone
 # WHATSAPP_ALLOW_ALL_USERS=true            # OR set this flag instead (same effect as *)
+
+# Optional
+# WHATSAPP_SEND_READ_RECEIPTS=false        # Disable auto-mark-as-read for allowlisted senders (default: true)
 ```
 
 :::tip Allow-all shorthand
@@ -115,10 +118,12 @@ unauthorized_dm_behavior: pair
 
 whatsapp:
   unauthorized_dm_behavior: ignore
+  send_read_receipts: true
 ```
 
 - `unauthorized_dm_behavior: pair` is the global default. Unknown DM senders get a pairing code.
 - `whatsapp.unauthorized_dm_behavior: ignore` makes WhatsApp stay silent for unauthorized DMs, which is usually the better choice for a private number.
+- `whatsapp.send_read_receipts: false` disables blue-tick read receipts for allowlisted senders (defaults to `true`).
 
 Then start the gateway:
 
