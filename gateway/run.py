@@ -3235,6 +3235,20 @@ class GatewayRunner:
             if _cmd_def_inner and _cmd_def_inner.name == "background":
                 return await self._handle_background_command(event)
 
+            # Session-level toggles (/yolo, /verbose, /fast, /reasoning) must
+            # bypass the running-agent interrupt path — they modify session
+            # state without needing agent interaction and should never be
+            # queued as pending text (which the safety net would discard).
+            if _cmd_def_inner and _cmd_def_inner.name in ("yolo", "verbose", "fast", "reasoning"):
+                if _cmd_def_inner.name == "yolo":
+                    return await self._handle_yolo_command(event)
+                if _cmd_def_inner.name == "verbose":
+                    return await self._handle_verbose_command(event)
+                if _cmd_def_inner.name == "fast":
+                    return await self._handle_fast_command(event)
+                if _cmd_def_inner.name == "reasoning":
+                    return await self._handle_reasoning_command(event)
+
             # Gateway-handled info/control commands with dedicated
             # running-agent handlers.
             if _cmd_def_inner and _cmd_def_inner.name in _DEDICATED_HANDLERS:
@@ -3250,12 +3264,12 @@ class GatewayRunner:
             # Catch-all: any other recognized slash command reached the
             # running-agent guard. Reject gracefully rather than falling
             # through to interrupt + discard. Without this, commands
-            # like /model, /reasoning, /voice, /insights, /title,
-            # /resume, /retry, /undo, /compress, /usage, /provider,
-            # /reload-mcp, /sethome, /reset (all registered as Discord
-            # slash commands) would interrupt the agent AND get
-            # silently discarded by the slash-command safety net,
-            # producing a zero-char response. See #5057, #6252, #10370.
+            # like /model, /voice, /insights, /title, /resume, /retry,
+            # /undo, /compress, /usage, /provider, /reload-mcp, /sethome,
+            # /reset (all registered as Discord slash commands) would
+            # interrupt the agent AND get silently discarded by the
+            # slash-command safety net, producing a zero-char response.
+            # See #5057, #6252, #10370.
             if _cmd_def_inner:
                 return (
                     f"⏳ Agent is running — `/{_cmd_def_inner.name}` can't run "
