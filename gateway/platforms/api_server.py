@@ -311,12 +311,17 @@ else:
 
 
 class _IdempotencyCache:
-    """In-memory idempotency cache with TTL and basic LRU semantics."""
+    """In-memory idempotency cache with TTL and basic LRU semantics.
+
+    Uses per-key asyncio.Lock to prevent concurrent computations
+    for the same idempotency key, ensuring the idempotency guarantee.
+    """
     def __init__(self, max_items: int = 1000, ttl_seconds: int = 300):
         from collections import OrderedDict
         self._store = OrderedDict()
         self._ttl = ttl_seconds
         self._max = max_items
+        self._key_locks: Dict[str, asyncio.Lock] = {}
 
     def _purge(self):
         import time as _t
@@ -324,19 +329,32 @@ class _IdempotencyCache:
         expired = [k for k, v in self._store.items() if now - v["ts"] > self._ttl]
         for k in expired:
             self._store.pop(k, None)
+            self._key_locks.pop(k, None)
         while len(self._store) > self._max:
             self._store.popitem(last=False)
 
     async def get_or_set(self, key: str, fingerprint: str, compute_coro):
-        self._purge()
-        item = self._store.get(key)
-        if item and item["fp"] == fingerprint:
-            return item["resp"]
-        resp = await compute_coro()
-        import time as _t
-        self._store[key] = {"resp": resp, "fp": fingerprint, "ts": _t.time()}
-        self._purge()
-        return resp
+        """Get cached response or compute and cache it.
+
+        Uses a per-key lock so that concurrent requests with the same
+        idempotency key wait for the first computation to finish, then
+        return its cached result instead of computing again.
+        """
+        # Ensure a lock exists for this key
+        if key not in self._key_locks:
+            self._key_locks[key] = asyncio.Lock()
+        key_lock = self._key_locks[key]
+
+        async with key_lock:
+            self._purge()
+            item = self._store.get(key)
+            if item and item["fp"] == fingerprint:
+                return item["resp"]
+            resp = await compute_coro()
+            import time as _t
+            self._store[key] = {"resp": resp, "fp": fingerprint, "ts": _t.time()}
+            self._purge()
+            return resp
 
 
 _idem_cache = _IdempotencyCache()
