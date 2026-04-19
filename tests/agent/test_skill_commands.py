@@ -259,6 +259,25 @@ Generate some audio.
             msg = build_skill_invocation_message("/nonexistent")
         assert msg is None
 
+    def test_returns_none_when_payload_load_fails_after_scan(self, tmp_path):
+        """Regression for #11200: a skill that scans cleanly but whose
+        SKILL.md is removed/corrupted before invocation must return None
+        (not a truthy ``[Failed to load skill: ...]`` placeholder string,
+        which callers would treat as a successful invocation and forward
+        to the agent as conversation content).
+        """
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            skill_dir = _make_skill(tmp_path, "demo")
+            scan_skill_commands()
+            # Simulate the SKILL.md being deleted between scan and invocation
+            (skill_dir / "SKILL.md").unlink()
+            msg = build_skill_invocation_message("/demo", "hello")
+
+        assert msg is None, (
+            "Load failure must surface as None so callers can show a real "
+            "error instead of forwarding a placeholder string to the agent."
+        )
+
     def test_uses_shared_skill_loader_for_secure_setup(self, tmp_path, monkeypatch):
         monkeypatch.delenv("TENOR_API_KEY", raising=False)
         calls = []

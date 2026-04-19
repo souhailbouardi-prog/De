@@ -3582,6 +3582,23 @@ class GatewayRunner:
                     if msg:
                         event.text = msg
                         # Fall through to normal message processing with skill content
+                    else:
+                        # Skill is registered (cmd_key resolved) but loading the
+                        # SKILL.md payload failed. Surface a real error to the
+                        # user instead of silently forwarding the bare /command
+                        # to the LLM as free text (#11200).
+                        _failed_name = skill_cmds[cmd_key].get("name", cmd_key.lstrip("/"))
+                        logger.warning(
+                            "Skill /%s resolved but failed to load — returning error to user",
+                            _failed_name,
+                        )
+                        return (
+                            f"Failed to load the **{_failed_name}** skill. "
+                            f"The skill is registered but its `SKILL.md` could "
+                            f"not be loaded (it may have been moved, deleted, "
+                            f"or be malformed). Run `hermes skills list` to "
+                            f"refresh the cache."
+                        )
                 else:
                     # Not an active skill — check if it's a known-but-disabled or
                     # uninstalled skill and give actionable guidance.

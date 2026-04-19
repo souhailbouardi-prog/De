@@ -310,7 +310,13 @@ def build_skill_invocation_message(
         user_instruction: Optional text the user typed after the command.
 
     Returns:
-        The formatted message string, or None if the skill wasn't found.
+        The formatted message string, or ``None`` if the command is unknown
+        *or* if the skill payload failed to load (e.g., SKILL.md was deleted
+        or corrupted between scan and invocation). Callers that already know
+        the command is registered (via ``get_skill_commands()`` /
+        ``resolve_skill_command_key()``) should treat ``None`` as a load
+        failure and surface a real error to the user instead of silently
+        forwarding a placeholder string to the agent.
     """
     commands = get_skill_commands()
     skill_info = commands.get(cmd_key)
@@ -319,7 +325,13 @@ def build_skill_invocation_message(
 
     loaded = _load_skill_payload(skill_info["skill_dir"], task_id=task_id)
     if not loaded:
-        return f"[Failed to load skill: {skill_info['name']}]"
+        logger.warning(
+            "Failed to load skill payload for %s (cmd_key=%s, skill_dir=%s)",
+            skill_info.get("name"),
+            cmd_key,
+            skill_info.get("skill_dir"),
+        )
+        return None
 
     loaded_skill, skill_dir, skill_name = loaded
     activation_note = (

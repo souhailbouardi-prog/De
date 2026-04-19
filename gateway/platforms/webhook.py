@@ -404,6 +404,17 @@ class WebhookAdapter(BasePlatformAdapter):
                         if skill_content:
                             prompt = skill_content
                             break  # Load the first matching skill
+                        else:
+                            # Registered skill failed to load (e.g. SKILL.md
+                            # deleted/corrupted between scan and webhook
+                            # delivery). Log loudly and try the next skill
+                            # rather than silently injecting a placeholder
+                            # error string into the agent prompt (#11200).
+                            logger.error(
+                                "[webhook] Skill '%s' is registered but failed to load — "
+                                "skipping for this delivery",
+                                skill_name,
+                            )
                     else:
                         logger.warning(
                             "[webhook] Skill '%s' not found", skill_name
