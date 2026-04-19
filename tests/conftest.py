@@ -335,3 +335,21 @@ def _enforce_test_timeout():
     yield
     signal.alarm(0)
     signal.signal(signal.SIGALRM, old)
+
+def pytest_configure(config):
+    """Global configuration for pytest."""
+    try:
+        from agent.auxiliary_client import neuter_async_httpx_del
+        neuter_async_httpx_del()
+    except Exception:
+        pass
+
+@pytest.fixture(autouse=True)
+def _cleanup_stale_clients():
+    """Run cleanup_stale_async_clients after every test to prevent leaks."""
+    yield
+    try:
+        from agent.auxiliary_client import cleanup_stale_async_clients
+        cleanup_stale_async_clients()
+    except Exception:
+        pass
