@@ -536,6 +536,39 @@ def test_custom_endpoint_explicit_custom_prefers_config_key(monkeypatch):
     assert resolved["api_key"] == "sk-vllm-key"
 
 
+def test_custom_endpoint_config_api_key_skips_ambiguous_custom_pool(monkeypatch):
+    """model.api_key should win over base_url-matched custom pools (#9315)."""
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "custom")
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {
+            "provider": "custom",
+            "base_url": "https://api.example.com/v1",
+            "api_key": "key-bbbbb",
+        },
+    )
+    monkeypatch.setattr(
+        rp,
+        "get_custom_provider_pool_key",
+        lambda base_url: (_ for _ in ()).throw(
+            AssertionError(f"custom pool lookup should be skipped for {base_url}")
+        ),
+    )
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    monkeypatch.delenv("OPENROUTER_BASE_URL", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+
+    resolved = rp.resolve_runtime_provider(requested="custom")
+
+    assert resolved["provider"] == "custom"
+    assert resolved["base_url"] == "https://api.example.com/v1"
+    assert resolved["api_key"] == "key-bbbbb"
+    assert resolved["source"] == "env/config"
+    assert resolved.get("credential_pool") is None
+
+
 def test_named_custom_provider_uses_saved_credentials(monkeypatch):
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
@@ -1364,6 +1397,36 @@ def test_named_custom_runtime_propagates_model_direct_path(monkeypatch):
     resolved = rp.resolve_runtime_provider(requested="my-server")
     assert resolved["model"] == "qwen3.6-plus"
     assert resolved["provider"] == "custom"
+
+
+def test_named_custom_runtime_explicit_api_key_skips_pool(monkeypatch):
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "my-server")
+    monkeypatch.setattr(
+        rp, "_get_named_custom_provider",
+        lambda p: {
+            "name": "my-server",
+            "base_url": "http://localhost:8000/v1",
+            "api_key": "saved-key",
+            "model": "qwen3.6-plus",
+        },
+    )
+    monkeypatch.setattr(
+        rp,
+        "get_custom_provider_pool_key",
+        lambda base_url: (_ for _ in ()).throw(
+            AssertionError(f"custom pool lookup should be skipped for {base_url}")
+        ),
+    )
+
+    resolved = rp.resolve_runtime_provider(
+        requested="my-server",
+        explicit_api_key="explicit-key",
+    )
+
+    assert resolved["provider"] == "custom"
+    assert resolved["api_key"] == "explicit-key"
+    assert resolved["source"] == "custom_provider:my-server"
+    assert resolved["model"] == "qwen3.6-plus"
 
 
 def test_named_custom_runtime_propagates_model_pool_path(monkeypatch):
