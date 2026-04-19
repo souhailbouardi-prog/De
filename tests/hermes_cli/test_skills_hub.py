@@ -150,6 +150,36 @@ def test_do_list_filter_builtin(three_source_env):
     output = _capture(source_filter="builtin")
 
     assert "builtin-skill" in output
+
+
+def test_do_list_builtin_dir_name_mismatch(monkeypatch, hub_env):
+    """Builtin skill whose directory name differs from frontmatter name is still classified as builtin.
+
+    Regression test for issue #5433: skills_sync stores manifest keys by directory name
+    while _find_all_skills returns frontmatter name; when they differ the skill was wrongly
+    shown as local.
+    """
+    import tools.skills_hub as hub
+    import tools.skills_sync as skills_sync
+    import tools.skills_tool as skills_tool
+
+    # directory name is "vllm" but SKILL.md frontmatter says "serving-llms-vllm"
+    _skills = [
+        {"name": "serving-llms-vllm", "dir_name": "vllm", "category": "mlops", "description": "vllm"},
+    ]
+    _manifest = {"vllm": "deadbeef"}  # manifest key = directory name
+
+    monkeypatch.setattr(hub, "HubLockFile", lambda: _DummyLockFile([]))
+    monkeypatch.setattr(skills_tool, "_find_all_skills", lambda: list(_skills))
+    monkeypatch.setattr(skills_sync, "_read_manifest", lambda: dict(_manifest))
+
+    sink = StringIO()
+    console = Console(file=sink, force_terminal=False, color_system=None)
+    do_list(console=console)
+    output = sink.getvalue()
+
+    assert "serving-llms-vllm" in output
+    assert "0 hub-installed, 1 builtin, 0 local" in output
     assert "hub-skill" not in output
     assert "local-skill" not in output
 
