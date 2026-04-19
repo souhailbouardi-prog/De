@@ -67,7 +67,11 @@ class TestApprovalHeartbeat:
             resolve_gateway_approval,
         )
 
-        register_gateway_notify(self.SESSION_KEY, lambda _payload: None)
+        approval_requested = threading.Event()
+        register_gateway_notify(
+            self.SESSION_KEY,
+            lambda _payload: approval_requested.set(),
+        )
 
         # Use an Event to signal from _fake_touch back to the main thread
         # so we can resolve as soon as the first heartbeat fires — avoids
@@ -98,6 +102,13 @@ class TestApprovalHeartbeat:
 
         thread = threading.Thread(target=_run_check, daemon=True)
         thread.start()
+
+        # Wait until the approval request has actually been enqueued before
+        # asserting on heartbeat delivery; under xdist worker startup can make
+        # a fixed sleep race with the background thread.
+        assert approval_requested.wait(timeout=10.0), (
+            "approval request was not registered within 10s"
+        )
 
         # Wait for at least one heartbeat to fire — bounded at 10s to catch
         # a genuinely hung worker thread without making a green run slow.
@@ -135,7 +146,11 @@ class TestApprovalHeartbeat:
             resolve_gateway_approval,
         )
 
-        register_gateway_notify(self.SESSION_KEY, lambda _payload: None)
+        approval_requested = threading.Event()
+        register_gateway_notify(
+            self.SESSION_KEY,
+            lambda _payload: approval_requested.set(),
+        )
 
         start_time = time.monotonic()
         result_holder: dict = {}
@@ -148,9 +163,12 @@ class TestApprovalHeartbeat:
         thread = threading.Thread(target=_run_check, daemon=True)
         thread.start()
 
+        assert approval_requested.wait(timeout=10.0), (
+            "approval request was not registered within 10s"
+        )
+
         # Resolve almost immediately — the wait loop should return within
         # its current 1s poll slice.
-        time.sleep(0.1)
         resolve_gateway_approval(self.SESSION_KEY, "once")
         thread.join(timeout=5)
         elapsed = time.monotonic() - start_time
@@ -170,7 +188,11 @@ class TestApprovalHeartbeat:
             resolve_gateway_approval,
         )
 
-        register_gateway_notify(self.SESSION_KEY, lambda _payload: None)
+        approval_requested = threading.Event()
+        register_gateway_notify(
+            self.SESSION_KEY,
+            lambda _payload: approval_requested.set(),
+        )
 
         result_holder: dict = {}
         import builtins
@@ -191,7 +213,10 @@ class TestApprovalHeartbeat:
         thread = threading.Thread(target=_run_check, daemon=True)
         thread.start()
 
-        time.sleep(0.2)
+        assert approval_requested.wait(timeout=10.0), (
+            "approval request was not registered within 10s"
+        )
+
         resolve_gateway_approval(self.SESSION_KEY, "once")
         thread.join(timeout=5)
 
