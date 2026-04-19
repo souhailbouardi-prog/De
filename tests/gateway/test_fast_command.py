@@ -152,6 +152,43 @@ async def test_handle_fast_command_persists_config(monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_handle_fast_command_uses_session_model_override(monkeypatch, tmp_path):
+    runner = _make_runner()
+    source = _make_source()
+    session_key = runner._session_key_for_source(source)
+    runner._session_model_overrides[session_key] = {"model": "gpt-5.4"}
+
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: {})
+    monkeypatch.setattr(gateway_run, "_resolve_gateway_model", lambda config=None: "claude-sonnet-4")
+
+    response = await runner._handle_fast_command(MessageEvent(text="/fast fast", source=source, message_id="m1"))
+
+    assert "FAST" in response
+    assert runner._service_tier == "priority"
+    saved = yaml.safe_load((tmp_path / "config.yaml").read_text(encoding="utf-8"))
+    assert saved["agent"]["service_tier"] == "fast"
+
+
+@pytest.mark.asyncio
+async def test_handle_fast_command_rejects_unsupported_session_override(monkeypatch, tmp_path):
+    runner = _make_runner()
+    source = _make_source()
+    session_key = runner._session_key_for_source(source)
+    runner._session_model_overrides[session_key] = {"model": "claude-sonnet-4"}
+
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: {})
+    monkeypatch.setattr(gateway_run, "_resolve_gateway_model", lambda config=None: "gpt-5.4")
+
+    response = await runner._handle_fast_command(MessageEvent(text="/fast fast", source=source, message_id="m1"))
+
+    assert "only available for OpenAI models" in response
+    assert runner._service_tier is None
+    assert not (tmp_path / "config.yaml").exists()
+
+
+@pytest.mark.asyncio
 async def test_run_agent_passes_priority_processing_to_gateway_agent(monkeypatch, tmp_path):
     _install_fake_agent(monkeypatch)
     runner = _make_runner()

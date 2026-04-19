@@ -6671,7 +6671,12 @@ class GatewayRunner:
         self._service_tier = self._load_service_tier()
 
         user_config = _load_gateway_config()
-        model = _resolve_gateway_model(user_config)
+        session_key = self._session_key_for_source(event.source)
+        model, _ = self._apply_session_model_override(
+            session_key,
+            _resolve_gateway_model(user_config),
+            {},
+        )
         if not model_supports_fast_mode(model):
             return "⚡ /fast is only available for OpenAI models that support Priority Processing."
 
