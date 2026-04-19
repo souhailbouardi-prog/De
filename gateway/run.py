@@ -219,7 +219,10 @@ if _config_path.exists():
         _tz_cfg = _cfg.get("timezone", "")
         if _tz_cfg and isinstance(_tz_cfg, str) and "HERMES_TIMEZONE" not in os.environ:
             os.environ["HERMES_TIMEZONE"] = _tz_cfg.strip()
-        # Security settings
+        # Security settings — gateway always forces redaction on to protect
+        # multi-user sessions.  The config value is still read so that
+        # redact.py can log a warning, but HERMES_GATEWAY_SESSION ensures
+        # _REDACT_ENABLED stays True regardless.
         _security_cfg = _cfg.get("security", {})
         if isinstance(_security_cfg, dict):
             _redact = _security_cfg.get("redact_secrets")

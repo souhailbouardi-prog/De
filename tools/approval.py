@@ -63,10 +63,20 @@ _HERMES_ENV_PATH = (
     r'(?:\$hermes_home|\$\{hermes_home\})/)'
     r'\.env\b'
 )
+# config.yaml contains security settings (redact_secrets, tirith, etc.)
+# that control the agent's own safety mechanisms — protect it the same
+# way we protect .env to prevent prompt injection from disabling guards.
+_HERMES_CONFIG_PATH = (
+    r'(?:~\/\.hermes/|'
+    r'(?:\$home|\$\{home\})/\.hermes/|'
+    r'(?:\$hermes_home|\$\{hermes_home\})/)'
+    r'config\.yaml\b'
+)
 _SENSITIVE_WRITE_TARGET = (
     r'(?:/etc/|/dev/sd|'
     rf'{_SSH_SENSITIVE_PATH}|'
-    rf'{_HERMES_ENV_PATH})'
+    rf'{_HERMES_ENV_PATH}|'
+    rf'{_HERMES_CONFIG_PATH})'
 )
 
 # =========================================================================

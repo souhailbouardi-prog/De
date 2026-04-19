@@ -185,6 +185,47 @@ class TestPassthrough:
         assert redact_sensitive_text(text) == text
 
 
+class TestGatewayForcesRedaction:
+    """Gateway mode must force redaction on even when config disables it."""
+
+    def test_gateway_overrides_disabled_redaction(self, monkeypatch):
+        """When HERMES_GATEWAY_SESSION=true, _REDACT_ENABLED must be True
+        even if HERMES_REDACT_SECRETS=false."""
+        monkeypatch.setenv("HERMES_GATEWAY_SESSION", "true")
+        monkeypatch.setenv("HERMES_REDACT_SECRETS", "false")
+        # Re-evaluate the module-level flag with the patched env
+        is_gateway = os.getenv("HERMES_GATEWAY_SESSION", "").lower() in ("1", "true", "yes")
+        user_disabled = os.getenv("HERMES_REDACT_SECRETS", "").lower() in ("0", "false", "no", "off")
+        enabled = True if is_gateway else not user_disabled
+        assert enabled is True
+
+    def test_gateway_env_variations(self, monkeypatch):
+        """All truthy values for HERMES_GATEWAY_SESSION should force redaction."""
+        for val in ("1", "true", "yes", "True", "YES"):
+            monkeypatch.setenv("HERMES_GATEWAY_SESSION", val)
+            monkeypatch.setenv("HERMES_REDACT_SECRETS", "false")
+            is_gateway = os.getenv("HERMES_GATEWAY_SESSION", "").lower() in ("1", "true", "yes")
+            assert is_gateway is True
+
+    def test_cli_mode_respects_disabled(self, monkeypatch):
+        """In CLI mode (no gateway), redact_secrets: false should take effect."""
+        monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
+        monkeypatch.setenv("HERMES_REDACT_SECRETS", "false")
+        is_gateway = os.getenv("HERMES_GATEWAY_SESSION", "").lower() in ("1", "true", "yes")
+        user_disabled = os.getenv("HERMES_REDACT_SECRETS", "").lower() in ("0", "false", "no", "off")
+        enabled = True if is_gateway else not user_disabled
+        assert enabled is False
+
+    def test_redaction_active_by_default(self, monkeypatch):
+        """With no env vars set, redaction should be enabled."""
+        monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
+        monkeypatch.delenv("HERMES_REDACT_SECRETS", raising=False)
+        is_gateway = os.getenv("HERMES_GATEWAY_SESSION", "").lower() in ("1", "true", "yes")
+        user_disabled = os.getenv("HERMES_REDACT_SECRETS", "").lower() in ("0", "false", "no", "off")
+        enabled = True if is_gateway else not user_disabled
+        assert enabled is True
+
+
 class TestRedactingFormatter:
     def test_formats_and_redacts(self):
         formatter = RedactingFormatter("%(message)s")

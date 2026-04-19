@@ -15,7 +15,24 @@ logger = logging.getLogger(__name__)
 
 # Snapshot at import time so runtime env mutations (e.g. LLM-generated
 # `export HERMES_REDACT_SECRETS=false`) cannot disable redaction mid-session.
-_REDACT_ENABLED = os.getenv("HERMES_REDACT_SECRETS", "").lower() not in ("0", "false", "no", "off")
+#
+# Gateway mode always forces redaction on regardless of config, because
+# gateway serves multiple users over messaging platforms — leaking secrets
+# into LLM context risks reflecting them to any connected user.
+_IS_GATEWAY = os.getenv("HERMES_GATEWAY_SESSION", "").lower() in ("1", "true", "yes")
+_USER_DISABLED = os.getenv("HERMES_REDACT_SECRETS", "").lower() in ("0", "false", "no", "off")
+_REDACT_ENABLED = True if _IS_GATEWAY else not _USER_DISABLED
+
+if _USER_DISABLED and _IS_GATEWAY:
+    logger.warning(
+        "security.redact_secrets is set to false, but redaction is forced ON "
+        "in gateway mode to protect multi-user sessions."
+    )
+elif _USER_DISABLED:
+    logger.warning(
+        "Secret redaction is DISABLED (security.redact_secrets: false). "
+        "API keys and tokens will appear in plaintext in logs and tool output."
+    )
 
 # Known API key prefixes -- match the prefix + contiguous token chars
 _PREFIX_PATTERNS = [

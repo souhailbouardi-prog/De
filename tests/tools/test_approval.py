@@ -376,6 +376,16 @@ class TestTeePattern:
         assert dangerous is True
         assert key is not None
 
+    def test_tee_hermes_config_yaml(self):
+        dangerous, key, desc = detect_dangerous_command("echo x | tee ~/.hermes/config.yaml")
+        assert dangerous is True
+        assert key is not None
+
+    def test_tee_custom_hermes_home_config_yaml(self):
+        dangerous, key, desc = detect_dangerous_command("echo x | tee $HERMES_HOME/config.yaml")
+        assert dangerous is True
+        assert key is not None
+
     def test_tee_tmp_safe(self):
         dangerous, key, desc = detect_dangerous_command("echo hello | tee /tmp/output.txt")
         assert dangerous is False
@@ -383,6 +393,36 @@ class TestTeePattern:
 
     def test_tee_local_file_safe(self):
         dangerous, key, desc = detect_dangerous_command("echo hello | tee output.log")
+        assert dangerous is False
+        assert key is None
+
+
+class TestSensitiveRedirectConfigYaml:
+    """Detect shell redirection writes to ~/.hermes/config.yaml.
+
+    config.yaml contains security settings (redact_secrets, tirith, etc.)
+    that control the agent's own safety mechanisms. Writing to it should
+    require the same approval as writing to .env.
+    """
+
+    def test_redirect_to_hermes_config_yaml(self):
+        dangerous, key, desc = detect_dangerous_command("echo x > ~/.hermes/config.yaml")
+        assert dangerous is True
+        assert key is not None
+
+    def test_redirect_to_custom_hermes_home_config(self):
+        dangerous, key, desc = detect_dangerous_command("echo x > $HERMES_HOME/config.yaml")
+        assert dangerous is True
+        assert key is not None
+
+    def test_append_to_hermes_config_yaml(self):
+        dangerous, key, desc = detect_dangerous_command("echo x >> ~/.hermes/config.yaml")
+        assert dangerous is True
+        assert key is not None
+
+    def test_redirect_to_unrelated_config_yaml_safe(self):
+        """config.yaml outside ~/.hermes/ should not be flagged."""
+        dangerous, key, desc = detect_dangerous_command("echo x > ./config.yaml")
         assert dangerous is False
         assert key is None
 
@@ -426,6 +466,11 @@ class TestSensitiveRedirectPattern:
 
     def test_append_to_tilde_ssh_authorized_keys(self):
         dangerous, key, desc = detect_dangerous_command("cat key >> ~/.ssh/authorized_keys")
+        assert dangerous is True
+        assert key is not None
+
+    def test_redirect_to_hermes_config_yaml(self):
+        dangerous, key, desc = detect_dangerous_command("echo x > ~/.hermes/config.yaml")
         assert dangerous is True
         assert key is not None
 
