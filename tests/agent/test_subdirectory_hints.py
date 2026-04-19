@@ -1,6 +1,7 @@
 """Tests for progressive subdirectory hint discovery."""
 
 import os
+import time
 import pytest
 from pathlib import Path
 from unittest.mock import patch
@@ -183,6 +184,33 @@ class TestSubdirectoryHintTracker:
         assert tracker.check_tool_call("read_file", {}) is None
         assert tracker.check_tool_call("terminal", {"command": ""}) is None
 
+    def test_timeout_skips_slow_hint_files(self, project, monkeypatch, caplog):
+        """Slow hint reads should time out instead of blocking the turn."""
+        backend = project / "backend"
+        (backend / "AGENTS.md").write_text("Backend-specific instructions")
+        monkeypatch.setattr("agent.subdirectory_hints._CONTEXT_FILE_READ_TIMEOUT_SECS", 0.05)
+
+        original_read_text = Path.read_text
+
+        def slow_read_text(self, *args, **kwargs):
+            if self.name == "AGENTS.md" and self.parent == backend:
+                time.sleep(0.2)
+            return original_read_text(self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "read_text", slow_read_text)
+
+        tracker = SubdirectoryHintTracker(working_dir=str(project))
+        start = time.monotonic()
+        with caplog.at_level("WARNING", logger="agent.prompt_builder"):
+            result = tracker.check_tool_call(
+                "read_file", {"path": str(project / "backend" / "src" / "main.py")}
+            )
+        elapsed = time.monotonic() - start
+
+        assert elapsed < 0.15
+        assert result is None
+        assert "timed out" in caplog.text.lower()
+
     def test_url_in_command_ignored(self, project):
         """URLs in shell commands should not be treated as paths."""
         tracker = SubdirectoryHintTracker(working_dir=str(project))
@@ -209,10 +237,12 @@ class TestPermissionErrorHandling:
         restricted = tmp_path / "restricted"
         restricted.mkdir()
         original_is_file = Path.is_file
+
         def patched_is_file(self):
             if "restricted" in str(self):
                 raise PermissionError("Permission denied")
             return original_is_file(self)
+
         with patch.object(Path, "is_file", patched_is_file):
             result = tracker._load_hints_for_directory(restricted)
         assert result is None
@@ -221,10 +251,12 @@ class TestPermissionErrorHandling:
         """Full check_tool_call should not crash when a path is inaccessible."""
         tracker = SubdirectoryHintTracker(working_dir=str(project))
         original_is_dir = Path.is_dir
+
         def patched_is_dir(self):
             if "backend" in str(self) and "src" not in str(self):
                 raise PermissionError("Permission denied")
             return original_is_dir(self)
+
         with patch.object(Path, "is_dir", patched_is_dir):
             # Should not raise — gracefully skip the inaccessible directory
             result = tracker.check_tool_call(

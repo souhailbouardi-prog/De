@@ -19,7 +19,7 @@ import shlex
 from pathlib import Path
 from typing import Dict, Any, Optional, Set
 
-from agent.prompt_builder import _scan_context_content
+from agent.prompt_builder import _scan_context_content, _read_text_with_timeout, _CONTEXT_FILE_READ_TIMEOUT_SECS
 
 logger = logging.getLogger(__name__)
 
@@ -181,7 +181,10 @@ class SubdirectoryHintTracker:
             except OSError:
                 continue
             try:
-                content = hint_path.read_text(encoding="utf-8").strip()
+                content = _read_text_with_timeout(hint_path, timeout=_CONTEXT_FILE_READ_TIMEOUT_SECS)
+                if content is None:
+                    continue
+                content = content.strip()
                 if not content:
                     continue
                 # Same security scan as startup context loading

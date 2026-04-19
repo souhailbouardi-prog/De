@@ -7,6 +7,7 @@ assemble pieces, then combines them with memory and ephemeral prompts.
 import json
 import logging
 import os
+import queue
 import re
 import threading
 from collections import OrderedDict
@@ -50,6 +51,36 @@ _CONTEXT_INVISIBLE_CHARS = {
     '\u200b', '\u200c', '\u200d', '\u2060', '\ufeff',
     '\u202a', '\u202b', '\u202c', '\u202d', '\u202e',
 }
+
+# Read deadlines for context files. These are intentionally short because
+# network-backed filesystems (like iCloud Drive) can fault-in evicted files and
+# block indefinitely on a cold read.
+_CONTEXT_FILE_READ_TIMEOUT_SECS = 5.0
+
+
+def _read_text_with_timeout(path: Path, timeout: float | None = None) -> str | None:
+    """Read a text file on a daemon thread so slow files can't stall startup."""
+    if timeout is None:
+        timeout = _CONTEXT_FILE_READ_TIMEOUT_SECS
+    result: queue.Queue[tuple[bool, object]] = queue.Queue(maxsize=1)
+
+    def _reader():
+        try:
+            result.put((True, path.read_text(encoding="utf-8")))
+        except Exception as exc:
+            result.put((False, exc))
+
+    thread = threading.Thread(target=_reader, daemon=True, name=f"context-read:{path.name}")
+    thread.start()
+    try:
+        ok, value = result.get(timeout=timeout)
+    except queue.Empty:
+        logger.warning("Context file %s read timed out after %.1fs; skipping", path, timeout)
+        return None
+    if ok:
+        return value  # type: ignore[return-value]
+    logger.debug("Failed to read context file %s: %s", path, value)
+    return None
 
 
 def _scan_context_content(content: str, filename: str) -> str:
@@ -913,16 +944,15 @@ def load_soul_md() -> Optional[str]:
     soul_path = get_hermes_home() / "SOUL.md"
     if not soul_path.exists():
         return None
-    try:
-        content = soul_path.read_text(encoding="utf-8").strip()
-        if not content:
-            return None
-        content = _scan_context_content(content, "SOUL.md")
-        content = _truncate_content(content, "SOUL.md")
-        return content
-    except Exception as e:
-        logger.debug("Could not read SOUL.md from %s: %s", soul_path, e)
+    content = _read_text_with_timeout(soul_path)
+    if content is None:
         return None
+    content = content.strip()
+    if not content:
+        return None
+    content = _scan_context_content(content, "SOUL.md")
+    content = _truncate_content(content, "SOUL.md")
+    return content
 
 
 def _load_hermes_md(cwd_path: Path) -> str:
@@ -931,7 +961,10 @@ def _load_hermes_md(cwd_path: Path) -> str:
     if not hermes_md_path:
         return ""
     try:
-        content = hermes_md_path.read_text(encoding="utf-8").strip()
+        content = _read_text_with_timeout(hermes_md_path)
+        if content is None:
+            return ""
+        content = content.strip()
         if not content:
             return ""
         content = _strip_yaml_frontmatter(content)
@@ -954,7 +987,10 @@ def _load_agents_md(cwd_path: Path) -> str:
         candidate = cwd_path / name
         if candidate.exists():
             try:
-                content = candidate.read_text(encoding="utf-8").strip()
+                content = _read_text_with_timeout(candidate)
+                if content is None:
+                    continue
+                content = content.strip()
                 if content:
                     content = _scan_context_content(content, name)
                     result = f"## {name}\n\n{content}"
@@ -970,7 +1006,10 @@ def _load_claude_md(cwd_path: Path) -> str:
         candidate = cwd_path / name
         if candidate.exists():
             try:
-                content = candidate.read_text(encoding="utf-8").strip()
+                content = _read_text_with_timeout(candidate)
+                if content is None:
+                    continue
+                content = content.strip()
                 if content:
                     content = _scan_context_content(content, name)
                     result = f"## {name}\n\n{content}"
@@ -986,7 +1025,10 @@ def _load_cursorrules(cwd_path: Path) -> str:
     cursorrules_file = cwd_path / ".cursorrules"
     if cursorrules_file.exists():
         try:
-            content = cursorrules_file.read_text(encoding="utf-8").strip()
+            content = _read_text_with_timeout(cursorrules_file)
+            if content is None:
+                content = ""
+            content = content.strip()
             if content:
                 content = _scan_context_content(content, ".cursorrules")
                 cursorrules_content += f"## .cursorrules\n\n{content}\n\n"
@@ -998,7 +1040,10 @@ def _load_cursorrules(cwd_path: Path) -> str:
         mdc_files = sorted(cursor_rules_dir.glob("*.mdc"))
         for mdc_file in mdc_files:
             try:
-                content = mdc_file.read_text(encoding="utf-8").strip()
+                content = _read_text_with_timeout(mdc_file)
+                if content is None:
+                    content = ""
+                content = content.strip()
                 if content:
                     content = _scan_context_content(content, f".cursor/rules/{mdc_file.name}")
                     cursorrules_content += f"## .cursor/rules/{mdc_file.name}\n\n{content}\n\n"
