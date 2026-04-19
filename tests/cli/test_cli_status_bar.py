@@ -11,6 +11,8 @@ def _make_cli(model: str = "anthropic/claude-sonnet-4-20250514"):
     cli_obj.session_start = datetime.now() - timedelta(minutes=14, seconds=32)
     cli_obj.conversation_history = [{"role": "user", "content": "hi"}]
     cli_obj.agent = None
+    cli_obj.reasoning_config = None
+    cli_obj.service_tier = None
     return cli_obj
 
 
@@ -72,13 +74,35 @@ class TestCLIStatusBar:
             context_length=200_000,
         )
 
-        text = cli_obj._build_status_bar_text(width=120)
+        with patch("hermes_cli.profiles.get_active_profile_name", return_value="main"):
+            text = cli_obj._build_status_bar_text(width=120)
 
+        assert "main" in text
         assert "claude-sonnet-4-20250514" in text
         assert "12.4K/200K" in text
         assert "6%" in text
         assert "$0.06" not in text  # cost hidden by default
         assert "15m" in text
+
+    def test_build_status_bar_text_shows_reasoning_and_fast_when_enabled(self):
+        cli_obj = _attach_agent(
+            _make_cli(),
+            prompt_tokens=10_230,
+            completion_tokens=2_220,
+            total_tokens=12_450,
+            api_calls=7,
+            context_tokens=12_450,
+            context_length=200_000,
+        )
+        cli_obj.reasoning_config = {"enabled": True, "effort": "high"}
+        cli_obj.service_tier = "priority"
+
+        with patch("hermes_cli.profiles.get_active_profile_name", return_value="main"):
+            text = cli_obj._build_status_bar_text(width=120)
+
+        assert "main" in text
+        assert "R:high" in text
+        assert "FAST" in text
 
     def test_input_height_counts_wide_characters_using_cell_width(self):
         cli_obj = _make_cli()
@@ -191,19 +215,45 @@ class TestCLIStatusBar:
             context_length=200_000,
         )
 
-        text = cli_obj._build_status_bar_text(width=60)
+        with patch("hermes_cli.profiles.get_active_profile_name", return_value="main"):
+            text = cli_obj._build_status_bar_text(width=60)
 
         assert "⚕" in text
+        assert "main" in text
         assert "$0.06" not in text  # cost hidden by default
         assert "15m" in text
         assert "200K" not in text
 
+    def test_status_bar_fragments_show_reasoning_and_fast_when_enabled(self):
+        cli_obj = _attach_agent(
+            _make_cli(),
+            prompt_tokens=10000,
+            completion_tokens=2400,
+            total_tokens=12400,
+            api_calls=7,
+            context_tokens=12400,
+            context_length=200_000,
+        )
+        cli_obj.reasoning_config = {"enabled": True, "effort": "medium"}
+        cli_obj.service_tier = "priority"
+        cli_obj._status_bar_visible = True
+
+        with patch("hermes_cli.profiles.get_active_profile_name", return_value="main"), \
+             patch.object(HermesCLI, "_get_tui_terminal_width", return_value=160):
+            joined = "".join(text for _, text in cli_obj._get_status_bar_fragments())
+
+        assert "main" in joined
+        assert "R:medium" in joined
+        assert "FAST" in joined
+
     def test_build_status_bar_text_handles_missing_agent(self):
         cli_obj = _make_cli()
 
-        text = cli_obj._build_status_bar_text(width=100)
+        with patch("hermes_cli.profiles.get_active_profile_name", return_value="main"):
+            text = cli_obj._build_status_bar_text(width=100)
 
         assert "⚕" in text
+        assert "main" in text
         assert "claude-sonnet-4-20250514" in text
 
     def test_minimal_tui_chrome_threshold(self):

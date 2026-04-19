@@ -1981,7 +1981,17 @@ class HermesCLI:
             model_short = f"{model_short[:23]}..."
 
         elapsed_seconds = max(0.0, (datetime.now() - self.session_start).total_seconds())
+        try:
+            from hermes_cli.profiles import get_active_profile_name
+            profile_name = get_active_profile_name()
+        except Exception:
+            profile_name = "default"
+        profile_label = str(profile_name or "default")
+        if len(profile_label) > 16:
+            profile_label = f"{profile_label[:13]}..."
         snapshot = {
+            "profile_name": profile_name,
+            "profile_label": profile_label,
             "model_name": model_name,
             "model_short": model_short,
             "duration": format_duration_compact(elapsed_seconds),
@@ -1997,7 +2007,21 @@ class HermesCLI:
             "session_total_tokens": 0,
             "session_api_calls": 0,
             "compressions": 0,
+            "reasoning_label": None,
+            "fast_label": None,
         }
+
+        reasoning_config = getattr(self, "reasoning_config", None)
+        if isinstance(reasoning_config, dict):
+            if reasoning_config.get("enabled") is False:
+                snapshot["reasoning_label"] = "R:off"
+            elif reasoning_config.get("enabled"):
+                effort = str(reasoning_config.get("effort") or "on").strip().lower() or "on"
+                snapshot["reasoning_label"] = f"R:{effort}"
+
+        service_tier = getattr(self, "service_tier", None)
+        if service_tier == "priority":
+            snapshot["fast_label"] = "FAST"
 
         if not agent:
             return snapshot
@@ -2160,10 +2184,10 @@ class HermesCLI:
             duration_label = snapshot["duration"]
 
             if width < 52:
-                text = f"⚕ {snapshot['model_short']} · {duration_label}"
+                text = f"⚕ {snapshot['profile_label']} · {snapshot['model_short']} · {duration_label}"
                 return self._trim_status_bar_text(text, width)
             if width < 76:
-                parts = [f"⚕ {snapshot['model_short']}", percent_label]
+                parts = [f"⚕ {snapshot['profile_label']}", snapshot['model_short'], percent_label]
                 parts.append(duration_label)
                 return self._trim_status_bar_text(" · ".join(parts), width)
 
@@ -2174,7 +2198,8 @@ class HermesCLI:
             else:
                 context_label = "ctx --"
 
-            parts = [f"⚕ {snapshot['model_short']}", context_label, percent_label]
+            extras = [label for label in (snapshot.get("reasoning_label"), snapshot.get("fast_label")) if label]
+            parts = [f"⚕ {snapshot['profile_label']}", snapshot['model_short'], context_label, percent_label, *extras]
             parts.append(duration_label)
             return self._trim_status_bar_text(" │ ".join(parts), width)
         except Exception:
@@ -2196,6 +2221,8 @@ class HermesCLI:
             if width < 52:
                 frags = [
                     ("class:status-bar", " ⚕ "),
+                    ("class:status-bar-strong", snapshot["profile_label"]),
+                    ("class:status-bar-dim", " · "),
                     ("class:status-bar-strong", snapshot["model_short"]),
                     ("class:status-bar-dim", " · "),
                     ("class:status-bar-dim", duration_label),
@@ -2207,6 +2234,8 @@ class HermesCLI:
                 if width < 76:
                     frags = [
                         ("class:status-bar", " ⚕ "),
+                        ("class:status-bar-strong", snapshot["profile_label"]),
+                        ("class:status-bar-dim", " · "),
                         ("class:status-bar-strong", snapshot["model_short"]),
                         ("class:status-bar-dim", " · "),
                         (self._status_bar_context_style(percent), percent_label),
@@ -2225,6 +2254,8 @@ class HermesCLI:
                     bar_style = self._status_bar_context_style(percent)
                     frags = [
                         ("class:status-bar", " ⚕ "),
+                        ("class:status-bar-strong", snapshot["profile_label"]),
+                        ("class:status-bar-dim", " │ "),
                         ("class:status-bar-strong", snapshot["model_short"]),
                         ("class:status-bar-dim", " │ "),
                         ("class:status-bar-dim", context_label),
@@ -2232,10 +2263,22 @@ class HermesCLI:
                         (bar_style, self._build_context_bar(percent)),
                         ("class:status-bar-dim", " "),
                         (bar_style, percent_label),
+                    ]
+                    if snapshot.get("reasoning_label"):
+                        frags.extend([
+                            ("class:status-bar-dim", " │ "),
+                            ("class:status-bar-dim", snapshot["reasoning_label"]),
+                        ])
+                    if snapshot.get("fast_label"):
+                        frags.extend([
+                            ("class:status-bar-dim", " │ "),
+                            ("class:status-bar-strong", snapshot["fast_label"]),
+                        ])
+                    frags.extend([
                         ("class:status-bar-dim", " │ "),
                         ("class:status-bar-dim", duration_label),
                         ("class:status-bar", " "),
-                    ]
+                    ])
 
             total_width = sum(self._status_bar_display_width(text) for _, text in frags)
             if total_width > width:
