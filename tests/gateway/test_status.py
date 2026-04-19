@@ -81,6 +81,30 @@ class TestGatewayPidState:
         assert status.get_running_pid(pid_path, cleanup_stale=False) == os.getpid()
         assert pid_path.exists()
 
+    def test_write_pid_file_preserves_existing_record_when_replace_fails(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        pid_path = tmp_path / "gateway.pid"
+        original = {
+            "pid": 99999,
+            "kind": "hermes-gateway",
+            "argv": ["python", "-m", "hermes_cli.main", "gateway"],
+            "start_time": 123,
+        }
+        pid_path.write_text(json.dumps(original))
+
+        def fail_replace(src, dst):
+            raise OSError("simulated replace failure")
+
+        monkeypatch.setattr(status.os, "replace", fail_replace)
+
+        try:
+            status.write_pid_file()
+        except OSError:
+            pass
+
+        assert json.loads(pid_path.read_text()) == original
+        assert not list(tmp_path.glob("*.tmp"))
+
 
 class TestGatewayRuntimeStatus:
     def test_write_runtime_status_overwrites_stale_pid_on_restart(self, tmp_path, monkeypatch):
@@ -149,6 +173,32 @@ class TestGatewayRuntimeStatus:
         assert payload["platforms"]["discord"]["state"] == "connected"
         assert payload["platforms"]["discord"]["error_code"] is None
         assert payload["platforms"]["discord"]["error_message"] is None
+
+    def test_write_runtime_status_preserves_existing_file_on_replace_failure(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        state_path = tmp_path / "gateway_state.json"
+        original = {
+            "pid": 99999,
+            "start_time": 1000.0,
+            "kind": "hermes-gateway",
+            "gateway_state": "running",
+            "platforms": {},
+            "updated_at": "2025-01-01T00:00:00Z",
+        }
+        state_path.write_text(json.dumps(original))
+
+        def fail_replace(src, dst):
+            raise OSError("simulated replace failure")
+
+        monkeypatch.setattr(status.os, "replace", fail_replace)
+
+        try:
+            status.write_runtime_status(gateway_state="startup_failed")
+        except OSError:
+            pass
+
+        assert json.loads(state_path.read_text()) == original
+        assert not list(tmp_path.glob("*.tmp"))
 
 
 class TestTerminatePid:
