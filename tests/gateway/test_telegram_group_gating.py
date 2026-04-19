@@ -104,6 +104,50 @@ def test_invalid_regex_patterns_are_ignored():
     assert adapter._should_process_message(_group_message("hello everyone")) is False
 
 
+def test_bot_authored_messages_are_ignored():
+    """Bot-authored messages should not be processed as user input (issue #11905)."""
+    adapter = _make_adapter(require_mention=False)
+
+    # Regular user message should be processed
+    user_message = SimpleNamespace(
+        text="hello",
+        caption=None,
+        entities=[],
+        caption_entities=[],
+        message_thread_id=None,
+        chat=SimpleNamespace(id=123, type="private"),
+        reply_to_message=None,
+        from_user=SimpleNamespace(id=456, is_bot=False),
+    )
+    assert adapter._should_process_message(user_message) is True
+
+    # Bot-authored message should be ignored
+    bot_message = SimpleNamespace(
+        text="[SYSTEM: Background process ...]",
+        caption=None,
+        entities=[],
+        caption_entities=[],
+        message_thread_id=None,
+        chat=SimpleNamespace(id=123, type="private"),
+        reply_to_message=None,
+        from_user=SimpleNamespace(id=999, is_bot=True),
+    )
+    assert adapter._should_process_message(bot_message) is False
+
+    # Group chat bot message should also be ignored
+    bot_group_message = SimpleNamespace(
+        text="status update",
+        caption=None,
+        entities=[],
+        caption_entities=[],
+        message_thread_id=None,
+        chat=SimpleNamespace(id=-100, type="group"),
+        reply_to_message=None,
+        from_user=SimpleNamespace(id=999, is_bot=True),
+    )
+    assert adapter._should_process_message(bot_group_message) is False
+
+
 def test_config_bridges_telegram_group_settings(monkeypatch, tmp_path):
     hermes_home = tmp_path / ".hermes"
     hermes_home.mkdir()
