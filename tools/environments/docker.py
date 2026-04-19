@@ -275,8 +275,8 @@ class DockerEnvironment(BaseEnvironment):
             logger.warning(f"docker_volumes config is not a list: {volumes!r}")
             volumes = []
 
-        # Fail fast if Docker is not available.
-        _ensure_docker_available()
+        # Fail fast if the container CLI is not available.
+        self._ensure_cli_available()
 
         # Build resource limit args
         resource_args = []
@@ -331,7 +331,7 @@ class DockerEnvironment(BaseEnvironment):
         self._home_dir: Optional[str] = None
         writable_args = []
         if self._persistent:
-            sandbox = get_sandbox_dir() / "docker" / task_id
+            sandbox = get_sandbox_dir() / self._sandbox_subdir / task_id
             self._home_dir = str(sandbox / "home")
             os.makedirs(self._home_dir, exist_ok=True)
             writable_args.extend([
@@ -416,24 +416,20 @@ class DockerEnvironment(BaseEnvironment):
             env_args.extend(["-e", f"{key}={self._env[key]}"])
 
         logger.info(f"Docker volume_args: {volume_args}")
-        all_run_args = list(_SECURITY_ARGS) + writable_args + resource_args + volume_args + env_args
+        all_run_args = (
+            list(self._get_security_args())
+            + writable_args + resource_args + volume_args + env_args
+            + list(self._get_extra_run_args())
+        )
         logger.info(f"Docker run_args: {all_run_args}")
 
-        # Resolve the docker executable once so it works even when
+        # Resolve the container CLI executable once so it works even when
         # /usr/local/bin is not in PATH (common on macOS gateway/service).
-        self._docker_exe = find_docker() or "docker"
+        self._docker_exe = self._resolve_cli_binary()
 
-        # Start the container directly via `docker run -d`.
+        # Start the container directly via `<cli> run -d`.
         container_name = f"hermes-{uuid.uuid4().hex[:8]}"
-        run_cmd = [
-            self._docker_exe, "run", "-d",
-            "--init",           # tini/catatonit as PID 1 — reaps zombie children
-            "--name", container_name,
-            "-w", cwd,
-            *all_run_args,
-            image,
-            "sleep", "infinity",  # no fixed lifetime — idle reaper handles cleanup
-        ]
+        run_cmd = self._build_run_cmd(container_name, cwd, all_run_args, image)
         logger.debug(f"Starting container: {' '.join(run_cmd)}")
         result = subprocess.run(
             run_cmd,
@@ -452,6 +448,54 @@ class DockerEnvironment(BaseEnvironment):
 
         # Initialize session snapshot inside the container
         self.init_session()
+
+    # ── Hook methods for subclasses (e.g. PodmanEnvironment) ──────────
+
+    def _ensure_cli_available(self) -> None:
+        """Verify the container CLI binary is functional. Override in subclasses."""
+        _ensure_docker_available()
+
+    def _resolve_cli_binary(self) -> str:
+        """Return the path to the container CLI binary. Override in subclasses."""
+        return find_docker() or "docker"
+
+    def _get_security_args(self) -> list[str]:
+        """Return baseline security flags for ``run``. Override in subclasses."""
+        return list(_SECURITY_ARGS)
+
+    def _get_extra_run_args(self) -> list[str]:
+        """Return additional ``run`` flags. Override in subclasses."""
+        return []
+
+    def _build_run_cmd(
+        self, container_name: str, cwd: str, all_run_args: list[str], image: str,
+    ) -> list[str]:
+        """Assemble the full ``<cli> run -d ...`` command. Override in subclasses."""
+        return [
+            self._docker_exe, "run", "-d",
+            "--init",           # tini/catatonit as PID 1 — reaps zombie children
+            "--name", container_name,
+            "-w", cwd,
+            *all_run_args,
+            image,
+            "sleep", "infinity",  # no fixed lifetime — idle reaper handles cleanup
+        ]
+
+    def _cli_cmd(self, args: list[str]) -> list[str]:
+        """Prefix a CLI command list if needed (e.g. sudo). Override in subclasses."""
+        return args
+
+    @property
+    def _cli_shell_prefix(self) -> str:
+        """Shell prefix for background cleanup commands (e.g. "sudo "). Override in subclasses."""
+        return ""
+
+    @property
+    def _sandbox_subdir(self) -> str:
+        """Subdirectory name under the sandbox dir for persistent workspaces."""
+        return "docker"
+
+    # ── End hook methods ────────────────────────────────────────────
 
     def _build_init_env_args(self) -> list[str]:
         """Build -e KEY=VALUE args for injecting host env vars into init_session.
@@ -488,7 +532,7 @@ class DockerEnvironment(BaseEnvironment):
     def _run_bash(self, cmd_string: str, *, login: bool = False,
                   timeout: int = 120,
                   stdin_data: str | None = None) -> subprocess.Popen:
-        """Spawn a bash process inside the Docker container."""
+        """Spawn a bash process inside the container."""
         assert self._container_id, "Container not started"
         cmd = [self._docker_exe, "exec"]
         if stdin_data is not None:
@@ -506,7 +550,7 @@ class DockerEnvironment(BaseEnvironment):
         else:
             cmd.extend(["bash", "-c", cmd_string])
 
-        return _popen_bash(cmd, stdin_data)
+        return _popen_bash(self._cli_cmd(cmd), stdin_data)
 
     @staticmethod
     def _storage_opt_supported() -> bool:
@@ -551,11 +595,12 @@ class DockerEnvironment(BaseEnvironment):
     def cleanup(self):
         """Stop and remove the container. Bind-mount dirs persist if persistent=True."""
         if self._container_id:
+            pfx = self._cli_shell_prefix
             try:
                 # Stop in background so cleanup doesn't block
                 stop_cmd = (
-                    f"(timeout 60 {self._docker_exe} stop {self._container_id} || "
-                    f"{self._docker_exe} rm -f {self._container_id}) >/dev/null 2>&1 &"
+                    f"(timeout 60 {pfx}{self._docker_exe} stop {self._container_id} || "
+                    f"{pfx}{self._docker_exe} rm -f {self._container_id}) >/dev/null 2>&1 &"
                 )
                 subprocess.Popen(stop_cmd, shell=True)
             except Exception as e:
@@ -565,7 +610,7 @@ class DockerEnvironment(BaseEnvironment):
                 # Also schedule removal (stop only leaves it as stopped)
                 try:
                     subprocess.Popen(
-                        f"sleep 3 && {self._docker_exe} rm -f {self._container_id} >/dev/null 2>&1 &",
+                        f"sleep 3 && {pfx}{self._docker_exe} rm -f {self._container_id} >/dev/null 2>&1 &",
                         shell=True,
                     )
                 except Exception:
