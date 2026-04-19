@@ -64,7 +64,7 @@ hermes [global-options] <command> [subcommand/options]
 | `hermes claw` | OpenClaw migration helpers. |
 | `hermes dashboard` | Launch the web dashboard for managing config, API keys, and sessions. |
 | `hermes profile` | Manage profiles — multiple isolated Hermes instances. |
-| `hermes completion` | Print shell completion scripts (bash/zsh). |
+| `hermes completion` | Print or install shell completion scripts (bash/zsh/fish). |
 | `hermes version` | Show version information. |
 | `hermes update` | Pull latest code and reinstall dependencies. |
 | `hermes uninstall` | Remove Hermes from the system. |
@@ -849,10 +849,10 @@ hermes -p work chat -q "Hello from work profile"
 ## `hermes completion`
 
 ```bash
-hermes completion [bash|zsh]
+hermes completion [bash|zsh|fish] [--show] [--install] [--install-all] [--command-name NAME]
 ```
 
-Print a shell completion script to stdout. Source the output in your shell profile for tab-completion of Hermes commands, subcommands, and profile names.
+Print a shell completion script to stdout by default. Fish completions can also be installed directly, and can be generated for custom profile wrapper commands such as `work` or `germes`.
 
 Examples:
 
@@ -862,6 +862,18 @@ hermes completion bash >> ~/.bashrc
 
 # Zsh
 hermes completion zsh >> ~/.zshrc
+
+# Fish: print to stdout
+hermes completion fish
+
+# Fish: install the default hermes completion file
+hermes completion fish --install
+
+# Fish: install a custom wrapper completion file
+hermes completion fish --command-name germes --install
+
+# Fish: install hermes + one completion file per named profile wrapper
+hermes completion fish --install-all
 ```
 
 ## Maintenance commands

@@ -43,6 +43,67 @@ def _walk(parser: argparse.ArgumentParser) -> dict[str, Any]:
     return {"flags": flags, "subcommands": subcommands}
 
 
+# ---------------------------------------------------------------------------
+# Rich argparse walker for fish (extracts flags, value types, aliases)
+# ---------------------------------------------------------------------------
+
+def _walk_rich(parser: argparse.ArgumentParser) -> list[dict[str, Any]]:
+    """Extract subcommand groups with aliases, plus all actions, for fish."""
+    from collections import defaultdict
+
+    groups: list[dict[str, Any]] = []
+    for action in parser._actions:
+        if not isinstance(action, argparse._SubParsersAction):
+            continue
+        # Group aliased parsers (same id() means same parser object).
+        names_by_id: dict[int, list[str]] = defaultdict(list)
+        parser_by_id: dict[int, argparse.ArgumentParser] = {}
+        for name, child in action.choices.items():
+            key = id(child)
+            names_by_id[key].append(name)
+            parser_by_id[key] = child
+
+        help_by_name = {
+            getattr(c, "dest", ""): getattr(c, "help", "")
+            for c in getattr(action, "_choices_actions", [])
+        }
+        for key, names in names_by_id.items():
+            child = parser_by_id[key]
+            desc = help_by_name.get(names[0]) or ""
+            groups.append({"names": names, "parser": child, "help": desc})
+    return groups
+
+
+def _action_takes_value(action: argparse.Action) -> bool:
+    if isinstance(action, argparse.BooleanOptionalAction):
+        return False
+    if getattr(action, "nargs", None) == 0:
+        return False
+    return not isinstance(action, (argparse._StoreTrueAction, argparse._StoreFalseAction,
+                                   argparse._StoreConstAction, argparse._CountAction))
+
+
+def _classify_value(action: argparse.Action) -> str:
+    """Heuristic: decide what kind of value an argument accepts."""
+    if getattr(action, "choices", None):
+        return "choices"
+    blob = " ".join(
+        part for part in [
+            getattr(action, "dest", ""),
+            getattr(action, "metavar", "") or "",
+            getattr(action, "help", "") or "",
+        ] if part
+    ).lower()
+    if any(t in blob for t in ("profile", "clone-from", "old_name")):
+        return "profiles"
+    if any(t in blob for t in ("directory", "dir", "folder")):
+        return "directory"
+    if any(t in blob for t in ("path", "file", "archive", "pem", "jsonl",
+                                "json file", "config file", "env file")):
+        return "file"
+    return "value"
+
+
 def _clean(text: str, maxlen: int = 60) -> str:
     """Strip shell-unsafe characters and truncate."""
     return text.replace("'", "").replace('"', "").replace("\\", "")[:maxlen]
@@ -246,70 +307,133 @@ _hermes "$@"
 # Fish
 # ---------------------------------------------------------------------------
 
-def generate_fish(parser: argparse.ArgumentParser) -> str:
-    tree = _walk(parser)
-    top_cmds = sorted(tree["subcommands"])
-    top_cmds_str = " ".join(top_cmds)
+def _fish_scope(path_groups: list[list[str]],
+                child_groups: list[list[str]] | None = None) -> str:
+    """Build a fish -n condition for the current scope depth.
 
-    lines: list[str] = [
-        "# Hermes Agent fish completion",
-        "# Add to your config:",
-        "#   hermes completion fish | source",
+    ``path_groups`` is a list of name-groups we must have seen (one per depth
+    level).  ``child_groups`` lists sibling subcommand names at the current
+    depth so we can emit ``not __fish_seen_subcommand_from …`` to prevent
+    completing options once a deeper subcommand has been typed.
+    """
+    if not path_groups:
+        return "__fish_use_subcommand"
+    parts = [f"__fish_seen_subcommand_from {' '.join(g)}" for g in path_groups]
+    if child_groups:
+        siblings = []
+        for g in child_groups:
+            siblings.extend(n for n in g if n not in siblings)
+        if siblings:
+            parts.append(f"not __fish_seen_subcommand_from {' '.join(siblings)}")
+    return "; and ".join(parts)
+
+
+def _fish_option(command: str, cond: str, action: argparse.Action,
+                 option: str) -> str:
+    """Format a single ``complete`` line for an option flag."""
+    parts = [f"complete -c {command}", f"-n '{cond}'"]
+    if option.startswith("--"):
+        parts.append(f"-l {option[2:]}")
+    elif option.startswith("-"):
+        parts.append(f"-s {option[1:]}")
+
+    desc = _clean(getattr(action, "help", "") or "")
+    if desc:
+        parts.append(f"-d '{desc}'")
+
+    if _action_takes_value(action):
+        kind = _classify_value(action)
+        if kind == "choices":
+            choices = " ".join(str(c) for c in action.choices)
+            parts.append(f"-xa '{choices}'")
+        elif kind == "profiles":
+            parts.append("-xa '(__hermes_profiles)'")
+        elif kind == "directory":
+            parts.append("-xa '(__fish_complete_directories)'")
+        elif kind == "file":
+            parts.append("-rF")
+        else:
+            parts.append("-r")
+    return " ".join(parts)
+
+
+def _fish_positional(command: str, cond: str,
+                     action: argparse.Action) -> str | None:
+    """Format a ``complete`` line for a positional arg, or None if generic."""
+    kind = _classify_value(action)
+    desc = _clean(getattr(action, "help", "") or getattr(action, "dest", "") or "")
+    desc_part = f" -d '{desc}'" if desc else ""
+    if kind == "choices" and getattr(action, "choices", None):
+        choices = " ".join(str(c) for c in action.choices)
+        return f"complete -c {command} -n '{cond}' -xa '{choices}'{desc_part}"
+    if kind == "profiles":
+        return f"complete -c {command} -n '{cond}' -xa '(__hermes_profiles)'{desc_part}"
+    return None
+
+
+def _fish_walk(parser: argparse.ArgumentParser, command: str,
+               path_groups: list[list[str]] | None = None) -> list[str]:
+    """Recursively generate fish completions for a parser and its children."""
+    path_groups = path_groups or []
+    lines: list[str] = []
+    child_entries = _walk_rich(parser)
+    child_name_groups = [e["names"] for e in child_entries]
+    cond = _fish_scope(path_groups,
+                       child_name_groups if path_groups else None)
+
+    # Options and positionals at this level.
+    for action in getattr(parser, "_actions", []):
+        if isinstance(action, argparse._SubParsersAction):
+            continue
+        if not getattr(action, "option_strings", None):
+            line = _fish_positional(command, cond, action)
+            if line:
+                lines.append(line)
+            continue
+        for opt in action.option_strings:
+            lines.append(_fish_option(command, cond, action, opt))
+
+    # Subcommands (including aliases) and recurse.
+    for entry in child_entries:
+        names = entry["names"]
+        desc = _clean(str(entry["help"] or ""))
+        desc_part = f" -d '{desc}'" if desc else ""
+        for name in names:
+            lines.append(f"complete -c {command} -n '{cond}' -a {name}{desc_part}")
+        lines.extend(_fish_walk(entry["parser"], command,
+                                [*path_groups, names]))
+    return lines
+
+
+def generate_fish(parser: argparse.ArgumentParser) -> str:
+    """Generate a complete fish completion script from the live argparse tree.
+
+    Produces completions for every flag, positional, and subcommand at all
+    nesting depths — including aliases, value-type hints (file, directory,
+    choices, profile names), and proper scope guards to prevent stale
+    suggestions.
+    """
+    command = "hermes"
+    lines = [
+        f"# fish completions for {command}",
+        f"# Install: hermes completion fish --install",
         "",
-        "# Helper: list available profiles",
         "function __hermes_profiles",
-        "    echo default",
+        "    set -l profiles default",
         "    if test -d $HOME/.hermes/profiles",
-        "        ls $HOME/.hermes/profiles 2>/dev/null",
+        "        for p in $HOME/.hermes/profiles/*",
+        "            if test -d $p",
+        "                set profiles $profiles (path basename $p)",
+        "            end",
+        "        end",
         "    end",
+        "    printf '%s\\n' $profiles",
         "end",
         "",
-        "# Disable file completion by default",
-        "complete -c hermes -f",
-        "",
-        "# Complete profile names after -p / --profile",
-        "complete -c hermes -f -s p -l profile"
-        " -d 'Profile name' -xa '(__hermes_profiles)'",
-        "",
-        "# Top-level subcommands",
+        f"complete -c {command} -f",
+        f"complete -c {command} -n '__fish_use_subcommand'"
+        f" -s p -l profile -xa '(__hermes_profiles)' -d 'Use a named profile'",
     ]
-
-    for cmd in top_cmds:
-        info = tree["subcommands"][cmd]
-        help_text = _clean(info.get("help", ""))
-        lines.append(
-            f"complete -c hermes -f "
-            f"-n 'not __fish_seen_subcommand_from {top_cmds_str}' "
-            f"-a {cmd} -d '{help_text}'"
-        )
-
-    lines.append("")
-    lines.append("# Subcommand completions")
-
-    profile_name_actions = {"use", "delete", "show", "alias", "rename", "export"}
-
-    for cmd in top_cmds:
-        info = tree["subcommands"][cmd]
-        if not info["subcommands"]:
-            continue
-        lines.append(f"# {cmd}")
-        for sc in sorted(info["subcommands"]):
-            sinfo = info["subcommands"][sc]
-            sh = _clean(sinfo.get("help", ""))
-            lines.append(
-                f"complete -c hermes -f "
-                f"-n '__fish_seen_subcommand_from {cmd}' "
-                f"-a {sc} -d '{sh}'"
-            )
-        # For profile subcommand, complete profile names for relevant actions
-        if cmd == "profile":
-            for action in sorted(profile_name_actions):
-                lines.append(
-                    f"complete -c hermes -f "
-                    f"-n '__fish_seen_subcommand_from {action}; "
-                    f"and __fish_seen_subcommand_from profile' "
-                    f"-a '(__hermes_profiles)' -d 'Profile name'"
-                )
-
+    lines.extend(_fish_walk(parser, command))
     lines.append("")
     return "\n".join(lines)

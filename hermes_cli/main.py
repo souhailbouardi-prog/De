@@ -6244,14 +6244,54 @@ def cmd_dashboard(args):
 
 
 def cmd_completion(args, parser=None):
-    """Print shell completion script."""
+    """Print or install shell completion scripts."""
     from hermes_cli.completion import generate_bash, generate_zsh, generate_fish
+    from hermes_cli.profiles import list_profiles
 
     shell = getattr(args, "shell", "bash")
+    command_name = (getattr(args, "command_name", None) or "hermes").strip()
+    install = bool(getattr(args, "install", False))
+    install_all = bool(getattr(args, "install_all", False))
+
+    def _fish_for_command(name: str) -> str:
+        script = generate_fish(parser)
+        if name != "hermes":
+            script = script.replace("# fish completions for hermes",
+                                    f"# fish completions for {name}")
+            script = script.replace("complete -c hermes ", f"complete -c {name} ")
+            script = script.replace("function __hermes_", f"function __{name}_")
+            script = script.replace("(__hermes_", f"(__{name}_")
+        return script
+
+    if shell == "fish":
+        if install_all:
+            target_dir = Path.home() / ".config" / "fish" / "completions"
+            target_dir.mkdir(parents=True, exist_ok=True)
+            installed = []
+            for name in ["hermes", *[p.name for p in list_profiles() if p.name != "default"]]:
+                path = target_dir / f"{name}.fish"
+                path.write_text(_fish_for_command(name))
+                installed.append(path)
+            print("Installed fish completions:")
+            for path in installed:
+                print(f"  {path}")
+            return
+        if install:
+            target_dir = Path.home() / ".config" / "fish" / "completions"
+            target_dir.mkdir(parents=True, exist_ok=True)
+            path = target_dir / f"{command_name}.fish"
+            path.write_text(_fish_for_command(command_name))
+            print(path)
+            return
+        print(_fish_for_command(command_name))
+        return
+
+    if install or install_all:
+        print("Error: --install and --install-all are currently supported only for fish completions.")
+        return
+
     if shell == "zsh":
         print(generate_zsh(parser))
-    elif shell == "fish":
-        print(generate_fish(parser))
     else:
         print(generate_bash(parser))
 
@@ -6277,8 +6317,8 @@ def cmd_logs(args):
     )
 
 
-def main():
-    """Main entry point for hermes CLI."""
+def build_parser() -> argparse.ArgumentParser:
+    """Build and return the Hermes CLI argparse parser."""
     parser = argparse.ArgumentParser(
         prog="hermes",
         description="Hermes Agent - AI assistant with tool-calling capabilities",
@@ -8256,6 +8296,18 @@ Examples:
         choices=["bash", "zsh", "fish"],
         help="Shell type (default: bash)",
     )
+    completion_parser.add_argument(
+        "--command-name", metavar="NAME",
+        help="Command name to generate fish completions for (default: hermes)",
+    )
+    completion_parser.add_argument(
+        "--install", action="store_true",
+        help="Install fish completions to ~/.config/fish/completions/<name>.fish",
+    )
+    completion_parser.add_argument(
+        "--install-all", action="store_true",
+        help="Install fish completions for hermes and every named profile wrapper",
+    )
     completion_parser.set_defaults(func=lambda args: cmd_completion(args, parser))
 
     # =========================================================================
@@ -8344,6 +8396,20 @@ Examples:
         help="Filter by component: gateway, agent, tools, cli, cron",
     )
     logs_parser.set_defaults(func=cmd_logs)
+
+    return parser
+
+
+def main():
+    """Main entry point for hermes CLI."""
+    parser = build_parser()
+
+    # Retrieve the subparsers action created inside build_parser() — needed
+    # for the defensive routing workaround below (bpo-9338).
+    subparsers = next(
+        (a for a in parser._actions if isinstance(a, argparse._SubParsersAction)),
+        None,
+    )
 
     # =========================================================================
     # Parse and execute
