@@ -16,6 +16,7 @@ Backend compatibility:
 - Exa: https://exa.ai (search, extract)
 - Firecrawl: https://docs.firecrawl.dev/introduction (search, extract, crawl; direct or derived firecrawl-gateway.<domain> for Nous Subscribers)
 - Parallel: https://docs.parallel.ai (search, extract)
+- Custom: Any OpenAI-compatible endpoint with built-in search (e.g. Perplexity Sonar)
 - Tavily: https://tavily.com (search, extract, crawl)
 
 LLM Processing:
@@ -88,7 +89,7 @@ def _get_backend() -> str:
     keys manually without running setup.
     """
     configured = (_load_web_config().get("backend") or "").lower().strip()
-    if configured in ("parallel", "firecrawl", "tavily", "exa"):
+    if configured in ("parallel", "firecrawl", "tavily", "exa", "custom"):
         return configured
 
     # Fallback for manual / legacy config — pick the highest-priority
@@ -99,6 +100,7 @@ def _get_backend() -> str:
         ("parallel", _has_env("PARALLEL_API_KEY")),
         ("tavily", _has_env("TAVILY_API_KEY")),
         ("exa", _has_env("EXA_API_KEY")),
+        ("custom", _has_env("CUSTOM_SEARCH_API_KEY")),
     )
     for backend, available in backend_candidates:
         if available:
@@ -117,6 +119,8 @@ def _is_backend_available(backend: str) -> bool:
         return check_firecrawl_api_key()
     if backend == "tavily":
         return _has_env("TAVILY_API_KEY")
+    if backend == "custom":
+        return _has_env("CUSTOM_SEARCH_API_KEY") or bool((_load_web_config().get("custom_api_key") or "").strip())
     return False
 
 # ─── Firecrawl Client ────────────────────────────────────────────────────────
@@ -187,6 +191,7 @@ def _web_requires_env() -> list[str]:
         "EXA_API_KEY",
         "PARALLEL_API_KEY",
         "TAVILY_API_KEY",
+        "CUSTOM_SEARCH_API_KEY",
         "FIRECRAWL_API_KEY",
         "FIRECRAWL_API_URL",
     ]
@@ -359,6 +364,199 @@ def _normalize_tavily_documents(response: dict, fallback_url: str = "") -> List[
             "error": "extraction failed",
             "metadata": {"sourceURL": url_str},
         })
+    return documents
+
+
+# ─── Custom Chat Completions Backend ──────────────────────────────────────────
+
+_CUSTOM_DEFAULT_MODEL = "sonar"
+
+
+def _get_custom_base_url() -> str:
+    """Return the custom backend API base URL.
+
+    Resolution order:
+    1. ``CUSTOM_SEARCH_BASE_URL`` environment variable
+    2. ``web.custom_base_url`` in config.yaml
+
+    Raises ``ValueError`` if not configured.
+    """
+    env_url = os.getenv("CUSTOM_SEARCH_BASE_URL", "").strip().rstrip("/")
+    if env_url:
+        return env_url
+    config_url = (_load_web_config().get("custom_base_url") or "").strip().rstrip("/")
+    if config_url:
+        return config_url
+    raise ValueError(
+        "Custom search backend requires a base URL. "
+        "Set CUSTOM_SEARCH_BASE_URL or web.custom_base_url in config.yaml."
+    )
+
+
+def _get_custom_model() -> str:
+    """Return the custom backend model name.
+
+    Resolution order:
+    1. ``CUSTOM_SEARCH_MODEL`` environment variable
+    2. ``web.custom_model`` in config.yaml
+    3. Default: ``sonar``
+    """
+    env_model = os.getenv("CUSTOM_SEARCH_MODEL", "").strip()
+    if env_model:
+        return env_model
+    config_model = (_load_web_config().get("custom_model") or "").strip()
+    if config_model:
+        return config_model
+    return _CUSTOM_DEFAULT_MODEL
+
+
+def _custom_headers() -> dict:
+    """Return auth headers for the custom search backend.
+
+    Resolution order for API key:
+    1. ``CUSTOM_SEARCH_API_KEY`` environment variable
+    2. ``web.custom_api_key`` in config.yaml
+    """
+    api_key = os.getenv("CUSTOM_SEARCH_API_KEY", "").strip()
+    if not api_key:
+        api_key = (_load_web_config().get("custom_api_key") or "").strip()
+    if not api_key:
+        raise ValueError(
+            "Custom search backend requires an API key. "
+            "Set CUSTOM_SEARCH_API_KEY or web.custom_api_key in config.yaml."
+        )
+    return {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+
+
+def _custom_chat(prompt: str) -> dict:
+    """Call the custom search model via OpenAI-compatible chat completions.
+
+    Works with any OpenAI-compatible endpoint that serves a model with
+    built-in web search (e.g. Perplexity Sonar, ChatGPT with browsing).
+    Returns the raw JSON response.
+    """
+    base_url = _get_custom_base_url()
+    model = _get_custom_model()
+    payload = {
+        "model": model,
+        "messages": [{"role": "user", "content": prompt}],
+    }
+    response = httpx.post(
+        f"{base_url}/chat/completions",
+        headers=_custom_headers(),
+        json=payload,
+        timeout=60,
+    )
+    response.raise_for_status()
+    return response.json()
+
+
+def _custom_search(query: str, limit: int = 5) -> dict:
+    """Search using a custom OpenAI-compatible model with built-in web search.
+
+    Models like Perplexity Sonar include ``citations`` and ``search_results``
+    in their responses alongside the generated answer. We extract structured
+    search results from these fields. Falls back to the answer text itself if
+    structured fields are absent.
+
+    Returns normalised ``{success, data: {web: [...]}}`` format.
+    """
+    logger.info("Custom search: '%s' (limit: %d)", query, limit)
+    data = _custom_chat(query)
+
+    web_results = []
+
+    # Prefer structured search_results if available (native Perplexity API)
+    search_results = data.get("search_results", [])
+    if search_results:
+        for i, sr in enumerate(search_results[:limit]):
+            web_results.append({
+                "title": sr.get("title", ""),
+                "url": sr.get("url", ""),
+                "description": sr.get("snippet", "") or sr.get("content", ""),
+                "position": i + 1,
+            })
+        return {"success": True, "data": {"web": web_results}}
+
+    # Fall back to citations list
+    citations = data.get("citations", [])
+    if citations:
+        for i, url in enumerate(citations[:limit]):
+            if isinstance(url, str):
+                web_results.append({
+                    "title": "",
+                    "url": url,
+                    "description": "",
+                    "position": i + 1,
+                })
+            elif isinstance(url, dict):
+                web_results.append({
+                    "title": url.get("title", ""),
+                    "url": url.get("url", ""),
+                    "description": url.get("snippet", "") or url.get("content", ""),
+                    "position": i + 1,
+                })
+
+    # If no structured results, include the answer text itself
+    if not web_results:
+        answer = ""
+        choices = data.get("choices", [])
+        if choices:
+            answer = choices[0].get("message", {}).get("content", "")
+        if answer:
+            web_results.append({
+                "title": "Search Answer",
+                "url": "",
+                "description": answer[:2000],
+                "position": 1,
+            })
+
+    return {"success": True, "data": {"web": web_results}}
+
+
+def _custom_extract(urls: List[str]) -> List[Dict[str, Any]]:
+    """Extract content from URLs using the custom chat completions backend.
+
+    Uses the configured model to fetch and summarise page content via
+    chat completion, suitable for models with built-in web access.
+    """
+    documents: List[Dict[str, Any]] = []
+
+    for url in urls:
+        try:
+            prompt = (
+                f"Extract and summarise the main content from this URL: {url}\n"
+                "Return the full content in markdown format. "
+                "Include all key information, facts, and details."
+            )
+            logger.info("Custom extract: %s", url)
+            data = _custom_chat(prompt)
+
+            content = ""
+            choices = data.get("choices", [])
+            if choices:
+                content = choices[0].get("message", {}).get("content", "")
+
+            documents.append({
+                "url": url,
+                "title": "",
+                "content": content,
+                "raw_content": content,
+                "metadata": {"sourceURL": url, "title": ""},
+            })
+        except Exception as exc:
+            logger.warning("Custom extract failed for %s: %s", url, exc)
+            documents.append({
+                "url": url,
+                "title": "",
+                "content": "",
+                "raw_content": "",
+                "error": str(exc),
+                "metadata": {"sourceURL": url},
+            })
     return documents
 
 
@@ -1118,6 +1316,15 @@ def web_search_tool(query: str, limit: int = 5) -> str:
             _debug.save()
             return result_json
 
+        if backend == "custom":
+            response_data = _custom_search(query, limit)
+            debug_call_data["results_count"] = len(response_data.get("data", {}).get("web", []))
+            result_json = json.dumps(response_data, indent=2, ensure_ascii=False)
+            debug_call_data["final_response_size"] = len(result_json)
+            _debug.log_call("web_search_tool", debug_call_data)
+            _debug.save()
+            return result_json
+
         logger.info("Searching the web for: '%s' (limit: %d)", query, limit)
 
         response = _get_firecrawl_client().search(
@@ -1252,6 +1459,9 @@ async def web_extract_tool(
                     "include_images": False,
                 })
                 results = _normalize_tavily_documents(raw, fallback_url=safe_urls[0] if safe_urls else "")
+            elif backend == "custom":
+                logger.info("Custom extract: %d URL(s)", len(safe_urls))
+                results = _custom_extract(safe_urls)
             else:
                 # ── Firecrawl extraction ──
                 # Determine requested formats for Firecrawl v2
@@ -1922,9 +2132,9 @@ def check_firecrawl_api_key() -> bool:
 def check_web_api_key() -> bool:
     """Check whether the configured web backend is available."""
     configured = _load_web_config().get("backend", "").lower().strip()
-    if configured in ("exa", "parallel", "firecrawl", "tavily"):
+    if configured in ("exa", "parallel", "firecrawl", "tavily", "custom"):
         return _is_backend_available(configured)
-    return any(_is_backend_available(backend) for backend in ("exa", "parallel", "firecrawl", "tavily"))
+    return any(_is_backend_available(backend) for backend in ("exa", "parallel", "firecrawl", "tavily", "custom"))
 
 
 def check_auxiliary_model() -> bool:
@@ -1959,6 +2169,11 @@ if __name__ == "__main__":
             print("   Using Parallel API (https://parallel.ai)")
         elif backend == "tavily":
             print("   Using Tavily API (https://tavily.com)")
+        elif backend == "custom":
+            cfg = _load_web_config()
+            custom_url = os.getenv("CUSTOM_SEARCH_BASE_URL", "") or cfg.get("custom_base_url", "")
+            custom_model = os.getenv("CUSTOM_SEARCH_MODEL", "") or cfg.get("custom_model", _CUSTOM_DEFAULT_MODEL)
+            print(f"   Using custom backend: {custom_url} (model: {custom_model})")
         else:
             if firecrawl_url_available:
                 print(f"   Using self-hosted Firecrawl: {os.getenv('FIRECRAWL_API_URL').strip().rstrip('/')}")
@@ -1971,7 +2186,7 @@ if __name__ == "__main__":
     else:
         print("❌ No web search backend configured")
         print(
-            "Set EXA_API_KEY, PARALLEL_API_KEY, TAVILY_API_KEY, FIRECRAWL_API_KEY, FIRECRAWL_API_URL"
+            "Set EXA_API_KEY, PARALLEL_API_KEY, TAVILY_API_KEY, CUSTOM_SEARCH_API_KEY, FIRECRAWL_API_KEY, FIRECRAWL_API_URL"
             f"{_firecrawl_backend_help_suffix()}"
         )
 

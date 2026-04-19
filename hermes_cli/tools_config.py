@@ -244,6 +244,18 @@ TOOL_CATEGORIES = {
                     {"key": "FIRECRAWL_API_URL", "prompt": "Your Firecrawl instance URL (e.g., http://localhost:3002)"},
                 ],
             },
+            {
+                "name": "Custom (OpenAI-compatible)",
+                "tag": "Any chat model with built-in search (e.g. Perplexity Sonar)",
+                "web_backend": "custom",
+                "env_vars": [
+                    {"key": "CUSTOM_SEARCH_API_KEY", "prompt": "API key for the custom search endpoint"},
+                ],
+                "extra_config": {
+                    "custom_base_url": {"prompt": "Base URL (e.g. https://api.perplexity.ai)"},
+                    "custom_model": {"prompt": "Model name (e.g. sonar)", "default": "sonar"},
+                },
+            },
         ],
     },
     "image_gen": {
@@ -1143,6 +1155,27 @@ def _configure_provider(provider: dict, config: dict):
     # Run post-setup hooks if needed
     if provider.get("post_setup") and all_configured:
         _run_post_setup(provider["post_setup"])
+
+    # Prompt for extra config values (e.g. custom search backend base_url, model)
+    extra_config = provider.get("extra_config", {})
+    if extra_config:
+        web_cfg = config.setdefault("web", {})
+        for cfg_key, cfg_spec in extra_config.items():
+            existing = web_cfg.get(cfg_key, "")
+            if existing:
+                _print_success(f"  web.{cfg_key}: already configured")
+            else:
+                default_val = cfg_spec.get("default", "")
+                if default_val:
+                    value = _prompt(f"    {cfg_spec.get('prompt', cfg_key)}", default_val)
+                else:
+                    value = _prompt(f"    {cfg_spec.get('prompt', cfg_key)}")
+                if value:
+                    web_cfg[cfg_key] = value
+                    _print_success(f"    web.{cfg_key} saved")
+                else:
+                    _print_warning(f"    web.{cfg_key} skipped")
+                    all_configured = False
 
     if all_configured:
         _print_success(f"  {provider['name']} configured!")
