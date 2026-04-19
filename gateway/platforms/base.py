@@ -34,7 +34,10 @@ def utf16_len(s: str) -> int:
     Ported from nearai/ironclaw#2304 which discovered the same discrepancy in
     Rust's ``chars().count()``.
     """
-    return len(s.encode("utf-16-le")) // 2
+    # Use 'surrogatepass' so lone surrogates (which can appear when JSON
+    # decoders preserve \uD83C\uDFA9-style escape pairs verbatim) are
+    # counted as one UTF-16 code unit each instead of raising.
+    return len(s.encode("utf-16-le", "surrogatepass")) // 2
 
 
 def _prefix_within_utf16_limit(s: str, limit: int) -> str:
@@ -2302,6 +2305,20 @@ class BasePlatformAdapter(ABC):
                     safe_split = max(safe_split, nl_split)
                     if safe_split > _cp_limit // 4:
                         split_at = safe_split
+
+            # Ensure split_at does not land between UTF-16 surrogate halves.
+            # Model APIs can deliver astral-plane characters as JSON-escaped
+            # surrogate pairs (\uD83C\uDFA9) which some decoders store as two
+            # separate code units in the Python string.  Slicing between a high
+            # surrogate (U+D800..U+DBFF) and its low surrogate (U+DC00..U+DFFF)
+            # produces a lone surrogate that causes UnicodeEncodeError when the
+            # chunk is later encoded for delivery.
+            if 0 < split_at < len(remaining):
+                ch = remaining[split_at - 1]
+                if '\uD800' <= ch <= '\uDBFF':
+                    # Previous char is a high surrogate — include the low half
+                    # so the pair stays together.
+                    split_at -= 1
 
             chunk_body = remaining[:split_at]
             remaining = remaining[split_at:].lstrip()

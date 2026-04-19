@@ -582,3 +582,31 @@ class TestTruncateMessageUtf16:
                 f"Chunk {i} has unbalanced fences ({fence_count})"
             )
 
+    def test_no_lone_surrogates_after_split(self):
+        """Splitting must not produce chunks with isolated UTF-16 surrogates.
+
+        Some JSON decoders store astral-plane characters (emoji, CJK Ext-B) as
+        two separate surrogate code units (\\uD800-\\uDBFF + \\uDC00-\\uDFFF)
+        instead of converting them to a single code point.  If the split lands
+        between the high and low surrogate, the resulting chunk contains a lone
+        surrogate that causes ``UnicodeEncodeError`` on delivery.
+
+        Regression test for GitHub issue #11467.
+        """
+        # Build a string that contains surrogate pairs as separate code units.
+        # 🎩 (U+1F3A9) = surrogate pair D83C DFA9
+        hat_as_surrogates = "\uD83C\uDFA9"
+        # Pad with spaces so the split point naturally falls near the pair.
+        msg = "x" * 95 + " " + hat_as_surrogates + " " + "y" * 200
+        chunks = BasePlatformAdapter.truncate_message(msg, 100, len_fn=utf16_len)
+        for i, chunk in enumerate(chunks):
+            for j, ch in enumerate(chunk):
+                assert not ('\uD800' <= ch <= '\uDBFF' and
+                            (j + 1 >= len(chunk) or not ('\uDC00' <= chunk[j + 1] <= '\uDFFF'))), (
+                    f"Chunk {i} has lone high surrogate at position {j}"
+                )
+                assert not ('\uDC00' <= ch <= '\uDFFF' and
+                            (j == 0 or not ('\uD800' <= chunk[j - 1] <= '\uDBFF'))), (
+                    f"Chunk {i} has lone low surrogate at position {j}"
+                )
+
