@@ -15,6 +15,7 @@ Available tools:
 Backend compatibility:
 - Exa: https://exa.ai (search, extract)
 - Firecrawl: https://docs.firecrawl.dev/introduction (search, extract, crawl; direct or derived firecrawl-gateway.<domain> for Nous Subscribers)
+- Ollama: https://ollama.com (search, fetch)
 - Parallel: https://docs.parallel.ai (search, extract)
 - Tavily: https://tavily.com (search, extract, crawl)
 
@@ -88,7 +89,7 @@ def _get_backend() -> str:
     keys manually without running setup.
     """
     configured = (_load_web_config().get("backend") or "").lower().strip()
-    if configured in ("parallel", "firecrawl", "tavily", "exa"):
+    if configured in ("parallel", "firecrawl", "tavily", "exa", "ollama"):
         return configured
 
     # Fallback for manual / legacy config — pick the highest-priority
@@ -99,6 +100,7 @@ def _get_backend() -> str:
         ("parallel", _has_env("PARALLEL_API_KEY")),
         ("tavily", _has_env("TAVILY_API_KEY")),
         ("exa", _has_env("EXA_API_KEY")),
+        ("ollama", _has_env("OLLAMA_API_KEY")),
     )
     for backend, available in backend_candidates:
         if available:
@@ -117,6 +119,8 @@ def _is_backend_available(backend: str) -> bool:
         return check_firecrawl_api_key()
     if backend == "tavily":
         return _has_env("TAVILY_API_KEY")
+    if backend == "ollama":
+        return _has_env("OLLAMA_API_KEY")
     return False
 
 # ─── Firecrawl Client ────────────────────────────────────────────────────────
@@ -871,6 +875,162 @@ def clean_base64_images(text: str) -> str:
     return cleaned_text
 
 
+# ─── Ollama Web Client ───────────────────────────────────────────────────────
+
+_OLLAMA_WEB_BASE_URL = "https://ollama.com/api"
+
+
+def _ollama_request(endpoint: str, payload: dict) -> dict:
+    """Send a POST request to the Ollama Web API.
+
+    Auth is provided via Bearer token header.
+    Raises ``ValueError`` if ``OLLAMA_API_KEY`` is not set.
+    """
+    api_key = os.getenv("OLLAMA_API_KEY", "")
+    if not api_key:
+        raise ValueError(
+            "OLLAMA_API_KEY environment variable not set. "
+            "Get your API key at https://ollama.com (sign in and create API key)"
+        )
+
+    url = f"{_OLLAMA_WEB_BASE_URL}/{endpoint.lstrip('/')}"
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+
+    logger.info("Ollama %s request to %s", endpoint, url)
+    response = httpx.post(url, json=payload, headers=headers, timeout=60)
+    response.raise_for_status()
+    return response.json()
+
+
+def _ollama_search(query: str, limit: int = 5) -> dict:
+    """Search the web using Ollama's web_search endpoint.
+
+    Args:
+        query: The search query
+        limit: Maximum number of results to return
+
+    Returns:
+        Normalized search results in standard format
+    """
+    raw = _ollama_request("web_search", {
+        "query": query,
+        "max_results": min(limit, 20),
+    })
+    return _normalize_ollama_search_results(raw)
+
+
+def _normalize_ollama_search_results(response: dict) -> dict:
+    """Normalize Ollama web_search response to the standard format.
+
+    Ollama returns results in various formats depending on the response.
+    We normalize to {success, data: {web: [{title, url, description, position}]}}.
+    """
+    web_results = []
+
+    # Ollama web_search returns a WebSearchResult object with 'content' field
+    # containing the search results
+    if isinstance(response, dict):
+        # Check for 'results' key (list of results)
+        results = response.get("results", [])
+        if not results and "content" in response:
+            # Content might be a string with formatted results
+            content = response.get("content", "")
+            # Try to parse as JSON if it looks like JSON
+            if content.startswith("{") or content.startswith("["):
+                try:
+                    parsed = json.loads(content)
+                    if isinstance(parsed, list):
+                        results = parsed
+                    elif isinstance(parsed, dict):
+                        results = parsed.get("results", parsed.get("web", []))
+                except json.JSONDecodeError:
+                    pass
+            else:
+                # Parse text-formatted results (common format: markdown-style)
+                # Try to extract URLs and titles from markdown links
+                links = re.findall(r'\[([^\]]+)\]\(([^)]+)\)', content)
+                for i, (title, url) in enumerate(links[:10]):
+                    web_results.append({
+                        "title": title,
+                        "url": url,
+                        "description": "",
+                        "position": i + 1,
+                    })
+
+        # Process results list if we have one
+        for i, result in enumerate(results[:10]):
+            if isinstance(result, dict):
+                web_results.append({
+                    "title": result.get("title", result.get("name", "")),
+                    "url": result.get("url", result.get("link", "")),
+                    "description": result.get("description", result.get("snippet", result.get("content", ""))),
+                    "position": i + 1,
+                })
+            elif isinstance(result, str):
+                # Result might be a URL string
+                web_results.append({
+                    "title": "",
+                    "url": result,
+                    "description": "",
+                    "position": i + 1,
+                })
+
+    return {"success": True, "data": {"web": web_results}}
+
+
+def _ollama_fetch(url: str) -> dict:
+    """Fetch content from a URL using Ollama's web_fetch endpoint.
+
+    Args:
+        url: The URL to fetch
+
+    Returns:
+        Normalized document in standard format
+    """
+    raw = _ollama_request("web_fetch", {"url": url})
+    return _normalize_ollama_fetch_result(raw, url)
+
+
+def _normalize_ollama_fetch_result(response: dict, fallback_url: str = "") -> dict:
+    """Normalize Ollama web_fetch response to the standard document format.
+
+    Returns dict with url, title, content, raw_content, metadata.
+    """
+    content = ""
+    title = ""
+
+    if isinstance(response, dict):
+        # Ollama returns content directly
+        content = response.get("content", "")
+        title = response.get("title", "")
+
+        # If content is nested differently, try alternatives
+        if not content:
+            content = response.get("raw_content", response.get("text", ""))
+
+        # Extract metadata if available
+        metadata = response.get("metadata", {"sourceURL": fallback_url})
+        if not isinstance(metadata, dict):
+            metadata = {"sourceURL": fallback_url}
+        if "sourceURL" not in metadata:
+            metadata["sourceURL"] = fallback_url
+    else:
+        # Response might be a string
+        content = str(response) if response else ""
+        metadata = {"sourceURL": fallback_url}
+
+    return {
+        "url": fallback_url,
+        "title": title,
+        "content": content,
+        "raw_content": content,
+        "metadata": metadata,
+    }
+
+
 # ─── Exa Client ──────────────────────────────────────────────────────────────
 
 _exa_client = None
@@ -1118,6 +1278,16 @@ def web_search_tool(query: str, limit: int = 5) -> str:
             _debug.save()
             return result_json
 
+        if backend == "ollama":
+            logger.info("Ollama web search: '%s' (limit: %d)", query, limit)
+            response_data = _ollama_search(query, limit)
+            debug_call_data["results_count"] = len(response_data.get("data", {}).get("web", []))
+            result_json = json.dumps(response_data, indent=2, ensure_ascii=False)
+            debug_call_data["final_response_size"] = len(result_json)
+            _debug.log_call("web_search_tool", debug_call_data)
+            _debug.save()
+            return result_json
+
         logger.info("Searching the web for: '%s' (limit: %d)", query, limit)
 
         response = _get_firecrawl_client().search(
@@ -1252,6 +1422,22 @@ async def web_extract_tool(
                     "include_images": False,
                 })
                 results = _normalize_tavily_documents(raw, fallback_url=safe_urls[0] if safe_urls else "")
+            elif backend == "ollama":
+                # Ollama web_fetch handles one URL at a time
+                logger.info("Ollama web_fetch: %d URL(s)", len(safe_urls))
+                results: List[Dict[str, Any]] = []
+                for url in safe_urls:
+                    try:
+                        result = _ollama_fetch(url)
+                        results.append(result)
+                    except Exception as e:
+                        logger.debug("Ollama fetch failed for %s: %s", url, e)
+                        results.append({
+                            "url": url,
+                            "title": "",
+                            "content": "",
+                            "error": str(e),
+                        })
             else:
                 # ── Firecrawl extraction ──
                 # Determine requested formats for Firecrawl v2
@@ -1922,9 +2108,9 @@ def check_firecrawl_api_key() -> bool:
 def check_web_api_key() -> bool:
     """Check whether the configured web backend is available."""
     configured = _load_web_config().get("backend", "").lower().strip()
-    if configured in ("exa", "parallel", "firecrawl", "tavily"):
+    if configured in ("exa", "parallel", "firecrawl", "tavily", "ollama"):
         return _is_backend_available(configured)
-    return any(_is_backend_available(backend) for backend in ("exa", "parallel", "firecrawl", "tavily"))
+    return any(_is_backend_available(backend) for backend in ("exa", "parallel", "firecrawl", "tavily", "ollama"))
 
 
 def check_auxiliary_model() -> bool:
