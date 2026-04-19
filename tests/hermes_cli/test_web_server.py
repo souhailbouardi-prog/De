@@ -112,6 +112,219 @@ class TestWebServerEndpoints:
         self.client = TestClient(app)
         self.client.headers["Authorization"] = f"Bearer {_SESSION_TOKEN}"
 
+    def test_get_session_detail_uses_session_query_service(self, monkeypatch):
+        calls = []
+
+        class DummyService:
+            def get_session_detail(self, session_id):
+                calls.append(("get_session_detail", session_id))
+                return {"session_id": "sess_123", "title": "Test session"}
+
+            def close(self):
+                calls.append(("close", None))
+
+        monkeypatch.setattr(
+            "gateway.session_query_service.SessionQueryService",
+            DummyService,
+        )
+
+        resp = self.client.get("/api/sessions/sess_123")
+
+        assert resp.status_code == 200
+        assert resp.json() == {"session_id": "sess_123", "title": "Test session"}
+        assert calls == [
+            ("get_session_detail", "sess_123"),
+            ("close", None),
+        ]
+
+    def test_get_session_detail_returns_404_when_service_misses(self, monkeypatch):
+        class DummyService:
+            def get_session_detail(self, session_id):
+                return None
+
+            def close(self):
+                pass
+
+        monkeypatch.setattr(
+            "gateway.session_query_service.SessionQueryService",
+            DummyService,
+        )
+
+        resp = self.client.get("/api/sessions/missing")
+
+        assert resp.status_code == 404
+        assert resp.json()["detail"] == "Session not found"
+
+    def test_get_session_messages_uses_session_query_service(self, monkeypatch):
+        calls = []
+
+        class DummyService:
+            def get_session_messages(self, session_id):
+                calls.append(("get_session_messages", session_id))
+                return {"session_id": "sess_123", "messages": [{"id": 1, "role": "user"}]}
+
+            def close(self):
+                calls.append(("close", None))
+
+        monkeypatch.setattr(
+            "gateway.session_query_service.SessionQueryService",
+            DummyService,
+        )
+
+        resp = self.client.get("/api/sessions/sess_123/messages")
+
+        assert resp.status_code == 200
+        assert resp.json() == {
+            "session_id": "sess_123",
+            "messages": [{"id": 1, "role": "user"}],
+        }
+        assert calls == [
+            ("get_session_messages", "sess_123"),
+            ("close", None),
+        ]
+
+    def test_get_session_messages_returns_404_when_service_misses(self, monkeypatch):
+        class DummyService:
+            def get_session_messages(self, session_id):
+                return None
+
+            def close(self):
+                pass
+
+        monkeypatch.setattr(
+            "gateway.session_query_service.SessionQueryService",
+            DummyService,
+        )
+
+        resp = self.client.get("/api/sessions/missing/messages")
+
+        assert resp.status_code == 404
+        assert resp.json()["detail"] == "Session not found"
+
+    def test_get_root_tasks_uses_session_query_service(self, monkeypatch):
+        calls = []
+
+        class DummyService:
+            def get_root_task_snapshots(self):
+                calls.append(("get_root_task_snapshots", None))
+                return {"root_tasks": [{"root_session_id": "sess_root"}]}
+
+            def close(self):
+                calls.append(("close", None))
+
+        monkeypatch.setattr(
+            "gateway.session_query_service.SessionQueryService",
+            DummyService,
+        )
+
+        resp = self.client.get("/api/sessions/root-tasks")
+
+        assert resp.status_code == 200
+        assert resp.json() == {"root_tasks": [{"root_session_id": "sess_root"}]}
+        assert calls == [
+            ("get_root_task_snapshots", None),
+            ("close", None),
+        ]
+
+    def test_get_session_messages_page_rejects_partial_cursor_params(self, monkeypatch):
+        class DummyService:
+            def __init__(self):
+                raise AssertionError("service should not be constructed for invalid cursor params")
+
+        monkeypatch.setattr(
+            "gateway.session_query_service.SessionQueryService",
+            DummyService,
+        )
+
+        resp = self.client.get("/api/sessions/sess_123/messages-page?before_id=1")
+
+        assert resp.status_code == 400
+        assert resp.json()["detail"] == "before_id and before_ts must be provided together"
+
+    def test_get_session_messages_page_returns_404_when_service_misses(self, monkeypatch):
+        calls = []
+
+        class DummyService:
+            def get_session_messages_page(self, session_id, limit, before_id, before_ts):
+                calls.append(("get_session_messages_page", session_id, limit, before_id, before_ts))
+                return None
+
+            def close(self):
+                calls.append(("close", None))
+
+        monkeypatch.setattr(
+            "gateway.session_query_service.SessionQueryService",
+            DummyService,
+        )
+
+        resp = self.client.get("/api/sessions/missing/messages-page?limit=10")
+
+        assert resp.status_code == 404
+        assert resp.json()["detail"] == "Session not found"
+        assert calls == [
+            ("get_session_messages_page", "missing", 10, None, None),
+            ("close", None),
+        ]
+
+    def test_get_session_binding_returns_404_when_session_missing(self, monkeypatch):
+        calls = []
+
+        class DummyService:
+            def get_session_detail(self, session_id):
+                calls.append(("get_session_detail", session_id))
+                return None
+
+            def close(self):
+                calls.append(("close", None))
+
+        monkeypatch.setattr(
+            "gateway.session_query_service.SessionQueryService",
+            DummyService,
+        )
+
+        resp = self.client.get("/api/sessions/missing/binding")
+
+        assert resp.status_code == 404
+        assert resp.json()["detail"] == "Session not found"
+        assert calls == [
+            ("get_session_detail", "missing"),
+            ("close", None),
+        ]
+
+
+    def test_get_session_binding_returns_404_when_root_session_is_unrelated(self, monkeypatch):
+        calls = []
+
+        class DummyService:
+            def get_session_detail(self, session_id):
+                calls.append(("get_session_detail", session_id))
+                if session_id in {"sess_leaf", "sess_other_root"}:
+                    return {"session_id": session_id}
+                return None
+
+            def get_session_binding(self, session_id, root_session_id=None):
+                calls.append(("get_session_binding", session_id, root_session_id))
+                return None
+
+            def close(self):
+                calls.append(("close", None))
+
+        monkeypatch.setattr(
+            "gateway.session_query_service.SessionQueryService",
+            DummyService,
+        )
+
+        resp = self.client.get("/api/sessions/sess_leaf/binding?root_session_id=sess_other_root")
+
+        assert resp.status_code == 404
+        assert resp.json()["detail"] == "Session not found"
+        assert calls == [
+            ("get_session_detail", "sess_leaf"),
+            ("get_session_detail", "sess_other_root"),
+            ("get_session_binding", "sess_leaf", "sess_other_root"),
+            ("close", None),
+        ]
+
     def test_get_status(self):
         resp = self.client.get("/api/status")
         assert resp.status_code == 200

@@ -479,21 +479,14 @@ async def get_status():
 @app.get("/api/sessions")
 async def get_sessions(limit: int = 20, offset: int = 0):
     try:
-        from hermes_state import SessionDB
-        db = SessionDB()
+        from gateway.session_query_service import SessionQueryService
+
+        service = SessionQueryService()
         try:
-            sessions = db.list_sessions_rich(limit=limit, offset=offset)
-            total = db.session_count()
-            now = time.time()
-            for s in sessions:
-                s["is_active"] = (
-                    s.get("ended_at") is None
-                    and (now - s.get("last_active", s.get("started_at", 0))) < 300
-                )
-            return {"sessions": sessions, "total": total, "limit": limit, "offset": offset}
+            return service.list_sessions(limit=limit, offset=offset)
         finally:
-            db.close()
-    except Exception as e:
+            service.close()
+    except Exception:
         _log.exception("GET /api/sessions failed")
         raise HTTPException(status_code=500, detail="Internal server error")
 
@@ -501,43 +494,28 @@ async def get_sessions(limit: int = 20, offset: int = 0):
 @app.get("/api/sessions/search")
 async def search_sessions(q: str = "", limit: int = 20):
     """Full-text search across session message content using FTS5."""
-    if not q or not q.strip():
-        return {"results": []}
     try:
-        from hermes_state import SessionDB
-        db = SessionDB()
+        from gateway.session_query_service import SessionQueryService
+
+        service = SessionQueryService()
         try:
-            # Auto-add prefix wildcards so partial words match
-            # e.g. "nimb" → "nimb*" matches "nimby"
-            # Preserve quoted phrases and existing wildcards as-is
-            import re
-            terms = []
-            for token in re.findall(r'"[^"]*"|\S+', q.strip()):
-                if token.startswith('"') or token.endswith("*"):
-                    terms.append(token)
-                else:
-                    terms.append(token + "*")
-            prefix_query = " ".join(terms)
-            matches = db.search_messages(query=prefix_query, limit=limit)
-            # Group by session_id — return unique sessions with their best snippet
-            seen: dict = {}
-            for m in matches:
-                sid = m["session_id"]
-                if sid not in seen:
-                    seen[sid] = {
-                        "session_id": sid,
-                        "snippet": m.get("snippet", ""),
-                        "role": m.get("role"),
-                        "source": m.get("source"),
-                        "model": m.get("model"),
-                        "session_started": m.get("session_started"),
-                    }
-            return {"results": list(seen.values())}
+            return service.search_sessions(q=q, limit=limit)
         finally:
-            db.close()
+            service.close()
     except Exception:
         _log.exception("GET /api/sessions/search failed")
         raise HTTPException(status_code=500, detail="Search failed")
+
+
+@app.get("/api/sessions/root-tasks")
+async def get_root_tasks():
+    from gateway.session_query_service import SessionQueryService
+
+    service = SessionQueryService()
+    try:
+        return service.get_root_task_snapshots()
+    finally:
+        service.close()
 
 
 def _normalize_config_for_web(config: Dict[str, Any]) -> Dict[str, Any]:
@@ -1671,30 +1649,96 @@ async def cancel_oauth_session(session_id: str, request: Request):
 
 @app.get("/api/sessions/{session_id}")
 async def get_session_detail(session_id: str):
-    from hermes_state import SessionDB
-    db = SessionDB()
+    from gateway.session_query_service import SessionQueryService
+
+    service = SessionQueryService()
     try:
-        sid = db.resolve_session_id(session_id)
-        session = db.get_session(sid) if sid else None
+        session = service.get_session_detail(session_id)
         if not session:
             raise HTTPException(status_code=404, detail="Session not found")
         return session
     finally:
-        db.close()
+        service.close()
 
 
 @app.get("/api/sessions/{session_id}/messages")
 async def get_session_messages(session_id: str):
-    from hermes_state import SessionDB
-    db = SessionDB()
+    from gateway.session_query_service import SessionQueryService
+
+    service = SessionQueryService()
     try:
-        sid = db.resolve_session_id(session_id)
-        if not sid:
+        messages = service.get_session_messages(session_id)
+        if not messages:
             raise HTTPException(status_code=404, detail="Session not found")
-        messages = db.get_messages(sid)
-        return {"session_id": sid, "messages": messages}
+        return messages
     finally:
-        db.close()
+        service.close()
+
+
+@app.get("/api/sessions/{session_id}/messages-page")
+async def get_session_messages_page(
+    session_id: str,
+    limit: str = "24",
+    before_id: str | None = None,
+    before_ts: str | None = None,
+):
+    from gateway.session_query_service import SessionQueryService
+
+    try:
+        parsed_limit = int(limit)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="limit must be an integer")
+
+    if before_id is None and before_ts is None:
+        parsed_before_id = None
+        parsed_before_ts = None
+    elif before_id is None or before_ts is None:
+        raise HTTPException(status_code=400, detail="before_id and before_ts must be provided together")
+    else:
+        try:
+            parsed_before_id = int(before_id)
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="before_id must be an integer")
+        try:
+            parsed_before_ts = float(before_ts)
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="before_ts must be a number")
+
+    service = SessionQueryService()
+    try:
+        try:
+            page = service.get_session_messages_page(
+                session_id,
+                limit=parsed_limit,
+                before_id=parsed_before_id,
+                before_ts=parsed_before_ts,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        if not page:
+            raise HTTPException(status_code=404, detail="Session not found")
+        return page
+    finally:
+        service.close()
+
+
+@app.get("/api/sessions/{session_id}/binding")
+async def get_session_binding(session_id: str, root_session_id: str | None = None):
+    from gateway.session_query_service import SessionQueryService
+
+    service = SessionQueryService()
+    try:
+        if service.get_session_detail(session_id) is None:
+            raise HTTPException(status_code=404, detail="Session not found")
+        if root_session_id is not None and service.get_session_detail(root_session_id) is None:
+            raise HTTPException(status_code=404, detail="Root session not found")
+
+        binding = service.get_session_binding(session_id, root_session_id=root_session_id)
+        if not binding:
+            raise HTTPException(status_code=404, detail="Session not found")
+        return binding
+    finally:
+        service.close()
 
 
 @app.delete("/api/sessions/{session_id}")
