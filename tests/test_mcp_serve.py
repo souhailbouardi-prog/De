@@ -229,6 +229,24 @@ class TestHelpers:
         result = _get_sessions_dir()
         assert result == tmp_path / "sessions"
 
+    def test_get_sessions_dir_importerror_prefers_env_over_default(self, tmp_path, monkeypatch):
+        import builtins
+        import mcp_serve
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "profile-home"))
+
+        real_import = builtins.__import__
+
+        def fake_import(name, *args, **kwargs):
+            if name == "hermes_constants":
+                raise ImportError("boom")
+            return real_import(name, *args, **kwargs)
+
+        with patch("builtins.__import__", side_effect=fake_import):
+            result = mcp_serve._get_sessions_dir()
+
+        assert result == tmp_path / "profile-home" / "sessions"
+
     def test_load_sessions_index_empty(self, sessions_dir, monkeypatch):
         import mcp_serve
         monkeypatch.setattr(mcp_serve, "_get_sessions_dir", lambda: sessions_dir)
@@ -245,6 +263,28 @@ class TestHelpers:
         import mcp_serve
         monkeypatch.setattr(mcp_serve, "_get_sessions_dir", lambda: sessions_dir)
         assert mcp_serve._load_sessions_index() == {}
+
+    def test_load_channel_directory_importerror_prefers_env_over_default(self, tmp_path, monkeypatch):
+        import builtins
+        import mcp_serve
+
+        hermes_home = tmp_path / "profile-home"
+        hermes_home.mkdir()
+        directory_file = hermes_home / "channel_directory.json"
+        directory_file.write_text(json.dumps({"telegram": {"targets": []}}))
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        real_import = builtins.__import__
+
+        def fake_import(name, *args, **kwargs):
+            if name == "hermes_constants":
+                raise ImportError("boom")
+            return real_import(name, *args, **kwargs)
+
+        with patch("builtins.__import__", side_effect=fake_import):
+            result = mcp_serve._load_channel_directory()
+
+        assert result == {"telegram": {"targets": []}}
 
 
 class TestContentExtraction:
@@ -1040,6 +1080,60 @@ class TestEventBridgePollE2E:
         bridge._poll_once(db)
         assert db.call_count == first_calls, \
             "Second poll should skip DB queries when files unchanged"
+
+    def test_poll_once_importerror_prefers_env_state_db_path(self, tmp_path, monkeypatch):
+        import builtins
+        import mcp_serve
+
+        hermes_home = tmp_path / "profile-home"
+        sessions_dir = hermes_home / "sessions"
+        sessions_dir.mkdir(parents=True)
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setattr(mcp_serve, "_get_sessions_dir", lambda: sessions_dir)
+
+        session_id = "20260329_150000_importerror"
+        sessions_data = {
+            "agent:main:telegram:dm:importerror": {
+                "session_key": "agent:main:telegram:dm:importerror",
+                "session_id": session_id,
+                "platform": "telegram",
+                "updated_at": "2026-03-29T15:00:05",
+                "origin": {"platform": "telegram", "chat_id": "importerror"},
+            }
+        }
+        (sessions_dir / "sessions.json").write_text(json.dumps(sessions_data))
+
+        db_path = hermes_home / "state.db"
+        _create_test_db(db_path, session_id, [
+            {"role": "user", "content": "Hello", "timestamp": "2026-03-29T15:00:01"},
+        ])
+
+        class TestDB:
+            def get_messages(self, sid):
+                conn = sqlite3.connect(str(db_path))
+                conn.row_factory = sqlite3.Row
+                rows = conn.execute(
+                    "SELECT * FROM messages WHERE session_id = ? ORDER BY id",
+                    (sid,),
+                ).fetchall()
+                conn.close()
+                return [dict(r) for r in rows]
+
+        bridge = mcp_serve.EventBridge()
+
+        real_import = builtins.__import__
+
+        def fake_import(name, *args, **kwargs):
+            if name == "hermes_constants":
+                raise ImportError("boom")
+            return real_import(name, *args, **kwargs)
+
+        with patch("builtins.__import__", side_effect=fake_import):
+            bridge._poll_once(TestDB())
+
+        result = bridge.poll_events(after_cursor=0)
+        assert len(result["events"]) == 1
+        assert result["events"][0]["content"] == "Hello"
 
     def test_poll_detects_new_message_after_db_write(self, tmp_path, monkeypatch):
         """Write a new message to the DB after first poll, verify it's detected."""

@@ -19,8 +19,11 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = SCRIPT_DIR.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-HERMES_HOME = Path(os.getenv("HERMES_HOME", Path.home() / ".hermes"))
-ENV_FILE = HERMES_HOME / ".env"
+from hermes_constants import get_config_path, get_env_path, get_hermes_home
+
+HERMES_HOME = get_hermes_home()
+ENV_FILE = get_env_path()
+CONFIG_PATH = get_config_path()
 
 OK = "\033[92m\u2713\033[0m"
 FAIL = "\033[91m\u2717\033[0m"
@@ -151,7 +154,7 @@ def check_system_tools():
             if opus_loaded:
                 check("Opus codec", True)
             else:
-                check("Opus codec", False, "brew install opus / apt install libopus0")
+                check("Opus codec", False, "brew install opus")
                 ok = False
         except Exception as e:
             check("Opus codec", False, str(e))
@@ -164,7 +167,7 @@ def check_system_tools():
     if ffmpeg_path:
         check("ffmpeg", True, ffmpeg_path)
     else:
-        check("ffmpeg", False, "brew install ffmpeg / apt install ffmpeg")
+        check("ffmpeg", False, "brew install ffmpeg")
         ok = False
 
     return ok
@@ -235,11 +238,10 @@ def check_config(groq_key, eleven_key):
     """Check hermes config.yaml."""
     section("Configuration")
 
-    config_path = HERMES_HOME / "config.yaml"
-    if config_path.exists():
+    if CONFIG_PATH.exists():
         try:
             import yaml
-            with open(config_path) as f:
+            with open(CONFIG_PATH) as f:
                 cfg = yaml.safe_load(f) or {}
 
             stt_provider = cfg.get("stt", {}).get("provider", "local")
