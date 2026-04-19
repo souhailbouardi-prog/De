@@ -142,6 +142,7 @@ _FEISHU_DOC_UPLOAD_TYPES = {
     ".docx": "doc",
     ".xls": "xls",
     ".xlsx": "xls",
+    ".csv": "csv",
     ".ppt": "ppt",
     ".pptx": "ppt",
 }
@@ -3498,21 +3499,51 @@ class FeishuAdapter(BasePlatformAdapter):
             requested_message_type=outbound_message_type,
         )
         try:
+            # NOTE: lark_oapi SDK's im.v1.file.create serializes the body as JSON instead of
+            # sending it as multipart/form-data, causing Feishu to reject the upload.
+            # We bypass the SDK and upload directly via httpx.
             with open(file_path, "rb") as file_obj:
-                body = self._build_file_upload_body(
-                    file_type=upload_file_type,
-                    file_name=display_name,
-                    file=file_obj,
+                file_data = file_obj.read()
+
+            # Get a fresh tenant access token from the SDK's auth endpoint
+            token_resp = await asyncio.to_thread(
+                self._client.auth.v3.CreateTenantAccessToken,
+                lark.Auth.v3.CreateTenantAccessTokenRequest.builder()
+                .request_body(
+                    lark.Auth.v3.CreateTenantAccessTokenRequestBody.builder()
+                    .app_id(self._app_id)
+                    .app_secret(self._app_secret)
+                    .build()
                 )
-                request = self._build_file_upload_request(body)
-                upload_response = await asyncio.to_thread(self._client.im.v1.file.create, request)
-            file_key = self._extract_response_field(upload_response, "file_key")
+                .build(),
+            )
+            token = token_resp.tenant_access_token if hasattr(token_resp, "tenant_access_token") else None
+            if not token:
+                return SendResult(success=False, error="Failed to obtain Feishu tenant access token")
+
+            mime_type = mimetypes.guess_type(display_name)[0] or "application/octet-stream"
+            async with httpx.AsyncClient(timeout=30.0) as http:
+                form = httpx.FormData()
+                form.add_field("file", file_data, filename=display_name, content_type=mime_type)
+                form.add_field("file_name", display_name)
+                form.add_field("file_type", upload_file_type)
+                form.add_field("receive_id", chat_id)
+
+                upload_resp = await http.post(
+                    "https://open.feishu.cn/open-apis/im/v1/files",
+                    params={"receive_id_type": "open_id"},
+                    data=form,
+                    headers={"Authorization": f"Bearer {token}"},
+                )
+            upload_result = upload_resp.json()
+            if upload_result.get("code") != 0:
+                return SendResult(
+                    success=False,
+                    error=f"Feishu file upload API error: {upload_result.get('msg', upload_resp.text)}",
+                )
+            file_key = upload_result.get("data", {}).get("file_key")
             if not file_key:
-                return self._response_error_result(
-                    upload_response,
-                    default_message="file upload failed",
-                    override_error="Feishu file upload missing file_key",
-                )
+                return SendResult(success=False, error="Feishu file upload missing file_key in response")
 
             if caption:
                 media_tag = {
@@ -3534,6 +3565,7 @@ class FeishuAdapter(BasePlatformAdapter):
                     payload=json.dumps({"file_key": file_key}, ensure_ascii=False),
                     reply_to=reply_to,
                     metadata=metadata,
+                    receive_id_type="open_id",
                 )
             return self._finalize_send_result(message_response, "file send failed")
         except Exception as exc:
@@ -3548,6 +3580,7 @@ class FeishuAdapter(BasePlatformAdapter):
         payload: str,
         reply_to: Optional[str],
         metadata: Optional[Dict[str, Any]],
+        receive_id_type: str = "chat_id",
     ) -> Any:
         reply_in_thread = bool((metadata or {}).get("thread_id"))
         if reply_to:
@@ -3566,7 +3599,7 @@ class FeishuAdapter(BasePlatformAdapter):
             content=payload,
             uuid_value=str(uuid.uuid4()),
         )
-        request = self._build_create_message_request("chat_id", body)
+        request = self._build_create_message_request(receive_id_type, body)
         return await asyncio.to_thread(self._client.im.v1.message.create, request)
 
     @staticmethod
@@ -3691,6 +3724,7 @@ class FeishuAdapter(BasePlatformAdapter):
         payload: str,
         reply_to: Optional[str],
         metadata: Optional[Dict[str, Any]],
+        receive_id_type: str = "chat_id",
     ) -> Any:
         last_error: Optional[Exception] = None
         active_reply_to = reply_to
@@ -3702,6 +3736,7 @@ class FeishuAdapter(BasePlatformAdapter):
                     payload=payload,
                     reply_to=active_reply_to,
                     metadata=metadata,
+                    receive_id_type=receive_id_type,
                 )
                 # If replying to a message failed because it was withdrawn or not found,
                 # fall back to posting a new message directly to the chat.
@@ -3722,6 +3757,7 @@ class FeishuAdapter(BasePlatformAdapter):
                             payload=payload,
                             reply_to=None,
                             metadata=metadata,
+                            receive_id_type=receive_id_type,
                         )
                 return response
             except Exception as exc:
