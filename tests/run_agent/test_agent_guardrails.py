@@ -108,6 +108,108 @@ class TestSanitizeApiMessages:
         assert len(out) == 2
         assert out[1]["tool_call_id"] == "c6"
 
+    def test_duplicate_tool_call_id_across_turns_renamed(self):
+        """Mistral-small occasionally regenerates the same short tool_call_id
+        when prompted to re-run an identical invocation. Before this fix,
+        set-based orphan detection silently accepted the duplicate and the
+        provider rejected the payload with HTTP 400 ("Not the same number of
+        function calls and responses"). The sanitizer now renames the later
+        occurrence so each call/result pair stays unique."""
+        msgs = [
+            {"role": "assistant", "tool_calls": [assistant_dict_call("dup1")]},
+            tool_result("dup1", "first result"),
+            {"role": "assistant", "tool_calls": [assistant_dict_call("dup1")]},
+            tool_result("dup1", "second result"),
+        ]
+        out = AIAgent._sanitize_api_messages(msgs)
+        assert len(out) == 4
+        # Collect all tool_call ids in order
+        call_ids_in_order = [
+            tc["id"] for m in out if m.get("role") == "assistant"
+            for tc in m.get("tool_calls") or []
+        ]
+        # Must all be unique (no duplicates)
+        assert len(call_ids_in_order) == len(set(call_ids_in_order))
+        # First id preserved, second renamed
+        assert call_ids_in_order[0] == "dup1"
+        assert call_ids_in_order[1] != "dup1"
+        assert call_ids_in_order[1].startswith("dup1_dedup_")
+        # Tool results renamed in lockstep
+        result_ids = [m["tool_call_id"] for m in out if m.get("role") == "tool"]
+        assert result_ids[0] == "dup1"
+        assert result_ids[1] == call_ids_in_order[1]
+        # Contents preserved (no mixing)
+        tool_msgs = [m for m in out if m.get("role") == "tool"]
+        assert tool_msgs[0]["content"] == "first result"
+        assert tool_msgs[1]["content"] == "second result"
+
+    def test_duplicate_id_without_matching_result_gets_stub(self):
+        """Reproduces the dump seen in the wild: duplicate assistant tool_call
+        with the second one missing its matching result (because the loop was
+        interrupted). Dedup should rename the second occurrence AND the stub
+        injector should add a result for the renamed id."""
+        msgs = [
+            {"role": "assistant", "tool_calls": [assistant_dict_call("X")]},
+            tool_result("X"),
+            {"role": "assistant", "tool_calls": [assistant_dict_call("X")]},
+            {"role": "user", "content": "nudge"},
+        ]
+        out = AIAgent._sanitize_api_messages(msgs)
+        # Count must balance: as many tool_call ids as tool results
+        call_ids = [
+            tc["id"] for m in out if m.get("role") == "assistant"
+            for tc in m.get("tool_calls") or []
+        ]
+        result_ids = [m["tool_call_id"] for m in out if m.get("role") == "tool"]
+        assert len(call_ids) == len(result_ids)
+        assert set(call_ids) == set(result_ids)
+        # All ids unique
+        assert len(call_ids) == len(set(call_ids))
+
+    def test_duplicate_ids_in_same_assistant_message_renamed(self):
+        """Edge case: a single assistant turn emits the same id twice. Each
+        call still needs its own unique result slot."""
+        msgs = [
+            {"role": "assistant", "tool_calls": [
+                assistant_dict_call("Y"),
+                assistant_dict_call("Y"),
+            ]},
+            tool_result("Y"),
+            tool_result("Y"),
+        ]
+        out = AIAgent._sanitize_api_messages(msgs)
+        call_ids = [
+            tc["id"] for m in out if m.get("role") == "assistant"
+            for tc in m.get("tool_calls") or []
+        ]
+        result_ids = [m["tool_call_id"] for m in out if m.get("role") == "tool"]
+        assert len(call_ids) == 2
+        assert len(result_ids) == 2
+        assert len(set(call_ids)) == 2  # unique after rename
+        assert set(call_ids) == set(result_ids)
+
+    def test_sdk_object_duplicate_renamed_to_dict(self):
+        """SDK-object tool_calls with duplicate ids must also be deduped."""
+        tc1 = types.SimpleNamespace(id="Z", type="function",
+            function=types.SimpleNamespace(name="execute_code", arguments='{"code":"a"}'))
+        tc2 = types.SimpleNamespace(id="Z", type="function",
+            function=types.SimpleNamespace(name="execute_code", arguments='{"code":"b"}'))
+        msgs = [
+            {"role": "assistant", "tool_calls": [tc1]},
+            tool_result("Z"),
+            {"role": "assistant", "tool_calls": [tc2]},
+            tool_result("Z"),
+        ]
+        out = AIAgent._sanitize_api_messages(msgs)
+        call_ids = [
+            tc["id"] if isinstance(tc, dict) else getattr(tc, "id", None)
+            for m in out if m.get("role") == "assistant"
+            for tc in m.get("tool_calls") or []
+        ]
+        assert len(set(call_ids)) == 2
+        assert call_ids[0] == "Z"
+        assert call_ids[1] != "Z"
+
 
 # ---------------------------------------------------------------------------
 # Phase 2a — _cap_delegate_task_calls

@@ -3897,6 +3897,86 @@ class AIAgent:
             filtered.append(msg)
         messages = filtered
 
+        # --- Dedup duplicate tool_call ids across the payload ---------------
+        # Strict providers (Mistral, Fireworks, Anthropic) count tool_calls
+        # and tool results as a multiset and reject payloads where the counts
+        # disagree: "Not the same number of function calls and responses".
+        # Weaker models such as mistral-small-latest sometimes regenerate the
+        # same short tool_call_id twice when prompted to re-run an identical
+        # tool invocation, which the existing set-based orphan logic below
+        # does not catch (both ids look paired).  Rename later occurrences to
+        # a unique id and rewrite the contiguous tool results that follow the
+        # assistant so each (call, result) pair stays linked positionally.
+        from collections import deque
+        seen_ids: set = set()
+        rename_count = 0
+        deduped: List[Dict[str, Any]] = []
+        i = 0
+        while i < len(messages):
+            msg = messages[i]
+            if msg.get("role") == "assistant" and msg.get("tool_calls"):
+                # Queue of replacement ids per original id, in the order the
+                # tool_calls appear. A value of None means "keep original".
+                renames_by_id: Dict[str, deque] = {}
+                new_tool_calls = []
+                for tc in msg["tool_calls"]:
+                    old_id = AIAgent._get_tool_call_id_static(tc)
+                    if not old_id:
+                        new_tool_calls.append(tc)
+                        continue
+                    if old_id in seen_ids:
+                        new_id = f"{old_id}_dedup_{rename_count}"
+                        rename_count += 1
+                        seen_ids.add(new_id)
+                        renames_by_id.setdefault(old_id, deque()).append(new_id)
+                        if isinstance(tc, dict):
+                            new_tc = {**tc, "id": new_id}
+                            if "call_id" in tc:
+                                new_tc["call_id"] = new_id
+                        else:
+                            _fn = getattr(tc, "function", None)
+                            new_tc = {
+                                "id": new_id,
+                                "type": getattr(tc, "type", "function"),
+                                "function": {
+                                    "name": getattr(_fn, "name", "") if _fn else "",
+                                    "arguments": getattr(_fn, "arguments", "{}") if _fn else "{}",
+                                },
+                            }
+                        new_tool_calls.append(new_tc)
+                    else:
+                        seen_ids.add(old_id)
+                        renames_by_id.setdefault(old_id, deque()).append(None)
+                        new_tool_calls.append(tc)
+                deduped.append({**msg, "tool_calls": new_tool_calls})
+                # Walk the contiguous tool results that belong to this
+                # assistant.  Rename each one positionally — the Nth result
+                # with id X corresponds to the Nth tool_call with id X.
+                j = i + 1
+                while j < len(messages) and messages[j].get("role") == "tool":
+                    tmsg = messages[j]
+                    tcid = tmsg.get("tool_call_id")
+                    pending = renames_by_id.get(tcid)
+                    if pending:
+                        replacement = pending.popleft()
+                        if replacement is not None:
+                            deduped.append({**tmsg, "tool_call_id": replacement})
+                        else:
+                            deduped.append(tmsg)
+                    else:
+                        deduped.append(tmsg)
+                    j += 1
+                i = j
+            else:
+                deduped.append(msg)
+                i += 1
+        if rename_count > 0:
+            logger.info(
+                "Pre-call sanitizer: renamed %d duplicate tool_call id(s)",
+                rename_count,
+            )
+        messages = deduped
+
         surviving_call_ids: set = set()
         for msg in messages:
             if msg.get("role") == "assistant":
