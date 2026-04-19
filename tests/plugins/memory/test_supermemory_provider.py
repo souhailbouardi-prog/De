@@ -409,3 +409,44 @@ def test_get_config_schema_minimal():
     assert len(schema) == 1
     assert schema[0]["key"] == "api_key"
     assert schema[0]["secret"] is True
+
+
+# -- Document ID regression tests -------------------------------------------
+
+
+def test_forget_by_id_uses_documents_delete(provider):
+    """forget by ID routes to documents.delete since store returns document IDs."""
+    store_result = json.loads(
+        provider.handle_tool_call("supermemory_store", {"content": "test memory"})
+    )
+    forget_result = json.loads(
+        provider.handle_tool_call("supermemory_forget", {"id": store_result["id"]})
+    )
+    assert forget_result["forgotten"] is True
+    assert store_result["id"] in provider._client.forgotten_ids
+
+
+def test_store_then_forget_round_trip(provider):
+    """Store returns an ID, forget accepts that same ID."""
+    store = json.loads(
+        provider.handle_tool_call("supermemory_store", {"content": "round trip"})
+    )
+    forget = json.loads(
+        provider.handle_tool_call("supermemory_forget", {"id": store["id"]})
+    )
+    assert forget["forgotten"] is True
+
+
+def test_forget_by_query_still_uses_memory_search(provider):
+    """forget_by_query searches memories first, so it uses memory IDs from search."""
+    provider._client.search_results = [
+        {"id": "memory_abc", "memory": "test", "similarity": 0.95}
+    ]
+    provider._client.forget_by_query_response = {
+        "success": True, "message": "Forgot", "id": "memory_abc",
+    }
+    result = json.loads(
+        provider.handle_tool_call("supermemory_forget", {"query": "test"})
+    )
+    assert result["success"] is True
+    assert result["id"] == "memory_abc"

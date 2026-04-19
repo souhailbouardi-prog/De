@@ -333,8 +333,8 @@ class _SupermemoryClient:
         return {"static": static, "dynamic": dynamic, "search_results": search_results}
 
     def forget_memory(self, memory_id: str, *, container_tag: Optional[str] = None) -> None:
-        tag = container_tag or self._container_tag
-        self._client.memories.forget(container_tag=tag, id=memory_id)
+        """Delete by document ID — add_memory returns document IDs, not memory IDs."""
+        self._client.documents.delete(memory_id)
 
     def forget_by_query(self, query: str, *, container_tag: Optional[str] = None) -> dict:
         results = self.search_memories(query, limit=5, container_tag=container_tag)

@@ -98,6 +98,7 @@ AUTHOR_MAP = {
     "hakanerten02@hotmail.com": "teyrebaz33",
     "ruzzgarcn@gmail.com": "Ruzzgar",
     "alireza78.crypto@gmail.com": "alireza78a",
+    "roque@priveperfumeshn.com": "priveperfumes",
     "brooklyn.bb.nicholson@gmail.com": "brooklynnicholson",
     "4317663+helix4u@users.noreply.github.com": "helix4u",
     "331214+counterposition@users.noreply.github.com": "counterposition",
