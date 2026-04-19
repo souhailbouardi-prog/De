@@ -579,6 +579,30 @@ class TestEdgeCases:
         sf = next(t for t in tools if t["tool"] == "search_files")
         assert sf["count"] == 2
 
+    def test_tool_usage_sums_disjoint_sessions_across_sources(self, db):
+        """tool_name and tool_calls sources should add across different sessions."""
+        db.create_session(session_id="gateway", source="gateway", model="test")
+        db.append_message("gateway", role="tool", content="results", tool_name="search_files")
+
+        db.create_session(session_id="cli", source="cli", model="test")
+        db.append_message(
+            "cli",
+            role="assistant",
+            content="Let me search",
+            tool_calls=[{
+                "id": "call_1",
+                "type": "function",
+                "function": {"name": "search_files", "arguments": "{}"},
+            }],
+        )
+        db._conn.commit()
+
+        engine = InsightsEngine(db)
+        report = engine.generate(days=30)
+
+        search_files = next(t for t in report["tools"] if t["tool"] == "search_files")
+        assert search_files["count"] == 2
+
     def test_overview_pricing_sets_are_lists(self, db):
         """models_with/without_pricing should be JSON-serializable lists."""
         import json as _json
