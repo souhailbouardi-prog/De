@@ -4211,7 +4211,8 @@ class GatewayRunner:
         if not history and source.platform and source.platform != Platform.LOCAL and source.platform != Platform.WEBHOOK:
             platform_name = source.platform.value
             env_key = f"{platform_name.upper()}_HOME_CHANNEL"
-            if not os.getenv(env_key):
+            has_home = os.getenv(env_key) or (self.config and self.config.get_home_channel(source.platform))
+            if not has_home:
                 adapter = self.adapters.get(source.platform)
                 if adapter:
                     await adapter.send(
@@ -5739,9 +5740,21 @@ class GatewayRunner:
         platform_name = source.platform.value if source.platform else "unknown"
         chat_id = source.chat_id
         chat_name = source.chat_name or chat_id
-        
+
         env_key = f"{platform_name.upper()}_HOME_CHANNEL"
-        
+
+        # If a home channel is already set, reject. Home channel is set during
+        # provisioning or on first use and cannot be changed via /sethome.
+        existing_home = os.environ.get(env_key, "").strip()
+        if not existing_home and self.config:
+            platform_enum = source.platform
+            if platform_enum:
+                hc = self.config.get_home_channel(platform_enum)
+                if hc:
+                    existing_home = str(hc.chat_id)
+        if existing_home:
+            return "Home channel is already set and cannot be changed."
+
         # Save to config.yaml
         try:
             import yaml
@@ -5756,7 +5769,7 @@ class GatewayRunner:
             os.environ[env_key] = str(chat_id)
         except Exception as e:
             return f"Failed to save home channel: {e}"
-        
+
         return (
             f"✅ Home channel set to **{chat_name}** (ID: {chat_id}).\n"
             f"Cron jobs and cross-platform messages will be delivered here."
