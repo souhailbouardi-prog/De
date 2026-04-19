@@ -1013,13 +1013,76 @@ class BasePlatformAdapter(ABC):
     def set_session_store(self, session_store: Any) -> None:
         """
         Set the session store for checking active sessions.
-        
+
         Used by adapters that need to check if a thread/conversation
         has an active session before processing messages (e.g., Slack
         thread replies without explicit mentions).
         """
         self._session_store = session_store
-    
+
+    def has_active_session_for_event(self, event: "MessageEvent") -> bool:
+        """Check if a persistent session already exists for this event's thread/chat.
+
+        Uses ``build_session_key()`` as the single source of truth for key
+        construction, reading session-isolation flags from the adapter config.
+        Also evaluates the store's reset policy — a session that would be
+        auto-reset (idle timeout, daily reset) on the next interaction is
+        treated as non-existent so that thread context is still seeded.
+
+        Subclasses can override to customise the ``SessionSource`` (e.g. force
+        ``chat_type="group"``), but the default implementation covers most
+        platforms.
+        """
+        session_store = getattr(self, "_session_store", None)
+        if not session_store:
+            return False
+
+        try:
+            store_cfg = getattr(session_store, "config", None)
+            gspu = getattr(store_cfg, "group_sessions_per_user", True) if store_cfg else True
+            tspu = getattr(store_cfg, "thread_sessions_per_user", False) if store_cfg else False
+
+            session_key = build_session_key(
+                event.source,
+                group_sessions_per_user=gspu,
+                thread_sessions_per_user=tspu,
+            )
+            session_store._ensure_loaded()
+            entry = session_store._entries.get(session_key)
+            if entry is None:
+                return False
+
+            # Check whether the session would be auto-reset (idle/daily
+            # policy).  If so, the gateway will create a fresh session on
+            # the next interaction — treat as non-existent so thread context
+            # is still seeded into the new session.
+            _should_reset = getattr(session_store, "_should_reset", None)
+            if _should_reset and event.source:
+                if _should_reset(entry, event.source):
+                    return False
+
+            return True
+        except Exception:
+            return False
+
+    async def fetch_thread_context(self, event: "MessageEvent") -> Optional[str]:
+        """Fetch platform-specific thread/conversation context for first-time
+        thread entry.
+
+        Override in subclasses to fetch prior messages from the platform API
+        when the bot is first mentioned in an existing thread.  Return a
+        formatted context string to prepend to ``event.text``, or ``None``.
+
+        Implementations should:
+        1. Determine whether this event warrants context fetching (e.g. it is
+           a thread reply, not a brand-new thread the bot just created).
+        2. Call ``self.has_active_session_for_event(event)`` — return ``None``
+           if a session already exists (the session transcript already holds
+           prior messages).
+        3. Fetch and format prior messages via the platform's native API.
+        """
+        return None
+
     @abstractmethod
     async def connect(self) -> bool:
         """
@@ -1804,6 +1867,16 @@ class BasePlatformAdapter(ABC):
         
         try:
             await self._run_processing_hook("on_processing_start", event)
+
+            # Fetch platform-specific thread context for first-time thread
+            # entry.  Each adapter overrides fetch_thread_context() to call
+            # its native API; the default returns None (no-op).
+            # Skip for commands — prepending context to "/reset" etc. would
+            # break command parsing in the gateway runner.
+            if not event.is_command():
+                thread_context = await self.fetch_thread_context(event)
+                if thread_context:
+                    event.text = thread_context + event.text
 
             # Call the handler (this can take a while with tool calls)
             response = await self._message_handler(event)

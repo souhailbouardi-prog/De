@@ -1068,21 +1068,8 @@ class SlackAdapter(BasePlatformAdapter):
                     for t in to_remove:
                         self._mentioned_threads.discard(t)
 
-        # When entering a thread for the first time (no existing session),
-        # fetch thread context so the agent understands the conversation.
-        if is_thread_reply and not self._has_active_session_for_thread(
-            channel_id=channel_id,
-            thread_ts=event_thread_ts,
-            user_id=user_id,
-        ):
-            thread_context = await self._fetch_thread_context(
-                channel_id=channel_id,
-                thread_ts=event_thread_ts,
-                current_ts=ts,
-                team_id=team_id,
-            )
-            if thread_context:
-                text = thread_context + text
+        # Thread context fetching is now handled by the base class via
+        # fetch_thread_context() called in _process_message_background().
 
         # Determine message type
         msg_type = MessageType.TEXT
@@ -1503,6 +1490,36 @@ class SlackAdapter(BasePlatformAdapter):
             logger.warning("[Slack] Failed to fetch thread context: %s", e)
             return ""
 
+    async def fetch_thread_context(self, event: "MessageEvent") -> Optional[str]:
+        """Fetch Slack thread context on first-time thread entry.
+
+        Overrides ``BasePlatformAdapter.fetch_thread_context()`` so that the
+        base class call site in ``_process_message_background()`` automatically
+        prepends thread history for Slack threads.
+        """
+        raw = event.raw_message
+        if not isinstance(raw, dict):
+            return None
+
+        ts = raw.get("ts", "")
+        event_thread_ts = raw.get("thread_ts")
+        is_thread_reply = bool(event_thread_ts and event_thread_ts != ts)
+        if not is_thread_reply:
+            return None
+
+        if self.has_active_session_for_event(event):
+            return None
+
+        team_id = raw.get("team", "")
+        channel_id = raw.get("channel", event.source.chat_id if event.source else "")
+        context = await self._fetch_thread_context(
+            channel_id=channel_id,
+            thread_ts=event_thread_ts,
+            current_ts=ts,
+            team_id=team_id,
+        )
+        return context or None
+
     async def _handle_slash_command(self, command: dict) -> None:
         """Handle /hermes slash command."""
         text = command.get("text", "").strip()
@@ -1550,46 +1567,22 @@ class SlackAdapter(BasePlatformAdapter):
         thread_ts: str,
         user_id: str,
     ) -> bool:
-        """Check if there's an active session for a thread.
+        """Check if there's a live (non-expired) session for a thread.
 
         Used to determine if thread replies without @mentions should be
         processed (they should if there's an active session).
 
-        Uses ``build_session_key()`` as the single source of truth for key
-        construction — avoids the bug where manual key building didn't
-        respect ``thread_sessions_per_user`` and ``group_sessions_per_user``
-        settings correctly.
+        Delegates to ``has_active_session_for_event()`` which checks both
+        key presence AND the store's reset policy (idle/daily expiry).
         """
-        session_store = getattr(self, "_session_store", None)
-        if not session_store:
-            return False
-
-        try:
-            from gateway.session import SessionSource, build_session_key
-
-            source = SessionSource(
-                platform=Platform.SLACK,
-                chat_id=channel_id,
-                chat_type="group",
-                user_id=user_id,
-                thread_id=thread_ts,
-            )
-
-            # Read session isolation settings from the store's config
-            store_cfg = getattr(session_store, "config", None)
-            gspu = getattr(store_cfg, "group_sessions_per_user", True) if store_cfg else True
-            tspu = getattr(store_cfg, "thread_sessions_per_user", False) if store_cfg else False
-
-            session_key = build_session_key(
-                source,
-                group_sessions_per_user=gspu,
-                thread_sessions_per_user=tspu,
-            )
-
-            session_store._ensure_loaded()
-            return session_key in session_store._entries
-        except Exception:
-            return False
+        source = self.build_source(
+            chat_id=channel_id,
+            chat_type="group",
+            user_id=user_id,
+            thread_id=thread_ts,
+        )
+        event = MessageEvent(text="", source=source)
+        return self.has_active_session_for_event(event)
 
     async def _download_slack_file(self, url: str, ext: str, audio: bool = False, team_id: str = "") -> str:
         """Download a Slack file using the bot token for auth, with retry."""

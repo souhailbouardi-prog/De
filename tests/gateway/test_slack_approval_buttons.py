@@ -337,6 +337,7 @@ class TestSessionKeyFix:
         mock_store.config = MagicMock()
         mock_store.config.group_sessions_per_user = False  # threads don't include user_id
         mock_store.config.thread_sessions_per_user = False
+        mock_store._should_reset = MagicMock(return_value=None)  # session is live
         adapter._session_store = mock_store
 
         # With the fix, build_session_key should be called which respects
@@ -357,6 +358,7 @@ class TestSessionKeyFix:
         mock_store.config = MagicMock()
         mock_store.config.group_sessions_per_user = True
         mock_store.config.thread_sessions_per_user = False
+        mock_store._should_reset = MagicMock(return_value=None)
         adapter._session_store = mock_store
 
         result = adapter._has_active_session_for_thread(

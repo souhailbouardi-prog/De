@@ -2938,6 +2938,62 @@ class DiscordAdapter(BasePlatformAdapter):
                     raise Exception(f"HTTP {resp.status}")
                 return await resp.read()
 
+    async def fetch_thread_context(self, event: "MessageEvent") -> Optional[str]:
+        """Fetch Discord thread history on first-time thread entry.
+
+        Overrides ``BasePlatformAdapter.fetch_thread_context()`` so that the
+        base class call site in ``_process_message_background()`` automatically
+        prepends thread history for Discord threads.
+
+        Skips auto-created threads (no history to fetch) and DMs.
+        """
+        message = event.raw_message
+        if message is None:
+            return None
+
+        # Only fetch for pre-existing threads — not DMs or auto-created ones.
+        channel = getattr(message, "channel", None)
+        if channel is None or not isinstance(channel, discord.Thread):
+            return None
+
+        if self.has_active_session_for_event(event):
+            return None
+
+        try:
+            context_parts: list[str] = []
+            bot_user = self._client.user
+            # oldest_first=True gives chronological order
+            async for msg in channel.history(limit=30, oldest_first=True):
+                # Skip the triggering message itself
+                if msg.id == message.id:
+                    continue
+                # Skip bot's own messages to avoid circular context
+                if bot_user and msg.author.id == bot_user.id:
+                    continue
+                msg_text = (msg.content or "").strip()
+                if not msg_text:
+                    continue
+                # Strip bot @mentions from context messages
+                if bot_user:
+                    msg_text = msg_text.replace(f"<@{bot_user.id}>", "").strip()
+                    msg_text = msg_text.replace(f"<@!{bot_user.id}>", "").strip()
+                if not msg_text:
+                    continue
+                name = getattr(msg.author, "display_name", None) or msg.author.name
+                context_parts.append(f"{name}: {msg_text}")
+
+            if not context_parts:
+                return None
+
+            return (
+                "[Thread context \u2014 prior messages in this thread (not yet in conversation history):]\n"
+                + "\n".join(context_parts)
+                + "\n[End of thread context]\n\n"
+            )
+        except Exception as e:
+            logger.warning("[Discord] Failed to fetch thread context: %s", e)
+            return None
+
     async def _handle_message(self, message: DiscordMessage) -> None:
         """Handle incoming Discord messages."""
         # In server channels (not DMs), require the bot to be @mentioned
