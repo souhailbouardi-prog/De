@@ -490,6 +490,7 @@ class TestSendToPlatformChunking:
             "***",
             "C123",
             "*hello* from <https://example.com|Hermes>",
+            thread_id=None,
         )
 
     def test_slack_bold_italic_formatted_before_send(self, monkeypatch):
@@ -1651,3 +1652,353 @@ class TestForumProbeCache:
         assert result2["success"] is True
         # Only one session opened (thread creation) — no probe session this time
         # (verified by not raising from our side_effect exhaustion)
+
+
+# ---------------------------------------------------------------------------
+# Regression for #5472: 'platform:current' resolves to the active session
+# ---------------------------------------------------------------------------
+
+
+class TestSendMessageCurrentSessionTarget:
+    """`discord:current` / `telegram:current` etc. should resolve to the active
+    gateway session's chat/thread instead of falling back to the home channel.
+
+    Regression coverage for https://github.com/NousResearch/hermes-agent/issues/5472
+    """
+
+    _SESSION_ENV_KEYS = (
+        "HERMES_SESSION_PLATFORM",
+        "HERMES_SESSION_CHAT_ID",
+        "HERMES_SESSION_THREAD_ID",
+    )
+
+    def setup_method(self, _method):
+        """Isolate each test from session context leaked by earlier tests."""
+        from gateway.session_context import set_session_vars
+        self._tokens = set_session_vars()
+
+    def _apply_session(self, monkeypatch, platform="discord", chat_id="999888777", thread_id=""):
+        """Set session env vars + contextvars for the duration of the test."""
+        from gateway.session_context import set_session_vars
+        monkeypatch.setenv("HERMES_SESSION_PLATFORM", platform)
+        monkeypatch.setenv("HERMES_SESSION_CHAT_ID", chat_id)
+        if thread_id:
+            monkeypatch.setenv("HERMES_SESSION_THREAD_ID", thread_id)
+        else:
+            monkeypatch.delenv("HERMES_SESSION_THREAD_ID", raising=False)
+        set_session_vars(
+            platform=platform,
+            chat_id=chat_id,
+            thread_id=thread_id or "",
+        )
+
+    def _discord_config(self):
+        discord_cfg = SimpleNamespace(enabled=True, token="***", extra={})
+        config = SimpleNamespace(
+            platforms={Platform.DISCORD: discord_cfg},
+            get_home_channel=lambda _platform: SimpleNamespace(chat_id="1111111"),
+        )
+        return config, discord_cfg
+
+    def test_current_alias_routes_to_session_chat_id(self, monkeypatch):
+        config, discord_cfg = self._discord_config()
+        self._apply_session(monkeypatch, chat_id="999888777")
+
+        with patch("gateway.config.load_gateway_config", return_value=config), \
+             patch("tools.interrupt.is_interrupted", return_value=False), \
+             patch("model_tools._run_async", side_effect=_run_async_immediately), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock, \
+             patch("gateway.mirror.mirror_to_session", return_value=True):
+            result = json.loads(
+                send_message_tool(
+                    {
+                        "action": "send",
+                        "target": "discord:current",
+                        "message": "batch 1 of 3",
+                    }
+                )
+            )
+
+        assert result["success"] is True
+        assert "current discord session" in result.get("note", "")
+        assert "home channel" not in result.get("note", "")
+        send_mock.assert_awaited_once_with(
+            Platform.DISCORD,
+            discord_cfg,
+            "999888777",
+            "batch 1 of 3",
+            thread_id=None,
+            media_files=[],
+        )
+
+    def test_current_alias_preserves_thread_id(self, monkeypatch):
+        config, discord_cfg = self._discord_config()
+        self._apply_session(monkeypatch, chat_id="999888777", thread_id="555444333")
+
+        with patch("gateway.config.load_gateway_config", return_value=config), \
+             patch("tools.interrupt.is_interrupted", return_value=False), \
+             patch("model_tools._run_async", side_effect=_run_async_immediately), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock, \
+             patch("gateway.mirror.mirror_to_session", return_value=True) as mirror_mock:
+            result = json.loads(
+                send_message_tool(
+                    {
+                        "action": "send",
+                        "target": "discord:current",
+                        "message": "hello thread",
+                    }
+                )
+            )
+
+        assert result["success"] is True
+        send_mock.assert_awaited_once_with(
+            Platform.DISCORD,
+            discord_cfg,
+            "999888777",
+            "hello thread",
+            thread_id="555444333",
+            media_files=[],
+        )
+        mirror_mock.assert_called_once_with(
+            "discord", "999888777", "hello thread",
+            source_label="discord", thread_id="555444333",
+        )
+
+    def test_session_and_double_underscore_aliases_are_equivalent(self, monkeypatch):
+        """'session' and '__session__' are accepted as synonyms for 'current'."""
+        config, discord_cfg = self._discord_config()
+
+        for alias in ("session", "__session__", "CURRENT", "Current"):
+            self._apply_session(monkeypatch, chat_id="222")
+            with patch("gateway.config.load_gateway_config", return_value=config), \
+                 patch("tools.interrupt.is_interrupted", return_value=False), \
+                 patch("model_tools._run_async", side_effect=_run_async_immediately), \
+                 patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock, \
+                 patch("gateway.mirror.mirror_to_session", return_value=True):
+                result = json.loads(
+                    send_message_tool(
+                        {
+                            "action": "send",
+                            "target": f"discord:{alias}",
+                            "message": "hi",
+                        }
+                    )
+                )
+
+            assert result["success"] is True, f"alias {alias!r} failed"
+            assert send_mock.await_args.args[2] == "222"
+
+    def test_no_active_session_returns_error_without_sending(self, monkeypatch):
+        """Without HERMES_SESSION_CHAT_ID, the tool must error (not fall back home)."""
+        config, _discord_cfg = self._discord_config()
+        for key in self._SESSION_ENV_KEYS:
+            monkeypatch.delenv(key, raising=False)
+        from gateway.session_context import set_session_vars
+        set_session_vars()
+
+        with patch("gateway.config.load_gateway_config", return_value=config), \
+             patch("tools.interrupt.is_interrupted", return_value=False), \
+             patch("model_tools._run_async", side_effect=_run_async_immediately), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock()) as send_mock, \
+             patch("gateway.mirror.mirror_to_session", return_value=True):
+            result = json.loads(
+                send_message_tool(
+                    {
+                        "action": "send",
+                        "target": "discord:current",
+                        "message": "hi",
+                    }
+                )
+            )
+
+        assert "error" in result
+        assert "active gateway session" in result["error"]
+        assert "HERMES_SESSION_CHAT_ID" in result["error"]
+        send_mock.assert_not_awaited()
+
+    def test_platform_mismatch_returns_clear_error(self, monkeypatch):
+        """discord:current from a Telegram session must NOT cross platforms."""
+        config, _discord_cfg = self._discord_config()
+        self._apply_session(monkeypatch, platform="telegram", chat_id="-1001234")
+
+        with patch("gateway.config.load_gateway_config", return_value=config), \
+             patch("tools.interrupt.is_interrupted", return_value=False), \
+             patch("model_tools._run_async", side_effect=_run_async_immediately), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock()) as send_mock:
+            result = json.loads(
+                send_message_tool(
+                    {
+                        "action": "send",
+                        "target": "discord:current",
+                        "message": "hi",
+                    }
+                )
+            )
+
+        assert "error" in result
+        assert "does not match" in result["error"]
+        assert "telegram" in result["error"].lower()
+        send_mock.assert_not_awaited()
+
+    def test_current_alias_does_not_use_home_channel_fallback(self, monkeypatch):
+        """Sentinel resolution must skip the home-channel fallback branch entirely."""
+        home_calls = []
+
+        class _Config:
+            platforms = {Platform.DISCORD: SimpleNamespace(enabled=True, token="***", extra={})}
+
+            def get_home_channel(self, _platform):
+                home_calls.append(_platform)
+                return SimpleNamespace(chat_id="1111111")
+
+        self._apply_session(monkeypatch, chat_id="777")
+        with patch("gateway.config.load_gateway_config", return_value=_Config()), \
+             patch("tools.interrupt.is_interrupted", return_value=False), \
+             patch("model_tools._run_async", side_effect=_run_async_immediately), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})), \
+             patch("gateway.mirror.mirror_to_session", return_value=True):
+            result = json.loads(
+                send_message_tool(
+                    {
+                        "action": "send",
+                        "target": "discord:current",
+                        "message": "hi",
+                    }
+                )
+            )
+
+        assert result["success"] is True
+        assert home_calls == []
+
+    def test_telegram_general_topic_thread_id_normalized_to_none(self, monkeypatch):
+        """Telegram forum General topic uses synthetic thread_id='1' which the
+        Bot API rejects. The sentinel resolver must strip it to None."""
+        telegram_cfg = SimpleNamespace(enabled=True, token="***", extra={})
+        config = SimpleNamespace(
+            platforms={Platform.TELEGRAM: telegram_cfg},
+            get_home_channel=lambda _platform: SimpleNamespace(chat_id="9999"),
+        )
+        from gateway.session_context import set_session_vars
+        set_session_vars(platform="telegram", chat_id="-1001234", thread_id="1")
+        monkeypatch.setenv("HERMES_SESSION_PLATFORM", "telegram")
+        monkeypatch.setenv("HERMES_SESSION_CHAT_ID", "-1001234")
+        monkeypatch.setenv("HERMES_SESSION_THREAD_ID", "1")
+
+        with patch("gateway.config.load_gateway_config", return_value=config), \
+             patch("tools.interrupt.is_interrupted", return_value=False), \
+             patch("model_tools._run_async", side_effect=_run_async_immediately), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock, \
+             patch("gateway.mirror.mirror_to_session", return_value=True):
+            result = json.loads(
+                send_message_tool(
+                    {
+                        "action": "send",
+                        "target": "telegram:current",
+                        "message": "hi",
+                    }
+                )
+            )
+
+        assert result["success"] is True
+        # thread_id must be None (stripped), not "1"
+        send_mock.assert_awaited_once_with(
+            Platform.TELEGRAM,
+            telegram_cfg,
+            "-1001234",
+            "hi",
+            thread_id=None,
+            media_files=[],
+        )
+
+    def test_telegram_real_topic_thread_id_preserved(self, monkeypatch):
+        """Non-General Telegram forum topics (thread_id != '1') must be kept."""
+        telegram_cfg = SimpleNamespace(enabled=True, token="***", extra={})
+        config = SimpleNamespace(
+            platforms={Platform.TELEGRAM: telegram_cfg},
+            get_home_channel=lambda _platform: SimpleNamespace(chat_id="9999"),
+        )
+        self._apply_session(monkeypatch, platform="telegram", chat_id="-1001234", thread_id="17585")
+
+        with patch("gateway.config.load_gateway_config", return_value=config), \
+             patch("tools.interrupt.is_interrupted", return_value=False), \
+             patch("model_tools._run_async", side_effect=_run_async_immediately), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock, \
+             patch("gateway.mirror.mirror_to_session", return_value=True):
+            result = json.loads(
+                send_message_tool(
+                    {
+                        "action": "send",
+                        "target": "telegram:current",
+                        "message": "hi",
+                    }
+                )
+            )
+
+        assert result["success"] is True
+        send_mock.assert_awaited_once_with(
+            Platform.TELEGRAM,
+            telegram_cfg,
+            "-1001234",
+            "hi",
+            thread_id="17585",
+            media_files=[],
+        )
+
+
+class TestSendSlackThreadId:
+    """_send_slack passes thread_ts when thread_id is provided."""
+
+    def test_slack_thread_ts_included_in_payload(self):
+        """thread_id should be forwarded as thread_ts in chat.postMessage."""
+        import aiohttp
+
+        mock_resp = MagicMock()
+        mock_resp.status = 200
+        mock_resp.json = AsyncMock(return_value={"ok": True, "ts": "1234.5678"})
+        mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
+        mock_resp.__aexit__ = AsyncMock(return_value=None)
+
+        mock_session = MagicMock()
+        mock_session.post = MagicMock(return_value=mock_resp)
+        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_session.__aexit__ = AsyncMock(return_value=None)
+
+        from tools.send_message_tool import _send_slack
+
+        with patch("aiohttp.ClientSession", return_value=mock_session):
+            result = asyncio.run(
+                _send_slack("xoxb-test", "C123", "hello", thread_id="1712345678.1234")
+            )
+
+        assert result["success"] is True
+        # Verify thread_ts was in the JSON payload
+        call_kwargs = mock_session.post.call_args
+        payload = call_kwargs.kwargs.get("json") or call_kwargs[1].get("json")
+        assert payload["thread_ts"] == "1712345678.1234"
+
+    def test_slack_no_thread_ts_when_thread_id_is_none(self):
+        """Without thread_id, thread_ts must NOT appear in the payload."""
+        import aiohttp
+
+        mock_resp = MagicMock()
+        mock_resp.status = 200
+        mock_resp.json = AsyncMock(return_value={"ok": True, "ts": "1234.5678"})
+        mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
+        mock_resp.__aexit__ = AsyncMock(return_value=None)
+
+        mock_session = MagicMock()
+        mock_session.post = MagicMock(return_value=mock_resp)
+        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_session.__aexit__ = AsyncMock(return_value=None)
+
+        from tools.send_message_tool import _send_slack
+
+        with patch("aiohttp.ClientSession", return_value=mock_session):
+            result = asyncio.run(
+                _send_slack("xoxb-test", "C123", "hello")
+            )
+
+        assert result["success"] is True
+        call_kwargs = mock_session.post.call_args
+        payload = call_kwargs.kwargs.get("json") or call_kwargs[1].get("json")
+        assert "thread_ts" not in payload

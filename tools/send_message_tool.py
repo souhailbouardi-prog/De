@@ -18,6 +18,7 @@ from agent.redact import redact_sensitive_text
 
 logger = logging.getLogger(__name__)
 
+_CURRENT_SESSION_ALIASES = frozenset({"current", "__session__", "session"})
 _TELEGRAM_TOPIC_TARGET_RE = re.compile(r"^\s*(-?\d+)(?::(\d+))?\s*$")
 _FEISHU_TARGET_RE = re.compile(r"^\s*((?:oc|ou|on|chat|open)_[-A-Za-z0-9]+)(?::([-A-Za-z0-9_]+))?\s*$")
 _WEIXIN_TARGET_RE = re.compile(r"^\s*((?:wxid|gh|v\d+|wm|wb)_[A-Za-z0-9_-]+|[A-Za-z0-9._-]+@chatroom|filehelper)\s*$")
@@ -113,7 +114,7 @@ SEND_MESSAGE_SCHEMA = {
             },
             "target": {
                 "type": "string",
-                "description": "Delivery target. Format: 'platform' (uses home channel), 'platform:#channel-name', 'platform:chat_id', or 'platform:chat_id:thread_id' for Telegram topics and Discord threads. Examples: 'telegram', 'telegram:-1001234567890:17585', 'discord:999888777:555444333', 'discord:#bot-home', 'slack:#engineering', 'signal:+155****4567', 'matrix:!roomid:server.org', 'matrix:@user:server.org'"
+                "description": "Delivery target. Format: 'platform' (uses home channel), 'platform:current' (current gateway session chat/thread — only valid when invoked from a messaging session; use for multi-message batch delivery into the same conversation), 'platform:#channel-name', 'platform:chat_id', or 'platform:chat_id:thread_id' for Telegram topics and Discord threads. Examples: 'telegram', 'discord:current', 'telegram:-1001234567890:17585', 'discord:999888777:555444333', 'discord:#bot-home', 'slack:#engineering', 'signal:+155****4567', 'matrix:!roomid:server.org', 'matrix:@user:server.org'"
             },
             "message": {
                 "type": "string",
@@ -156,11 +157,24 @@ def _handle_send(args):
     target_ref = parts[1].strip() if len(parts) > 1 else None
     chat_id = None
     thread_id = None
+    is_explicit = False
+    used_current_session = False
 
-    if target_ref:
+    # Session-relative sentinel: resolve 'current' / '__session__' / 'session'
+    # to the active gateway session's chat_id/thread_id. This enables skills
+    # that need multi-message batch delivery into the same conversation.
+    if target_ref and target_ref.lower() in _CURRENT_SESSION_ALIASES:
+        session_err, session_chat_id, session_thread_id = _resolve_current_session_target(
+            platform_name
+        )
+        if session_err:
+            return json.dumps({"error": session_err})
+        chat_id = session_chat_id
+        thread_id = session_thread_id
+        is_explicit = True
+        used_current_session = True
+    elif target_ref:
         chat_id, thread_id, is_explicit = _parse_target_ref(platform_name, target_ref)
-    else:
-        is_explicit = False
 
     # Resolve human-friendly channel names to numeric IDs
     if target_ref and not is_explicit:
@@ -280,6 +294,11 @@ def _handle_send(args):
         )
         if used_home_channel and isinstance(result, dict) and result.get("success"):
             result["note"] = f"Sent to {platform_name} home channel (chat_id: {chat_id})"
+        elif used_current_session and isinstance(result, dict) and result.get("success"):
+            thread_suffix = f", thread_id: {thread_id}" if thread_id else ""
+            result["note"] = (
+                f"Sent to current {platform_name} session (chat_id: {chat_id}{thread_suffix})"
+            )
 
         # Mirror the sent message into the target's gateway session
         if isinstance(result, dict) and result.get("success") and mirror_text:
@@ -297,6 +316,53 @@ def _handle_send(args):
         return json.dumps(result)
     except Exception as e:
         return json.dumps(_error(f"Send failed: {e}"))
+
+
+def _resolve_current_session_target(platform_name: str):
+    """Resolve a ``platform:current`` target to the active session's chat/thread.
+
+    Reads the concurrency-safe session context variables (with legacy env var
+    fallback) set by ``gateway.session_context.set_session_vars``.
+
+    Returns a tuple ``(error_message, chat_id, thread_id)``. On success the
+    first element is ``None``.  Returns an error if there is no active
+    gateway session or if the session platform does not match
+    ``platform_name`` (e.g. calling ``discord:current`` from a Telegram
+    session).
+    """
+    from gateway.session_context import get_session_env
+
+    session_platform = (get_session_env("HERMES_SESSION_PLATFORM", "") or "").strip().lower()
+    session_chat_id = (get_session_env("HERMES_SESSION_CHAT_ID", "") or "").strip()
+    session_thread_id = (get_session_env("HERMES_SESSION_THREAD_ID", "") or "").strip() or None
+
+    if not session_chat_id:
+        return (
+            f"send_message target '{platform_name}:current' requires an active "
+            "gateway session but no HERMES_SESSION_CHAT_ID is set. Use an explicit "
+            f"channel target instead, e.g. '{platform_name}:<chat_id>' or '{platform_name}' "
+            "for the home channel.",
+            None,
+            None,
+        )
+
+    if session_platform and session_platform != platform_name:
+        return (
+            f"send_message target '{platform_name}:current' does not match the current "
+            f"session platform ('{session_platform}'). Use '{session_platform}:current' "
+            "to reply in the active conversation, or specify an explicit channel target.",
+            None,
+            None,
+        )
+
+    # Telegram forum chats synthesize thread_id="1" for the General topic,
+    # but the Bot API rejects message_thread_id=1. The gateway adapter
+    # normalizes this away (TelegramAdapter._message_thread_id_for_send);
+    # mirror that here so telegram:current doesn't break in General.
+    if platform_name == "telegram" and session_thread_id == "1":
+        session_thread_id = None
+
+    return None, session_chat_id, session_thread_id
 
 
 def _parse_target_ref(platform_name: str, target_ref: str):
@@ -518,7 +584,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     last_result = None
     for chunk in chunks:
         if platform == Platform.SLACK:
-            result = await _send_slack(pconfig.token, chat_id, chunk)
+            result = await _send_slack(pconfig.token, chat_id, chunk, thread_id=thread_id)
         elif platform == Platform.WHATSAPP:
             result = await _send_whatsapp(pconfig.extra, chat_id, chunk)
         elif platform == Platform.SIGNAL:
@@ -907,7 +973,7 @@ async def _send_discord(token, chat_id, message, thread_id=None, media_files=Non
         return _error(f"Discord send failed: {e}")
 
 
-async def _send_slack(token, chat_id, message):
+async def _send_slack(token, chat_id, message, thread_id=None):
     """Send via Slack Web API."""
     try:
         import aiohttp
@@ -921,6 +987,8 @@ async def _send_slack(token, chat_id, message):
         headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30), **_sess_kw) as session:
             payload = {"channel": chat_id, "text": message, "mrkdwn": True}
+            if thread_id:
+                payload["thread_ts"] = thread_id
             async with session.post(url, headers=headers, json=payload, **_req_kw) as resp:
                 data = await resp.json()
                 if data.get("ok"):
