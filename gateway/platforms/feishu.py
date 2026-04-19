@@ -1413,10 +1413,53 @@ class FeishuAdapter(BasePlatformAdapter):
         reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
-        """Send a Feishu message."""
+        """Send a Feishu message.
+
+        Supports sending Interactive Cards via metadata:
+            metadata={"interactive_card": {...card JSON...}}
+        When present, the card is sent as msg_type="interactive" and the
+        text *content* is sent as a separate follow-up message (if non-empty).
+        """
         if not self._client:
             return SendResult(success=False, error="Not connected")
 
+        # --- Interactive Card fast path ---
+        interactive_card = (metadata or {}).get("interactive_card")
+        if interactive_card is not None:
+            try:
+                card_payload = json.dumps(interactive_card, ensure_ascii=False)
+                response = await self._feishu_send_with_retry(
+                    chat_id=chat_id,
+                    msg_type="interactive",
+                    payload=card_payload,
+                    reply_to=reply_to,
+                    metadata=None,
+                )
+                # Send text content as a follow-up message if present
+                text = (content or "").strip()
+                if text:
+                    formatted = self.format_message(text)
+                    chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
+                    last_response = response
+                    for chunk in chunks:
+                        msg_type, payload = self._build_outbound_payload(chunk)
+                        try:
+                            last_response = await self._feishu_send_with_retry(
+                                chat_id=chat_id,
+                                msg_type=msg_type,
+                                payload=payload,
+                                reply_to=None,
+                                metadata=None,
+                            )
+                        except Exception:
+                            pass  # best-effort follow-up
+                    return self._finalize_send_result(last_response, "send failed")
+                return self._finalize_send_result(response, "send failed")
+            except Exception as exc:
+                logger.error("[Feishu] Interactive card send error: %s", exc, exc_info=True)
+                return SendResult(success=False, error=str(exc))
+
+        # --- Standard text/post path ---
         formatted = self.format_message(content)
         chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
         last_response = None

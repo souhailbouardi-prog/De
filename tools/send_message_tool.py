@@ -118,6 +118,10 @@ SEND_MESSAGE_SCHEMA = {
             "message": {
                 "type": "string",
                 "description": "The message text to send"
+            },
+            "interactive_card": {
+                "type": "object",
+                "description": "Optional Interactive Card JSON (Feishu/Lark only). When provided on a feishu target, sends the card via msg_type='interactive' instead of text/post. The card JSON follows the Feishu Open Message Card schema. Ignored on non-Feishu platforms."
             }
         },
         "required": []
@@ -183,6 +187,8 @@ def _handle_send(args):
     from tools.interrupt import is_interrupted
     if is_interrupted():
         return tool_error("Interrupted")
+
+    interactive_card = args.get("interactive_card")
 
     try:
         from gateway.config import load_gateway_config, Platform
@@ -276,6 +282,7 @@ def _handle_send(args):
                 cleaned_message,
                 thread_id=thread_id,
                 media_files=media_files,
+                interactive_card=interactive_card,
             )
         )
         if used_home_channel and isinstance(result, dict) and result.get("success"):
@@ -389,7 +396,7 @@ def _maybe_skip_cron_duplicate_send(platform_name: str, chat_id: str, thread_id:
     }
 
 
-async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None, media_files=None):
+async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None, media_files=None, interactive_card=None):
     """Route a message to the appropriate platform sender.
 
     Long messages are automatically chunked to fit within platform limits
@@ -536,7 +543,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
         elif platform == Platform.DINGTALK:
             result = await _send_dingtalk(pconfig.extra, chat_id, chunk)
         elif platform == Platform.FEISHU:
-            result = await _send_feishu(pconfig, chat_id, chunk, thread_id=thread_id)
+            result = await _send_feishu(pconfig, chat_id, chunk, thread_id=thread_id, interactive_card=interactive_card)
         elif platform == Platform.WECOM:
             result = await _send_wecom(pconfig.extra, chat_id, chunk)
         elif platform == Platform.BLUEBUBBLES:
@@ -1339,7 +1346,7 @@ async def _send_bluebubbles(extra, chat_id, message):
         return _error(f"BlueBubbles send failed: {e}")
 
 
-async def _send_feishu(pconfig, chat_id, message, media_files=None, thread_id=None):
+async def _send_feishu(pconfig, chat_id, message, media_files=None, thread_id=None, interactive_card=None):
     """Send via Feishu/Lark using the adapter's send pipeline."""
     try:
         from gateway.platforms.feishu import FeishuAdapter, FEISHU_AVAILABLE
@@ -1356,10 +1363,14 @@ async def _send_feishu(pconfig, chat_id, message, media_files=None, thread_id=No
         domain_name = getattr(adapter, "_domain_name", "feishu")
         domain = FEISHU_DOMAIN if domain_name != "lark" else LARK_DOMAIN
         adapter._client = adapter._build_lark_client(domain)
-        metadata = {"thread_id": thread_id} if thread_id else None
+        metadata = {"thread_id": thread_id} if thread_id else {}
+        if interactive_card is not None:
+            metadata["interactive_card"] = interactive_card
+        if not metadata:
+            metadata = None
 
         last_result = None
-        if message.strip():
+        if message.strip() or interactive_card is not None:
             last_result = await adapter.send(chat_id, message, metadata=metadata)
             if not last_result.success:
                 return _error(f"Feishu send failed: {last_result.error}")
