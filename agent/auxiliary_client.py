@@ -2377,7 +2377,14 @@ def _build_call_kwargs(
 
     # Provider-specific extra_body
     merged_extra = dict(extra_body or {})
-    if provider == "nous" or auxiliary_is_nous:
+    # Add Nous Portal tags, but skip for Fireworks (custom provider with fireworks.ai base_url)
+    # which rejects the "tags" parameter as an extra input
+    is_fireworks = (
+        provider == "custom" and 
+        base_url and 
+        "fireworks.ai" in str(base_url).lower()
+    )
+    if (provider == "nous" or auxiliary_is_nous) and not is_fireworks:
         merged_extra.setdefault("tags", []).extend(["product=hermes-agent"])
     if merged_extra:
         kwargs["extra_body"] = merged_extra
