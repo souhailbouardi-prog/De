@@ -45,6 +45,41 @@ _COMPLEX_KEYWORDS = {
     "kubernetes",
 }
 
+# CJK keywords matched via jieba segmentation (word-level, not substring).
+# Chinese/Japanese/Korean text has no word-separating spaces, so the
+# space-based split() above never matches individual CJK keywords.
+_CJK_COMPLEX_KEYWORDS = {
+    # Task/action verbs
+    "帮忙", "帮我", "研究", "分析", "调查", "排查", "检查", "诊断",
+    "实现", "开发", "修复", "修改", "优化", "重构", "设计",
+    # Memory/knowledge
+    "记住", "记得", "记忆", "记录",
+    # Search/lookup
+    "查", "查询", "搜索", "搜一下", "查一下", "看看", "找找", "查查", "找",
+    # Tool-invoking
+    "设置", "配置", "安装", "部署", "定时", "提醒", "闹钟",
+    "下单", "点餐", "外卖", "奶茶",
+    # Technical
+    "终端", "命令", "脚本", "代码", "接口", "api", "API",
+}
+
+# Lazy-init jieba to avoid import cost on every message
+_jieba_loaded = False
+
+
+def _segment_cjk(text: str) -> set:
+    """Segment CJK text into words using jieba, with graceful fallback."""
+    global _jieba_loaded
+    try:
+        import jieba
+        if not _jieba_loaded:
+            jieba.setLogLevel(20)  # suppress "Building prefix dict" noise
+            _jieba_loaded = True
+        return set(jieba.cut(text))
+    except ImportError:
+        # jieba not installed — fall back to empty set (caller uses substring)
+        return set()
+
 _URL_RE = re.compile(r"https?://|www\.", re.IGNORECASE)
 
 
@@ -96,8 +131,17 @@ def choose_cheap_model_route(user_message: str, routing_config: Optional[Dict[st
         return None
 
     lowered = text.lower()
+    # Word-level match for space-delimited languages (English, etc.)
     words = {token.strip(".,:;!?()[]{}\"'`") for token in lowered.split()}
     if words & _COMPLEX_KEYWORDS:
+        return None
+    # CJK segmentation-based match — jieba splits Chinese into real words,
+    # so "你研究下" → {"你", "研究", "下"} which matches "研究".
+    cjk_words = _segment_cjk(lowered)
+    if cjk_words and cjk_words & _CJK_COMPLEX_KEYWORDS:
+        return None
+    # Fallback substring match when jieba is not installed
+    if not cjk_words and any(kw in lowered for kw in _CJK_COMPLEX_KEYWORDS):
         return None
 
     route = dict(cheap_model)
