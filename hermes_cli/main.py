@@ -4090,6 +4090,78 @@ def cmd_debug(args):
 
 def cmd_config(args):
     """Configuration management."""
+    # Handle new 'json' subcommand
+    if getattr(args, 'config_command', None) == 'json':
+        json_action = getattr(args, 'json_action', None)
+        
+        if json_action == 'show':
+            # Show JSON config
+            try:
+                from hermes_cli.config_json import load_config_json
+                config = load_config_json()
+                import json
+                print(json.dumps(config, indent=2, ensure_ascii=False))
+            except FileNotFoundError:
+                print("Error: config.json not found. Run 'hermes config json migrate' first.")
+                sys.exit(1)
+            except Exception as e:
+                print(f"Error loading config.json: {e}")
+                sys.exit(1)
+        
+        elif json_action == 'migrate':
+            # Run migration
+            from hermes_cli.config_json import migrate_yaml_to_json
+            
+            apply_mode = getattr(args, 'apply', False)
+            compare_mode = getattr(args, 'compare', False)
+            dry_run = getattr(args, 'dry_run', False) or not apply_mode
+            
+            result = migrate_yaml_to_json(dry_run=dry_run)
+            
+            if result["success"]:
+                if compare_mode:
+                    # Show format comparison
+                    print("\n" + "="*70)
+                    print("CONFIGURATION FORMAT COMPARISON")
+                    print("="*70)
+                    print("\n📄 YAML Format (Legacy):")
+                    print("-" * 70)
+                    print("  • Scattered provider configurations")
+                    print("  • API keys repeated in multiple sections")
+                    print("  • Deep nesting (4-5 levels)")
+                    print(f"  • ~327 lines of config")
+                    
+                    print("\n📋 JSON Format (New):")
+                    print("-" * 70)
+                    print("  ✓ Centralized provider management")
+                    print("  ✓ API keys referenced via environment variables")
+                    print("  ✓ Flatter structure (2-3 levels)")
+                    print(f"  ✓ ~109 lines of config")
+                    
+                    print("\n📊 Key Improvements:")
+                    print("-" * 70)
+                    print(f"  • Provider configs: centralized in one place")
+                    print(f"  • Auxiliary model configs: unified in 'features' section")
+                    print(f"  • Environment variable references: automatic (${{VAR}} syntax)")
+                    print("\n" + "="*70)
+                elif dry_run:
+                    print("Migration preview (dry run):")
+                    import json
+                    print(json.dumps(result["config"], indent=2, ensure_ascii=False)[:2000])
+                    print("...")
+                else:
+                    print("✓ Configuration migrated successfully to config.json")
+            else:
+                print("Migration failed:")
+                for error in result["errors"]:
+                    print(f"  ✗ {error}")
+            
+            for warning in result["warnings"]:
+                print(f"  ⚠ {warning}")
+        
+        return
+    
+    # Original config command logic
     from hermes_cli.config import config_command
 
     config_command(args)
@@ -7190,6 +7262,15 @@ Examples:
 
     # config migrate
     config_subparsers.add_parser("migrate", help="Update config with new options")
+
+    # config json (NEW - JSON configuration system)
+    config_json = config_subparsers.add_parser("json", help="JSON configuration management (experimental)")
+    config_json_subparsers = config_json.add_subparsers(dest="json_action")
+    config_json_subparsers.add_parser("show", help="Show current JSON config")
+    config_json_migrate = config_json_subparsers.add_parser("migrate", help="Migrate YAML to JSON format")
+    config_json_migrate.add_argument("--apply", action="store_true", help="Apply the migration")
+    config_json_migrate.add_argument("--compare", action="store_true", help="Show format comparison")
+    config_json_migrate.add_argument("--dry-run", action="store_true", help="Preview without writing")
 
     config_parser.set_defaults(func=cmd_config)
 
