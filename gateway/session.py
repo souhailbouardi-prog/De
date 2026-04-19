@@ -12,6 +12,7 @@ import hashlib
 import logging
 import os
 import json
+import tempfile
 import threading
 import uuid
 from pathlib import Path
@@ -1155,11 +1156,27 @@ class SessionStore:
             except Exception as e:
                 logger.debug("Failed to rewrite transcript in DB: %s", e)
         
-        # JSONL: overwrite the file
+        # JSONL: rewrite atomically so interrupts never leave a truncated file.
         transcript_path = self.get_transcript_path(session_id)
-        with open(transcript_path, "w", encoding="utf-8") as f:
-            for msg in messages:
-                f.write(json.dumps(msg, ensure_ascii=False) + "\n")
+        transcript_path.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp_path = tempfile.mkstemp(
+            dir=str(transcript_path.parent),
+            suffix=".tmp",
+            prefix=f".{transcript_path.stem}_",
+        )
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                for msg in messages:
+                    f.write(json.dumps(msg, ensure_ascii=False) + "\n")
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp_path, transcript_path)
+        except BaseException:
+            try:
+                os.unlink(tmp_path)
+            except OSError as e:
+                logger.debug("Could not remove temp transcript %s: %s", tmp_path, e)
+            raise
 
     def load_transcript(self, session_id: str) -> List[Dict[str, Any]]:
         """Load all messages from a session's transcript."""

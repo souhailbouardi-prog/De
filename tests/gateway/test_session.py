@@ -420,6 +420,37 @@ class TestSessionStoreRewriteTranscript:
         reloaded = store.load_transcript(session_id)
         assert reloaded == []
 
+    def test_rewrite_failure_preserves_existing_transcript(self, store, monkeypatch):
+        session_id = "test_session_atomicity"
+        original_messages = [
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "hi"},
+            {"role": "user", "content": "keep this"},
+        ]
+        for msg in original_messages:
+            store.append_to_transcript(session_id, msg)
+
+        real_json_dumps = json.dumps
+        call_count = 0
+
+        def _crash_on_second_message(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count >= 2:
+                raise RuntimeError("simulated mid-write failure")
+            return real_json_dumps(*args, **kwargs)
+
+        monkeypatch.setattr("gateway.session.json.dumps", _crash_on_second_message)
+
+        with pytest.raises(RuntimeError, match="simulated mid-write failure"):
+            store.rewrite_transcript(session_id, [
+                {"role": "user", "content": "new hello"},
+                {"role": "assistant", "content": "new hi"},
+            ])
+
+        reloaded = store.load_transcript(session_id)
+        assert reloaded == original_messages
+
 
 class TestLoadTranscriptCorruptLines:
     """Regression: corrupt JSONL lines (e.g. from mid-write crash) must be
