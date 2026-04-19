@@ -676,3 +676,37 @@ def test_save_custom_provider_uses_provided_name(monkeypatch, tmp_path):
     entries = saved.get("custom_providers", [])
     assert len(entries) == 1
     assert entries[0]["name"] == "Ollama"
+
+
+def test_format_process_notification_strips_ansi_for_completion_output():
+    cli = _import_cli()
+
+    evt = {
+        "type": "completion",
+        "session_id": "sess-1",
+        "command": "pytest -q",
+        "exit_code": 0,
+        "output": "\x1b[32mPASS\x1b[0m all good",
+    }
+
+    text = cli._format_process_notification(evt)
+    assert text is not None
+    assert "\x1b[" not in text
+    assert "PASS all good" in text
+
+
+def test_format_process_notification_strips_ansi_for_watch_match_output():
+    cli = _import_cli()
+
+    evt = {
+        "type": "watch_match",
+        "session_id": "sess-2",
+        "command": "npm test",
+        "pattern": "ERROR",
+        "output": "line1\n\x1b[31mERROR\x1b[0m happened",
+    }
+
+    text = cli._format_process_notification(evt)
+    assert text is not None
+    assert "\x1b[" not in text
+    assert "ERROR happened" in text

@@ -74,6 +74,7 @@ _COMMAND_SPINNER_FRAMES = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧
 # User-managed env files should override stale shell exports on restart.
 from hermes_constants import get_hermes_home, display_hermes_home
 from hermes_cli.env_loader import load_hermes_dotenv
+from tools.ansi_strip import strip_ansi
 
 _hermes_home = get_hermes_home()
 _project_env = Path(__file__).parent / '.env'
@@ -1272,13 +1273,14 @@ def _format_process_notification(evt: dict) -> "str | None":
     evt_type = evt.get("type", "completion")
     _sid = evt.get("session_id", "unknown")
     _cmd = evt.get("command", "unknown")
+    _clean_output = strip_ansi(evt.get("output", ""))
 
     if evt_type == "watch_disabled":
         return f"[SYSTEM: {evt.get('message', '')}]"
 
     if evt_type == "watch_match":
         _pat = evt.get("pattern", "?")
-        _out = evt.get("output", "")
+        _out = _clean_output
         _sup = evt.get("suppressed", 0)
         text = (
             f"[SYSTEM: Background process {_sid} matched "
@@ -1293,7 +1295,7 @@ def _format_process_notification(evt: dict) -> "str | None":
 
     # Default: completion event
     _exit = evt.get("exit_code", "?")
-    _out = evt.get("output", "")
+    _out = _clean_output
     return (
         f"[SYSTEM: Background process {_sid} completed "
         f"(exit code {_exit}).\n"
