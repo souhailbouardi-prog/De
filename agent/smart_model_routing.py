@@ -172,13 +172,20 @@ def resolve_turn_route(user_message: str, routing_config: Optional[Dict[str, Any
             ),
         }
 
+    # Prefer api_mode from route config (cheap_model.api_mode) over the
+    # runtime-resolved value.  resolve_runtime_provider does not accept
+    # api_mode, so custom endpoints that require a specific mode (e.g.
+    # anthropic_messages for local servers with KV cache) would otherwise
+    # fall back to the default chat_completions.
+    effective_api_mode = route.get("api_mode") or runtime.get("api_mode")
+
     return {
         "model": route.get("model"),
         "runtime": {
             "api_key": runtime.get("api_key"),
             "base_url": runtime.get("base_url"),
             "provider": runtime.get("provider"),
-            "api_mode": runtime.get("api_mode"),
+            "api_mode": effective_api_mode,
             "command": runtime.get("command"),
             "args": list(runtime.get("args") or []),
             "credential_pool": runtime.get("credential_pool"),
@@ -188,7 +195,7 @@ def resolve_turn_route(user_message: str, routing_config: Optional[Dict[str, Any
             route.get("model"),
             runtime.get("provider"),
             runtime.get("base_url"),
-            runtime.get("api_mode"),
+            effective_api_mode,
             runtime.get("command"),
             tuple(runtime.get("args") or ()),
         ),
