@@ -66,6 +66,8 @@ hermes [global-options] <command> [subcommand/options]
 | `hermes profile` | Manage profiles — multiple isolated Hermes instances. |
 | `hermes completion` | Print shell completion scripts (bash/zsh). |
 | `hermes version` | Show version information. |
+| `hermes backup` | Back up Hermes home directory to a zip file. |
+| `hermes import` | Restore a Hermes backup from a zip file. |
 | `hermes update` | Pull latest code and reinstall dependencies. |
 | `hermes uninstall` | Remove Hermes from the system. |
 
@@ -862,6 +864,56 @@ hermes completion bash >> ~/.bashrc
 
 # Zsh
 hermes completion zsh >> ~/.zshrc
+```
+
+## `hermes backup`
+
+```bash
+hermes backup [-o OUTPUT]
+```
+
+Create a zip archive of your entire Hermes home directory (`~/.hermes/`), including configuration, skills, sessions, and data. The hermes-agent codebase, `__pycache__`, `.git` directories, `node_modules`, `.pyc` files, and runtime PID files are automatically excluded.
+
+| Option | Description |
+|--------|-------------|
+| `-o`, `--output <path>` | Output path for the zip file. If a directory is given, the zip is created inside it. Default: `~/hermes-backup-<timestamp>.zip`. |
+
+Examples:
+
+```bash
+# Back up to home directory with auto-generated name
+hermes backup
+
+# Back up to a specific file
+hermes backup -o /mnt/usb/hermes-backup.zip
+
+# Back up to a specific directory
+hermes backup -o /mnt/usb/
+```
+
+Restore with: `hermes import <backup-file.zip>`
+
+## `hermes import`
+
+```bash
+hermes import <zipfile> [--force]
+```
+
+Restore a previously created Hermes backup into your Hermes home directory. If existing configuration is detected, you will be prompted for confirmation unless `--force` is used. Profiles found in the backup are automatically restored with wrapper scripts.
+
+| Argument / Option | Description |
+|-------------------|-------------|
+| `<zipfile>` | Path to the backup zip file (required). |
+| `-f`, `--force` | Overwrite existing files without confirmation. |
+
+Examples:
+
+```bash
+# Restore from a backup (prompts if config exists)
+hermes import hermes-backup-2026-04-12-143000.zip
+
+# Force restore without confirmation
+hermes import hermes-backup-2026-04-12-143000.zip --force
 ```
 
 ## Maintenance commands
