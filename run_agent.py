@@ -585,6 +585,28 @@ def _qwen_portal_headers() -> dict:
     }
 
 
+def _make_plugin_stub_handler(tool_name: str, reason: str) -> callable:
+    """Create a stub tool handler that explains why the plugin is unavailable."""
+    def _stub(**kwargs):
+        return (
+            f"Tool '{tool_name}' is unavailable: {reason}. "
+            f"Please check your configuration or use the built-in memory tools instead."
+        )
+    return _stub
+
+
+def _make_plugin_stub_schema(tool_name: str, original_description: str) -> dict:
+    """Create a tool schema for a stub that indicates the plugin is disabled."""
+    return {
+        "type": "function",
+        "function": {
+            "name": tool_name,
+            "description": f"[UNAVAILABLE] {original_description} — plugin is currently disabled.",
+            "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+    }
+
+
 class AIAgent:
     """
     AI Agent with tool calling capabilities.
@@ -1352,6 +1374,20 @@ class AIAgent:
             except Exception as _mpe:
                 logger.warning("Memory provider plugin init failed: %s", _mpe)
                 self._memory_manager = None
+                # Register stub tools so the LLM gets a clear message instead of "tool not found"
+                _stub_reason = str(_mpe)
+                self._plugin_stub_handlers = getattr(self, "_plugin_stub_handlers", {})
+                for _schema in (memory_manager_tool_schemas or []):
+                    _stub_fn = _schema if isinstance(_schema, dict) and "name" in _schema else {}
+                    _stub_name = _stub_fn.get("name", "unknown")
+                    _stub_desc = _stub_fn.get("description", "")
+                    _stub_handler = _make_plugin_stub_handler(_stub_name, _stub_reason)
+                    _stub_schema = _make_plugin_stub_schema(_stub_name, _stub_desc)
+                    self._plugin_stub_handlers[_stub_name] = _stub_handler
+                    # Add stub schema to tool list so the model sees it
+                    if self.tools is not None:
+                        self.tools.append(_stub_schema)
+                        self.valid_tool_names.add(_stub_name)
 
         # Inject memory provider tool schemas into the tool surface.
         # Skip tools whose names already exist (plugins may register the
@@ -7780,6 +7816,8 @@ class AIAgent:
                 max_iterations=function_args.get("max_iterations"),
                 parent_agent=self,
             )
+        elif function_name in getattr(self, "_plugin_stub_handlers", {}):
+            return self._plugin_stub_handlers[function_name](**function_args)
         else:
             return handle_function_call(
                 function_name, function_args, effective_task_id,
