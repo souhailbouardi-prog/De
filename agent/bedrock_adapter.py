@@ -865,7 +865,7 @@ def discover_bedrock_models(
     try:
         client = _get_bedrock_control_client(region)
     except Exception as e:
-        logger.warning("Failed to create Bedrock client for model discovery: %s", e)
+        logger.warning("Failed to create Bedrock client for model discovery: %s", e, exc_info=True)
         return []
 
     models = []
@@ -907,7 +907,7 @@ def discover_bedrock_models(
             })
             seen_ids.add(model_id.lower())
     except Exception as e:
-        logger.warning("Failed to list Bedrock foundation models: %s", e)
+        logger.warning("Failed to list Bedrock foundation models: %s", e, exc_info=True)
 
     # 2. Discover inference profiles (cross-region, better capacity)
     try:
