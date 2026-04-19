@@ -223,6 +223,7 @@ def _create_app(adapter: APIServerAdapter) -> web.Application:
     app.router.add_get("/health/detailed", adapter._handle_health_detailed)
     app.router.add_get("/v1/health", adapter._handle_health)
     app.router.add_get("/v1/models", adapter._handle_models)
+    app.router.add_get("/v1/hermes/config", adapter._handle_hermes_config)
     app.router.add_post("/v1/chat/completions", adapter._handle_chat_completions)
     app.router.add_post("/v1/responses", adapter._handle_responses)
     app.router.add_get("/v1/responses/{response_id}", adapter._handle_get_response)
@@ -398,6 +399,133 @@ class TestModelsEndpoint:
                 headers={"Authorization": "Bearer sk-secret"},
             )
             assert resp.status == 200
+
+
+# ---------------------------------------------------------------------------
+# /v1/hermes/config endpoint
+# ---------------------------------------------------------------------------
+
+
+class TestHermesConfigEndpoint:
+    """
+    GET /v1/hermes/config exposes the server's parsed ~/.hermes/config.yaml
+    as a minimal {primary, fallback_chain} envelope. Useful for clients that
+    need to know the *configured* primary model and fallback chain (rather
+    than the API_SERVER_MODEL_NAME label that /v1/models advertises).
+    """
+
+    @pytest.mark.asyncio
+    async def test_returns_primary_and_legacy_fallback_dict(self, adapter):
+        """legacy fallback_model: dict → chain = [primary, fallback.model]."""
+        fake_config = {
+            "model": {"default": "gemini-2.5-flash"},
+            "fallback_model": {"provider": "gemini", "model": "gemini-2.5-pro"},
+        }
+        with patch("gateway.run._load_gateway_config", return_value=fake_config):
+            app = _create_app(adapter)
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.get("/v1/hermes/config")
+                assert resp.status == 200
+                data = await resp.json()
+                assert data["primary"] == "gemini-2.5-flash"
+                assert data["fallback_chain"] == ["gemini-2.5-flash", "gemini-2.5-pro"]
+
+    @pytest.mark.asyncio
+    async def test_returns_primary_and_fallback_providers_list(self, adapter):
+        """fallback_providers: list → chain = [primary, ...providers[*].model]."""
+        fake_config = {
+            "model": {"default": "gpt-5.4"},
+            "fallback_providers": [
+                {"provider": "openai", "model": "gpt-5.4"},
+                {"provider": "gemini", "model": "gemini-2.5-pro"},
+                {"provider": "anthropic", "model": "claude-3.5-sonnet"},
+            ],
+        }
+        with patch("gateway.run._load_gateway_config", return_value=fake_config):
+            app = _create_app(adapter)
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.get("/v1/hermes/config")
+                assert resp.status == 200
+                data = await resp.json()
+                assert data["primary"] == "gpt-5.4"
+                # gpt-5.4 appears in fallback_providers as well; it must not
+                # be duplicated in the returned chain.
+                assert data["fallback_chain"] == [
+                    "gpt-5.4",
+                    "gemini-2.5-pro",
+                    "claude-3.5-sonnet",
+                ]
+
+    @pytest.mark.asyncio
+    async def test_returns_primary_only_when_no_fallback(self, adapter):
+        """No fallback configured → chain is just [primary]."""
+        fake_config = {"model": {"default": "gpt-5.4"}}
+        with patch("gateway.run._load_gateway_config", return_value=fake_config):
+            app = _create_app(adapter)
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.get("/v1/hermes/config")
+                assert resp.status == 200
+                data = await resp.json()
+                assert data["primary"] == "gpt-5.4"
+                assert data["fallback_chain"] == ["gpt-5.4"]
+
+    @pytest.mark.asyncio
+    async def test_returns_null_primary_when_config_empty(self, adapter):
+        """Empty config → null primary, empty chain (graceful 200)."""
+        with patch("gateway.run._load_gateway_config", return_value={}):
+            app = _create_app(adapter)
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.get("/v1/hermes/config")
+                assert resp.status == 200
+                data = await resp.json()
+                assert data["primary"] is None
+                assert data["fallback_chain"] == []
+
+    @pytest.mark.asyncio
+    async def test_handles_load_exception_gracefully(self, adapter):
+        """Helper raises → graceful 200 with empty payload, never 500."""
+        with patch("gateway.run._load_gateway_config", side_effect=Exception("boom")):
+            app = _create_app(adapter)
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.get("/v1/hermes/config")
+                assert resp.status == 200
+                data = await resp.json()
+                assert data["primary"] is None
+                assert data["fallback_chain"] == []
+
+    @pytest.mark.asyncio
+    async def test_supports_top_level_string_model(self, adapter):
+        """``model: <name>`` (string form) → primary resolves correctly."""
+        fake_config = {"model": "claude-3.5-sonnet"}
+        with patch("gateway.run._load_gateway_config", return_value=fake_config):
+            app = _create_app(adapter)
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.get("/v1/hermes/config")
+                assert resp.status == 200
+                data = await resp.json()
+                assert data["primary"] == "claude-3.5-sonnet"
+                assert data["fallback_chain"] == ["claude-3.5-sonnet"]
+
+    @pytest.mark.asyncio
+    async def test_requires_auth_when_key_set(self, auth_adapter):
+        app = _create_app(auth_adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.get("/v1/hermes/config")
+            assert resp.status == 401
+
+    @pytest.mark.asyncio
+    async def test_with_valid_auth(self, auth_adapter):
+        fake_config = {"model": {"default": "gemini-2.5-flash"}}
+        with patch("gateway.run._load_gateway_config", return_value=fake_config):
+            app = _create_app(auth_adapter)
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.get(
+                    "/v1/hermes/config",
+                    headers={"Authorization": "Bearer sk-secret"},
+                )
+                assert resp.status == 200
+                data = await resp.json()
+                assert data["primary"] == "gemini-2.5-flash"
 
 
 # ---------------------------------------------------------------------------

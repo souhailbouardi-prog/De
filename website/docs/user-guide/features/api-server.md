@@ -156,6 +156,23 @@ Delete a stored response.
 
 Lists the agent as an available model. The advertised model name defaults to the [profile](/docs/user-guide/profiles) name (or `hermes-agent` for the default profile). Required by most frontends for model discovery.
 
+### GET /v1/hermes/config
+
+Returns the **configured primary model and fallback chain** parsed from the gateway's `~/.hermes/config.yaml`:
+
+```json
+{
+  "primary": "gemini-2.5-flash",
+  "fallback_chain": ["gemini-2.5-flash", "gemini-2.5-pro"]
+}
+```
+
+This is distinct from `/v1/models`, which advertises the OpenAI-compatible label set by `API_SERVER_MODEL_NAME` (often a static name like `hermes-agent`). `/v1/hermes/config` returns the model the gateway will *actually* call for new requests, plus its fallback chain — useful for dashboards and remote OpenAI-compatible clients (e.g. desktop apps over a private network) that cannot read the server's local config file directly.
+
+If the config can't be parsed or contains no model, the endpoint responds with `200` and `{"primary": null, "fallback_chain": []}` so clients can fall through to other discovery strategies without special-casing error codes.
+
+Bearer token auth applies when `API_SERVER_KEY` is configured.
+
 ### GET /health
 
 Health check. Returns `{"status": "ok"}`. Also available at **GET /v1/health** for OpenAI-compatible clients that expect the `/v1/` prefix.

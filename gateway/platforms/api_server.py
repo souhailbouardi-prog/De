@@ -612,6 +612,66 @@ class APIServerAdapter(BasePlatformAdapter):
             ],
         })
 
+    async def _handle_hermes_config(self, request: "web.Request") -> "web.Response":
+        """GET /v1/hermes/config — expose configured primary + fallback chain.
+
+        Returns the server's parsed ``~/.hermes/config.yaml`` as a minimal
+        ``{primary, fallback_chain}`` envelope. This complements ``/v1/models``,
+        which advertises ``API_SERVER_MODEL_NAME`` (an OpenAI-compatible label
+        that may not match the actual primary model the gateway will use).
+
+        The endpoint is intended for dashboards and remote OpenAI-compatible
+        clients (e.g. desktop apps connecting over a private network) that
+        cannot read the server's local config file directly and need to
+        display which model the gateway will actually call.
+
+        On any error — missing config, parse failure, helper exception —
+        the response is a graceful ``200`` with ``{primary: null,
+        fallback_chain: []}``. Clients can fall through to other strategies
+        (e.g. ``/v1/models``) without having to special-case error codes.
+        """
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+
+        empty_payload = {"primary": None, "fallback_chain": []}
+
+        try:
+            # Imported lazily to avoid the circular import between
+            # gateway.run and gateway.platforms.api_server.
+            from gateway.run import _load_gateway_config, _resolve_gateway_model
+
+            cfg = _load_gateway_config()
+            primary = _resolve_gateway_model(cfg) or None
+            if not primary:
+                return web.json_response(empty_payload)
+
+            chain: list[str] = [primary]
+
+            # Inline parse of fallback config — kept independent of
+            # GatewayRunner._load_fallback_model() so the handler can be
+            # tested without spinning up a runner.  The shape mirrors what
+            # AIAgent.__init__ accepts: either a list of provider dicts
+            # (``fallback_providers``) or a single dict (legacy
+            # ``fallback_model``).
+            fallback_raw = cfg.get("fallback_providers") or cfg.get("fallback_model")
+            if isinstance(fallback_raw, dict):
+                fb_model = fallback_raw.get("model")
+                if isinstance(fb_model, str) and fb_model and fb_model not in chain:
+                    chain.append(fb_model)
+            elif isinstance(fallback_raw, list):
+                for entry in fallback_raw:
+                    if not isinstance(entry, dict):
+                        continue
+                    fb_model = entry.get("model")
+                    if isinstance(fb_model, str) and fb_model and fb_model not in chain:
+                        chain.append(fb_model)
+
+            return web.json_response({"primary": primary, "fallback_chain": chain})
+        except Exception as exc:
+            logger.warning("[%s] /v1/hermes/config failed: %s", self.name, exc)
+            return web.json_response(empty_payload)
+
     async def _handle_chat_completions(self, request: "web.Request") -> "web.Response":
         """POST /v1/chat/completions — OpenAI Chat Completions format."""
         auth_err = self._check_auth(request)
@@ -2317,6 +2377,7 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app.router.add_get("/health/detailed", self._handle_health_detailed)
             self._app.router.add_get("/v1/health", self._handle_health)
             self._app.router.add_get("/v1/models", self._handle_models)
+            self._app.router.add_get("/v1/hermes/config", self._handle_hermes_config)
             self._app.router.add_post("/v1/chat/completions", self._handle_chat_completions)
             self._app.router.add_post("/v1/responses", self._handle_responses)
             self._app.router.add_get("/v1/responses/{response_id}", self._handle_get_response)
