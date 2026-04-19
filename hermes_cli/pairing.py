@@ -28,6 +28,11 @@ def pairing_command(args):
         print("Run 'hermes pairing --help' for details.")
 
 
+def _display_cell(value) -> str:
+    """Coerce nullable display values into safe strings for table formatting."""
+    return "" if value is None else str(value)
+
+
 def _cmd_list(store):
     """List all pending and approved users."""
     pending = store.list_pending()
@@ -42,9 +47,14 @@ def _cmd_list(store):
         print(f"  {'Platform':<12} {'Code':<10} {'User ID':<20} {'Name':<20} {'Age'}")
         print(f"  {'--------':<12} {'----':<10} {'-------':<20} {'----':<20} {'---'}")
         for p in pending:
+            platform = _display_cell(p.get("platform"))
+            code = _display_cell(p.get("code"))
+            user_id = _display_cell(p.get("user_id"))
+            user_name = _display_cell(p.get("user_name"))
+            age_minutes = p.get("age_minutes", 0)
             print(
-                f"  {p['platform']:<12} {p['code']:<10} {p['user_id']:<20} "
-                f"{p.get('user_name', ''):<20} {p['age_minutes']}m ago"
+                f"  {platform:<12} {code:<10} {user_id:<20} "
+                f"{user_name:<20} {age_minutes}m ago"
             )
     else:
         print("\n  No pending pairing requests.")
@@ -54,7 +64,10 @@ def _cmd_list(store):
         print(f"  {'Platform':<12} {'User ID':<20} {'Name':<20}")
         print(f"  {'--------':<12} {'-------':<20} {'----':<20}")
         for a in approved:
-            print(f"  {a['platform']:<12} {a['user_id']:<20} {a.get('user_name', ''):<20}")
+            platform = _display_cell(a.get("platform"))
+            user_id = _display_cell(a.get("user_id"))
+            user_name = _display_cell(a.get("user_name"))
+            print(f"  {platform:<12} {user_id:<20} {user_name:<20}")
     else:
         print("\n  No approved users.")
 
