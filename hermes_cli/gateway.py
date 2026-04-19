@@ -1980,7 +1980,8 @@ def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False):
     """Run the gateway in foreground.
     
     Args:
-        verbose: Stderr log verbosity count added on top of default WARNING (0=WARNING, 1=INFO, 2+=DEBUG).
+        verbose: Additional foreground log verbosity. Foreground mode shows
+                 INFO-level startup progress by default; 2+ enables DEBUG.
         quiet: Suppress all stderr log output.
         replace: If True, kill any existing gateway instance before starting.
                  This prevents systemd restart loops when the old process
@@ -2000,7 +2001,9 @@ def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False):
     
     # Exit with code 1 if gateway fails to connect any platform,
     # so systemd Restart=on-failure will retry on transient errors
-    verbosity = None if quiet else verbose
+    # Foreground runs should surface startup progress by default so the user
+    # can see connection milestones instead of a silent terminal.
+    verbosity = None if quiet else max(verbose, 1)
     success = asyncio.run(start_gateway(replace=replace, verbosity=verbosity))
     if not success:
         sys.exit(1)

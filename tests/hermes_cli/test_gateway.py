@@ -352,3 +352,46 @@ class TestWaitForGatewayExit:
 
         assert killed == 2
         assert calls == [(11, True), (22, True)]
+
+def test_run_gateway_defaults_to_info_progress(monkeypatch, capsys):
+    calls = []
+
+    async def fake_start_gateway(*, replace=False, verbosity=0):
+        calls.append((replace, verbosity))
+        return True
+
+    monkeypatch.setattr("gateway.run.start_gateway", fake_start_gateway)
+
+    gateway.run_gateway()
+
+    out = capsys.readouterr().out
+    assert "Hermes Gateway Starting" in out
+    assert calls == [(False, 1)]
+
+
+def test_run_gateway_preserves_higher_verbosity(monkeypatch):
+    calls = []
+
+    async def fake_start_gateway(*, replace=False, verbosity=0):
+        calls.append((replace, verbosity))
+        return True
+
+    monkeypatch.setattr("gateway.run.start_gateway", fake_start_gateway)
+
+    gateway.run_gateway(verbose=2, replace=True)
+
+    assert calls == [(True, 2)]
+
+
+def test_run_gateway_quiet_disables_stderr_handler(monkeypatch):
+    calls = []
+
+    async def fake_start_gateway(*, replace=False, verbosity=0):
+        calls.append((replace, verbosity))
+        return True
+
+    monkeypatch.setattr("gateway.run.start_gateway", fake_start_gateway)
+
+    gateway.run_gateway(quiet=True)
+
+    assert calls == [(False, None)]
