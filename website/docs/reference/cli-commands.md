@@ -86,6 +86,8 @@ Common options:
 | `-s`, `--skills <name>` | Preload one or more skills for the session (can be repeated or comma-separated). |
 | `-v`, `--verbose` | Verbose output. |
 | `-Q`, `--quiet` | Programmatic mode: suppress banner/spinner/tool previews. |
+| `--format <text\|json>` | Output format for quiet single-query mode. `json` requires `--quiet` and `-q/--query`. |
+| `--include-metadata` | Include extra metadata in `--format json` output. |
 | `--image <path>` | Attach a local image to a single query. |
 | `--resume <session>` / `--continue [name]` | Resume a session directly from `chat`. |
 | `--worktree` | Create an isolated git worktree for this run. |
@@ -102,9 +104,18 @@ hermes
 hermes chat -q "Summarize the latest PRs"
 hermes chat --provider openrouter --model anthropic/claude-sonnet-4.6
 hermes chat --toolsets web,terminal,skills
-hermes chat --quiet -q "Return only JSON"
+hermes chat --quiet -q "Return only the answer text"
+hermes chat --quiet --format json -q "Return the answer as structured output"
+hermes chat --quiet --format json --include-metadata -q "Return JSON plus metadata"
 hermes chat --worktree -q "Review this repo and open a PR"
 ```
+
+Quiet single-query output contracts:
+
+- `--quiet` text mode prints the final response followed by `session_id: <id>` on the next line, with no blank spacer line.
+- `--quiet --format json` prints exactly one JSON object with at least `ok`, `response`, and `session_id`.
+- `--include-metadata` adds a `metadata` object to quiet JSON output.
+- When the run fails and no final response exists, Hermes synthesizes `Error: ...` from the internal error and exits non-zero.
 
 ## `hermes model`
 

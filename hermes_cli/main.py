@@ -1116,6 +1116,8 @@ def cmd_chat(args):
         "skills": getattr(args, "skills", None),
         "verbose": args.verbose,
         "quiet": getattr(args, "quiet", False),
+        "output_format": getattr(args, "format", None),
+        "include_metadata": getattr(args, "include_metadata", False),
         "query": args.query,
         "image": getattr(args, "image", None),
         "resume": getattr(args, "resume", None),
@@ -6439,14 +6441,24 @@ For more help on a command:
         "-v", "--verbose", action="store_true", help="Verbose output"
     )
     chat_parser.add_argument(
-        "-Q",
-        "--quiet",
+        "-Q", "--quiet",
         action="store_true",
-        help="Quiet mode for programmatic use: suppress banner, spinner, and tool previews. Only output the final response and session info.",
+        help="Quiet mode for programmatic use: suppress banner, spinner, and tool previews. Only output the final response and session info."
     )
     chat_parser.add_argument(
-        "--resume",
-        "-r",
+        "--format",
+        choices=["text", "json"],
+        default="text",
+        help="Output format for single-query quiet mode (default: text)"
+    )
+    chat_parser.add_argument(
+        "--include-metadata",
+        action="store_true",
+        default=False,
+        help="Include extra metadata fields in --format json output"
+    )
+    chat_parser.add_argument(
+        "--resume", "-r",
         metavar="SESSION_ID",
         default=argparse.SUPPRESS,
         help="Resume a previous session by ID (shown on exit)",

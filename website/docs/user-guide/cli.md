@@ -386,12 +386,24 @@ Background sessions do not appear in your main conversation history. They are st
 
 ## Quiet Mode
 
-By default, the CLI runs in quiet mode which:
-- Suppresses verbose logging from tools
-- Enables kawaii-style animated feedback
-- Keeps output clean and user-friendly
+Interactive Hermes is not "quiet" by default. `--quiet` is a programmatic single-query mode for scripts, wrappers, and other tools that need stable stdout.
 
-For debug output:
+Use it like this:
+
+```bash
+hermes chat -q "2+2は？" --quiet
+hermes chat -q "Summarize this as JSON" --quiet --format json
+hermes chat -q "Summarize this as JSON with metadata" --quiet --format json --include-metadata
+```
+
+Output contracts:
+
+- text mode (`--quiet`) prints the final response, then `session_id: <id>` on the next line
+- json mode (`--quiet --format json`) prints exactly one JSON object
+- `--include-metadata` adds a `metadata` object to JSON output
+- `--format json` requires both `--quiet` and single-query mode (`-q/--query`)
+
+For debug output in normal interactive use:
 ```bash
 hermes chat --verbose
 ```

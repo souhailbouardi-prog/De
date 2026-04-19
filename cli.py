@@ -10307,6 +10307,8 @@ def main(
     query: str = None,
     q: str = None,
     image: str = None,
+    output_format: str = "text",
+    include_metadata: bool = False,
     toolsets: str = None,
     skills: str | list[str] | tuple[str, ...] = None,
     model: str = None,
@@ -10333,6 +10335,8 @@ def main(
         query: Single query to execute (then exit). Alias: -q
         q: Shorthand for --query
         image: Optional local image path to attach to a single query
+        output_format: Output format for quiet single-query mode (text or json)
+        include_metadata: Include extra metadata in quiet JSON output
         toolsets: Comma-separated list of toolsets to enable (e.g., "web,terminal")
         skills: Comma-separated or repeated list of skills to preload for the session
         model: Model to use (default: anthropic/claude-opus-4-20250514)
@@ -10514,6 +10518,18 @@ def main(
     except Exception:
         pass  # signal handler may fail in restricted environments
     
+    if output_format not in ("text", "json"):
+        raise ValueError(f"Unsupported output format: {output_format}")
+
+    if output_format == "json" and not (query or image):
+        raise ValueError("--format json is only supported for single-query mode")
+
+    if output_format == "json" and not quiet:
+        raise ValueError("--format json requires --quiet")
+
+    if include_metadata and output_format != "json":
+        raise ValueError("--include-metadata requires --format json")
+
     # Handle single query mode
     if query or image:
         query, single_query_images = _collect_query_images(query, image)
@@ -10540,23 +10556,50 @@ def main(
                 ):
                     cli.agent.quiet_mode = True
                     cli.agent.suppress_status_output = True
-                    # Suppress streaming display callbacks so stdout stays
-                    # machine-readable (no styled "Hermes" box, no tool-gen
-                    # status lines).  The response is printed once below.
-                    cli.agent.stream_delta_callback = None
-                    cli.agent.tool_gen_callback = None
+                    # Single-query quiet mode has no prompt_toolkit TUI app.
+                    # If streaming callbacks remain attached here, streamed deltas
+                    # can render the full answer once and the explicit final print
+                    # below renders it again, causing duplicate output.
+                    if getattr(cli, "_app", None) is None:
+                        cli.agent.stream_delta_callback = None
+                        cli.agent.tool_gen_callback = None
                     result = cli.agent.run_conversation(
                         user_message=effective_query,
                         conversation_history=cli.conversation_history,
                     )
                     response = result.get("final_response", "") if isinstance(result, dict) else str(result)
-                    if response:
-                        print(response)
-                    # Session ID goes to stderr so piped stdout is clean.
-                    print(f"\nsession_id: {cli.session_id}", file=sys.stderr)
-                    
+                    error_detail = None
+                    if isinstance(result, dict) and result.get("failed") and not response:
+                        error_detail = result.get("error", "Unknown error")
+                        response = f"Error: {error_detail}"
+                    elif isinstance(result, dict) and result.get("failed"):
+                        error_detail = result.get("error")
+
+                    failed = bool(isinstance(result, dict) and result.get("failed"))
+                    if output_format == "json":
+                        payload = {
+                            "ok": not failed,
+                            "response": response,
+                            "session_id": cli.session_id,
+                        }
+                        if error_detail:
+                            payload["error"] = error_detail
+                        if include_metadata:
+                            payload["metadata"] = {
+                                "format": output_format,
+                                "failed": failed,
+                                "model": turn_route.get("model"),
+                                "provider": turn_route.get("runtime", {}).get("provider") or getattr(cli, "provider", None),
+                            }
+                        sys.stdout.write(json.dumps(payload, ensure_ascii=False) + "\n")
+                    else:
+                        if response:
+                            sys.stdout.write(response.rstrip("\n") + "\n")
+                        sys.stdout.write(f"session_id: {cli.session_id}\n")
+                    sys.stdout.flush()
+
                     # Ensure proper exit code for automation wrappers
-                    sys.exit(1 if isinstance(result, dict) and result.get("failed") else 0)
+                    sys.exit(1 if failed else 0)
             
             # Exit with error code if credentials or agent init fails
             sys.exit(1)
