@@ -4795,10 +4795,24 @@ class GatewayRunner:
         })
 
         # Resolve session config info to surface to the user
+        # Gated by display.show_session_info (default: True)
+        _show_session_info = True
         try:
-            session_info = self._format_session_info()
+            _si_cfg_path = _hermes_home / "config.yaml"
+            if _si_cfg_path.exists():
+                import yaml as _si_yaml
+                with open(_si_cfg_path, encoding="utf-8") as _si_f:
+                    _si_data = _si_yaml.safe_load(_si_f) or {}
+                _show_session_info = _si_data.get("display", {}).get("show_session_info", True)
         except Exception:
-            session_info = ""
+            pass
+
+        session_info = ""
+        if _show_session_info:
+            try:
+                session_info = self._format_session_info()
+            except Exception:
+                session_info = ""
 
         if new_entry:
             header = "✨ Session reset! Starting fresh."
@@ -4817,11 +4831,25 @@ class GatewayRunner:
             pass
 
         # Append a random tip to the reset message
+        # Gated by display.show_tips (default: True)
+        _show_tips = True
         try:
-            from hermes_cli.tips import get_random_tip
-            _tip_line = f"\n✦ Tip: {get_random_tip()}"
+            _tips_cfg_path = _hermes_home / "config.yaml"
+            if _tips_cfg_path.exists():
+                import yaml as _tips_yaml
+                with open(_tips_cfg_path, encoding="utf-8") as _tips_f:
+                    _tips_data = _tips_yaml.safe_load(_tips_f) or {}
+                _show_tips = _tips_data.get("display", {}).get("show_tips", True)
         except Exception:
-            _tip_line = ""
+            pass
+
+        _tip_line = ""
+        if _show_tips:
+            try:
+                from hermes_cli.tips import get_random_tip
+                _tip_line = f"\n✦ Tip: {get_random_tip()}"
+            except Exception:
+                _tip_line = ""
 
         if session_info:
             return f"{header}\n\n{session_info}{_tip_line}"
