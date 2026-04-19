@@ -3712,6 +3712,62 @@ class HermesCLI:
         elif _is_termux_environment():
             _cprint(f"  {_DIM}Tip: type your next message, or run hermes chat -q --image {_termux_example_image_path(image_path.name)} \"What do you see?\"{_RST}")
 
+    def _handle_openmd_command(self, cmd_original: str):
+        """Handle /openmd [offset] — render an LLM response in openmd."""
+        import shutil
+        import subprocess
+
+        if not shutil.which("openmd"):
+            _cprint(f"  {_DIM}openmd is not installed or not in PATH.{_RST}")
+            _cprint(f"  {_DIM}Install it with: uv tool install openmd{_RST}")
+            return
+
+        # Parse offset (default to 1, meaning the last LLM message)
+        parts = cmd_original.split()
+        offset = 1
+        if len(parts) > 1:
+            try:
+                offset = int(parts[1])
+                if offset < 1:
+                    raise ValueError
+            except ValueError:
+                _cprint(f"  {_DIM}Invalid offset. Usage: /openmd [number]{_RST}")
+                return
+
+        # Extract LLM messages from history
+        llm_messages = [
+            msg.get("content", "")
+            for msg in self.conversation_history
+            if msg.get("role") == "assistant" and msg.get("content")
+        ]
+
+        if not llm_messages:
+            _cprint(f"  {_DIM}(._.) No LLM messages found in history.{_RST}")
+            return
+
+        if offset > len(llm_messages):
+            _cprint(f"  {_DIM}(._.) Only {len(llm_messages)} LLM message(s) available.{_RST}")
+            return
+
+        # Get the target message (offset 1 is the last one)
+        target_content = llm_messages[-offset]
+
+        try:
+            # Launch openmd and pipe the content via stdin.
+            # openmd is non-blocking and detaches its own Qt window,
+            # so we don't need start_new_session=True here.
+            process = subprocess.Popen(
+                ["openmd"],
+                stdin=subprocess.PIPE,
+                text=True
+            )
+            process.stdin.write(target_content)
+            process.stdin.close()
+
+            _cprint(f"  {_DIM}Opened message {offset} ago in openmd.{_RST}")
+        except Exception as e:
+            _cprint(f"\033[1;31mFailed to launch openmd: {e}{_RST}")
+
     def _preprocess_images_with_vision(self, text: str, images: list, *, announce: bool = True) -> str:
         """Analyze attached images via the vision tool and return enriched text.
 
@@ -5721,6 +5777,8 @@ class HermesCLI:
             self._handle_paste_command()
         elif canonical == "image":
             self._handle_image_command(cmd_original)
+        elif canonical == "openmd":
+            self._handle_openmd_command(cmd_original)
         elif canonical == "reload":
             from hermes_cli.config import reload_env
             count = reload_env()
