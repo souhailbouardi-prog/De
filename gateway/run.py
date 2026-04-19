@@ -292,6 +292,10 @@ from gateway.restart import (
     GATEWAY_SERVICE_RESTART_EXIT_CODE,
     parse_restart_drain_timeout,
 )
+from gateway.files_changed_footer import (
+    build_files_changed_footer,
+    is_files_changed_footer_enabled,
+)
 
 
 def _normalize_whatsapp_identifier(value: str) -> str:
@@ -9902,6 +9906,17 @@ class GatewayRunner:
                     if has_voice_directive:
                         unique_tags.insert(0, "[[audio_as_voice]]")
                     final_response = final_response + "\n" + "\n".join(unique_tags)
+
+            if is_files_changed_footer_enabled() and final_response:
+                try:
+                    footer = build_files_changed_footer(
+                        result.get("messages", []) if isinstance(result, dict) else [],
+                        history_offset=len(agent_history),
+                    )
+                    if footer:
+                        final_response = final_response.rstrip() + "\n\n" + footer
+                except Exception as footer_exc:
+                    logger.debug("Final response footer generation failed: %s", footer_exc)
             
             # Sync session_id: the agent may have created a new session during
             # mid-run context compression (_compress_context splits sessions).
