@@ -2925,8 +2925,17 @@ class HermesCLI:
         if self.agent is not None:
             return True
 
+        # Preserve model if it was explicitly switched via /model before the agent
+        # was initialized — _ensure_runtime_credentials() re-reads model from
+        # config.yaml and would overwrite the user's choice (line 2739).
+        _model_before_creds = self.model
+
         if not self._ensure_runtime_credentials():
             return False
+
+        # Restore the explicitly switched model if credentials resolution replaced it
+        if _model_before_creds and _model_before_creds != self.model:
+            self.model = _model_before_creds
 
         # Initialize SQLite session store for CLI sessions (if not already done in __init__)
         if self._session_db is None:
@@ -4712,6 +4721,13 @@ class HermesCLI:
             self._explicit_base_url = result.base_url
         if result.api_mode:
             self.api_mode = result.api_mode
+
+        # Propagate model switch to auxiliary tasks (title generation, compression, etc.)
+        try:
+            from agent.auxiliary_client import set_runtime_model
+            set_runtime_model(result.new_model, result.target_provider, result.base_url or "")
+        except Exception:
+            pass
 
         if self.agent is not None:
             try:
@@ -7898,8 +7914,21 @@ class HermesCLI:
         set_secret_capture_callback(self._secret_capture_callback)
 
         # Refresh provider credentials if needed (handles key rotation transparently)
+        # Preserve model/provider/base_url if explicitly switched via /model —
+        # _ensure_runtime_credentials() re-reads from config.yaml and would overwrite
+        # the user's choice.
+        _model_before_creds = self.model
+        _provider_before_creds = self.provider
+        _requested_provider_before_creds = self.requested_provider
+        _base_url_before_creds = self.base_url
         if not self._ensure_runtime_credentials():
             return None
+        if _model_before_creds and _model_before_creds != self.model:
+            self.model = _model_before_creds
+        if _provider_before_creds and _provider_before_creds != self.provider:
+            self.provider = _provider_before_creds
+            self.requested_provider = _requested_provider_before_creds
+            self.base_url = _base_url_before_creds
 
         turn_route = self._resolve_turn_agent_config(message)
         if turn_route["signature"] != self._active_agent_route_signature:
