@@ -15,6 +15,7 @@ import os
 import re
 import secrets
 import time
+import urllib.parse
 from pathlib import Path
 from typing import Dict
 
@@ -251,6 +252,11 @@ def _cmd_test(args):
     sig = "sha256=" + hmac.new(
         secret.encode(), payload.encode(), hashlib.sha256
     ).hexdigest()
+
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme not in ("http", "https"):
+        print(f"  Error: webhook URL scheme must be http or https (got {parsed.scheme!r})")
+        return
 
     print(f"  Sending test POST to {url}")
     try:

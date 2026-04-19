@@ -330,7 +330,27 @@ class EnvVarReveal(BaseModel):
     key: str
 
 
-_GATEWAY_HEALTH_URL = os.getenv("GATEWAY_HEALTH_URL")
+def _require_http_url(url: str | None, name: str) -> str | None:
+    """Return *url* only if its scheme is http or https; log and return None otherwise.
+
+    Prevents SSRF via ``file://``, ``ftp://``, or other unexpected schemes
+    when environment-variable-supplied URLs are passed to ``urllib.request.urlopen``.
+    """
+    if url is None:
+        return None
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme not in ("http", "https"):
+        import logging as _logging
+        _logging.getLogger(__name__).warning(
+            "%s rejected: only http/https schemes are allowed (got %r)",
+            name,
+            parsed.scheme or "(empty)",
+        )
+        return None
+    return url
+
+
+_GATEWAY_HEALTH_URL = _require_http_url(os.getenv("GATEWAY_HEALTH_URL"), "GATEWAY_HEALTH_URL")
 _GATEWAY_HEALTH_TIMEOUT = float(os.getenv("GATEWAY_HEALTH_TIMEOUT", "3"))
 
 
