@@ -1220,17 +1220,25 @@ def _seed_from_env(provider: str, entries: List[PooledCredential]) -> Tuple[bool
     return changed, active_sources
 
 
-def _prune_stale_seeded_entries(entries: List[PooledCredential], active_sources: Set[str]) -> bool:
-    retained = [
-        entry
-        for entry in entries
-        if _is_manual_source(entry.source)
-        or entry.source in active_sources
-        or not (
-            entry.source.startswith("env:")
-            or entry.source in {"claude_code", "hermes_pkce"}
-        )
-    ]
+def _prune_stale_seeded_entries(provider: str, entries: List[PooledCredential], active_sources: Set[str]) -> bool:
+    retained = []
+    for entry in entries:
+        if _is_manual_source(entry.source) or entry.source in active_sources:
+            retained.append(entry)
+            continue
+
+        if entry.source.startswith("env:"):
+            # Env-seeded API keys are treated as persisted credentials once they
+            # have been written to auth.json, so they survive process restarts.
+            # OAuth-style env seeds are different: if the env var disappears,
+            # we do not have a refresh token/expiry-aware fallback and should
+            # prune them so the pool does not keep selecting a stale token.
+            if entry.auth_type == AUTH_TYPE_API_KEY or provider in {"opencode-go", "openrouter"}:
+                retained.append(entry)
+            continue
+
+        if entry.source not in {"claude_code", "hermes_pkce"}:
+            retained.append(entry)
     if len(retained) == len(entries):
         return False
     entries[:] = retained
@@ -1310,12 +1318,12 @@ def load_pool(provider: str) -> CredentialPool:
         # Custom endpoint pool — seed from custom_providers config and model config
         custom_changed, custom_sources = _seed_custom_pool(provider, entries)
         changed = custom_changed
-        changed |= _prune_stale_seeded_entries(entries, custom_sources)
+        changed |= _prune_stale_seeded_entries(provider, entries, custom_sources)
     else:
         singleton_changed, singleton_sources = _seed_from_singletons(provider, entries)
         env_changed, env_sources = _seed_from_env(provider, entries)
         changed = singleton_changed or env_changed
-        changed |= _prune_stale_seeded_entries(entries, singleton_sources | env_sources)
+        changed |= _prune_stale_seeded_entries(provider, entries, singleton_sources | env_sources)
         changed |= _normalize_pool_priorities(provider, entries)
 
     if changed:
