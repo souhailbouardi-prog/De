@@ -536,6 +536,41 @@ def test_custom_endpoint_explicit_custom_prefers_config_key(monkeypatch):
     assert resolved["api_key"] == "sk-vllm-key"
 
 
+def test_custom_endpoint_explicit_custom_uses_matching_key_env(monkeypatch):
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "custom")
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {
+            "provider": "custom",
+            "base_url": "https://proxy.example.com/v1",
+        },
+    )
+    monkeypatch.setattr(
+        rp,
+        "load_config",
+        lambda: {
+            "custom_providers": [
+                {
+                    "name": "Proxy",
+                    "base_url": "https://proxy.example.com/v1",
+                    "key_env": "PROXY_API_KEY",
+                }
+            ]
+        },
+    )
+    monkeypatch.setenv("PROXY_API_KEY", "env-proxy-key")
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+
+    resolved = rp.resolve_runtime_provider(requested="custom")
+
+    assert resolved["provider"] == "custom"
+    assert resolved["base_url"] == "https://proxy.example.com/v1"
+    assert resolved["api_key"] == "env-proxy-key"
+    assert resolved["requested_provider"] == "custom"
+
+
 def test_named_custom_provider_uses_saved_credentials(monkeypatch):
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)

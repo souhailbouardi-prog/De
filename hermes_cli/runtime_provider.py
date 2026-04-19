@@ -374,6 +374,32 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
     return None
 
 
+def _resolve_custom_provider_env_api_key(base_url: str) -> str:
+    """Resolve a custom provider API key from key_env by matching base_url."""
+    normalized_url = (base_url or "").strip().rstrip("/")
+    if not normalized_url:
+        return ""
+
+    try:
+        custom_providers = get_compatible_custom_providers(load_config())
+    except Exception:
+        return ""
+
+    for entry in custom_providers:
+        if not isinstance(entry, dict):
+            continue
+        entry_url = str(entry.get("base_url") or "").strip().rstrip("/")
+        if entry_url != normalized_url:
+            continue
+        key_env = str(entry.get("key_env", "") or "").strip()
+        if not key_env:
+            return ""
+        api_key = os.getenv(key_env, "").strip()
+        return api_key if has_usable_secret(api_key) else ""
+
+    return ""
+
+
 def _resolve_named_custom_runtime(
     *,
     requested_provider: str,
@@ -470,6 +496,10 @@ def _resolve_openrouter_runtime(
     # OPENAI_API_KEY so the OpenRouter key doesn't leak to an unrelated
     # provider (issues #420, #560).
     _is_openrouter_url = "openrouter.ai" in base_url
+    custom_provider_env_key = ""
+    if not _is_openrouter_url:
+        custom_provider_env_key = _resolve_custom_provider_env_api_key(base_url)
+
     if _is_openrouter_url:
         api_key_candidates = [
             explicit_api_key,
@@ -485,6 +515,7 @@ def _resolve_openrouter_runtime(
             explicit_api_key,
             (cfg_api_key if use_config_base_url else ""),
             (os.getenv("OLLAMA_API_KEY") if _is_ollama_url else ""),
+            custom_provider_env_key,
             os.getenv("OPENAI_API_KEY"),
             os.getenv("OPENROUTER_API_KEY"),
         ]
@@ -535,6 +566,26 @@ def _resolve_explicit_runtime(
     explicit_base_url = str(explicit_base_url or "").strip().rstrip("/")
     if not explicit_api_key and not explicit_base_url:
         return None
+
+    if provider == "custom":
+        cfg_provider = str(model_cfg.get("provider") or "").strip().lower()
+        cfg_base_url = ""
+        if cfg_provider == "custom":
+            cfg_base_url = str(model_cfg.get("base_url") or "").strip().rstrip("/")
+        base_url = explicit_base_url or cfg_base_url
+        api_key = explicit_api_key or _resolve_custom_provider_env_api_key(base_url)
+        if not base_url:
+            return None
+        return {
+            "provider": "custom",
+            "api_mode": _parse_api_mode(model_cfg.get("api_mode"))
+            or _detect_api_mode_for_url(base_url)
+            or "chat_completions",
+            "base_url": base_url,
+            "api_key": api_key or "no-key-required",
+            "source": "explicit",
+            "requested_provider": requested_provider,
+        }
 
     if provider == "anthropic":
         cfg_provider = str(model_cfg.get("provider") or "").strip().lower()
