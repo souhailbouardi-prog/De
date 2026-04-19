@@ -1226,10 +1226,13 @@ def _prune_stale_seeded_entries(entries: List[PooledCredential], active_sources:
         for entry in entries
         if _is_manual_source(entry.source)
         or entry.source in active_sources
-        or not (
-            entry.source.startswith("env:")
-            or entry.source in {"claude_code", "hermes_pkce"}
-        )
+        # Env-seeded credentials are now treated as persisted credentials once
+        # they have been written to auth.json.  Do not silently prune them just
+        # because the corresponding env var is absent in the current process.
+        # This keeps login/add flows stable across restarts and matches user
+        # expectations for stored API keys.
+        or entry.source.startswith("env:")
+        or not (entry.source in {"claude_code", "hermes_pkce"})
     ]
     if len(retained) == len(entries):
         return False

@@ -59,6 +59,43 @@ def test_fill_first_selection_skips_recently_exhausted_entry(tmp_path, monkeypat
     assert pool.current().id == "cred-2"
 
 
+def test_env_seeded_opencode_go_credential_is_not_pruned_when_env_is_missing(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.delenv("OPENCODE_GO_API_KEY", raising=False)
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "credential_pool": {
+                "opencode-go": [
+                    {
+                        "id": "cred-1",
+                        "label": "OPENCODE_GO_API_KEY",
+                        "auth_type": "api_key",
+                        "priority": 0,
+                        "source": "env:OPENCODE_GO_API_KEY",
+                        "access_token": "sk-test-token",
+                        "base_url": "https://opencode.ai/zen/go/v1",
+                    }
+                ]
+            },
+        },
+    )
+
+    from agent.credential_pool import load_pool
+
+    pool = load_pool("opencode-go")
+    entry = pool.select()
+
+    assert entry is not None
+    assert entry.source == "env:OPENCODE_GO_API_KEY"
+    assert entry.runtime_api_key == "sk-test-token"
+    assert pool.has_credentials() is True
+
+    persisted = json.loads((tmp_path / "hermes" / "auth.json").read_text())
+    assert persisted["credential_pool"]["opencode-go"]
+
+
 def test_select_clears_expired_exhaustion(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
     _write_auth_store(
@@ -408,7 +445,7 @@ def test_load_pool_seeds_env_api_key(tmp_path, monkeypatch):
     assert entry.access_token == "sk-or-seeded"
 
 
-def test_load_pool_removes_stale_seeded_env_entry(tmp_path, monkeypatch):
+def test_load_pool_preserves_seeded_env_entry_when_env_missing(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
     _write_auth_store(
@@ -423,7 +460,7 @@ def test_load_pool_removes_stale_seeded_env_entry(tmp_path, monkeypatch):
                         "auth_type": "api_key",
                         "priority": 0,
                         "source": "env:OPENROUTER_API_KEY",
-                        "access_token": "stale-token",
+                        "access_token": "***",
                         "base_url": "https://openrouter.ai/api/v1",
                     }
                 ]
@@ -435,10 +472,11 @@ def test_load_pool_removes_stale_seeded_env_entry(tmp_path, monkeypatch):
 
     pool = load_pool("openrouter")
 
-    assert pool.entries() == []
+    assert pool.entries() != []
+    assert pool.entries()[0].source == "env:OPENROUTER_API_KEY"
 
     auth_payload = json.loads((tmp_path / "hermes" / "auth.json").read_text())
-    assert auth_payload["credential_pool"]["openrouter"] == []
+    assert auth_payload["credential_pool"]["openrouter"]
 
 
 def test_load_pool_migrates_nous_provider_state(tmp_path, monkeypatch):
