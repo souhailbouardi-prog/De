@@ -9,6 +9,7 @@ Uses slack-bolt (Python) with Socket Mode for:
 """
 
 import asyncio
+import contextvars
 import json
 import logging
 import os
@@ -16,6 +17,15 @@ import re
 import time
 from dataclasses import dataclass, field
 from typing import Dict, Optional, Any, Tuple
+
+# Per-task flag: True when the current inbound message is a top-level
+# channel message that should NOT create a thread reply.  Set by
+# _handle_slack_message, read by _resolve_thread_ts and send_typing.
+# Using ContextVar (not an instance variable) so concurrent asyncio
+# tasks each get their own value without cross-contamination.
+_force_channel_reply: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "_force_channel_reply", default=False
+)
 
 try:
     from slack_bolt.async_app import AsyncApp
@@ -355,6 +365,13 @@ class SlackAdapter(BasePlatformAdapter):
         if not thread_ts:
             return  # Can only set status in a thread context
 
+        # Skip assistant thread status for top-level channel messages when
+        # reply_in_thread is disabled.  The setStatus API activates an
+        # assistant thread, which would force replies into a thread even
+        # when _resolve_thread_ts returns None.
+        if _force_channel_reply.get():
+            return
+
         try:
             await self._get_client(chat_id).assistant_threads_setStatus(
                 channel_id=chat_id,
@@ -395,9 +412,13 @@ class SlackAdapter(BasePlatformAdapter):
         thread replies.  Messages that originate inside an existing thread are
         always replied to in-thread to preserve conversation context.
         """
-        # When reply_in_thread is disabled (default: True for backward compat),
-        # only thread messages that are already part of an existing thread.
-        if not self.config.extra.get("reply_in_thread", True):
+        # When reply_in_thread is disabled (default: True for backward compat)
+        # or reply_to_mode is "off", suppress threading for top-level messages.
+        # _force_channel_reply is set per-message by _handle_slack_message
+        # (True for top-level, False for genuine thread replies).
+        if not self.config.extra.get("reply_in_thread", True) or getattr(self.config, "reply_to_mode", None) == "off":
+            if _force_channel_reply.get():
+                return None
             existing_thread = (metadata or {}).get("thread_id") or (metadata or {}).get("thread_ts")
             return existing_thread or None
 
@@ -1174,6 +1195,18 @@ class SlackAdapter(BasePlatformAdapter):
 
         # Resolve user display name (cached after first lookup)
         user_name = await self._resolve_user_name(user_id, chat_id=channel_id)
+
+        # When reply_in_thread is disabled or reply_to_mode is off, mark
+        # top-level messages so _resolve_thread_ts and send_typing suppress
+        # threading.  The flag is per-message, reset on each inbound event.
+        # Safe in single-threaded asyncio.
+        _force_channel_reply.set(
+            not is_thread_reply
+            and (
+                not self.config.extra.get("reply_in_thread", True)
+                or getattr(self.config, "reply_to_mode", None) == "off"
+            )
+        )
 
         # Build source
         source = self.build_source(

@@ -59,7 +59,7 @@ _ensure_slack_mock()
 import gateway.platforms.slack as _slack_mod
 _slack_mod.SLACK_AVAILABLE = True
 
-from gateway.platforms.slack import SlackAdapter  # noqa: E402
+from gateway.platforms.slack import SlackAdapter, _force_channel_reply  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -589,6 +589,63 @@ class TestSendTyping:
             thread_ts="fallback_ts",
             status="is thinking...",
         )
+
+    @pytest.mark.asyncio
+    async def test_skips_status_when_force_channel_reply(self, adapter):
+        """When _force_channel_reply is set, send_typing skips setStatus."""
+        _force_channel_reply.set(True)
+        adapter._app.client.assistant_threads_setStatus = AsyncMock()
+        await adapter.send_typing("C123", metadata={"thread_id": "ts1"})
+        adapter._app.client.assistant_threads_setStatus.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# TestResolveThreadTs — thread routing logic
+# ---------------------------------------------------------------------------
+
+
+class TestResolveThreadTs:
+    """Test _resolve_thread_ts with _force_channel_reply flag."""
+
+    def test_default_returns_thread_id(self, adapter):
+        """Default config: returns thread_id from metadata."""
+        result = adapter._resolve_thread_ts("reply_ts", {"thread_id": "parent_ts"})
+        assert result == "parent_ts"
+
+    def test_force_channel_reply_returns_none(self, adapter):
+        """Top-level with reply_in_thread=false: returns None via flag."""
+        adapter.config.extra["reply_in_thread"] = False
+        _force_channel_reply.set(True)
+        result = adapter._resolve_thread_ts(None, {"thread_id": "ts123"})
+        assert result is None
+
+    def test_thread_reply_stays_in_thread_when_disabled(self, adapter):
+        """Genuine thread reply with reply_in_thread=false: stays in thread."""
+        adapter.config.extra["reply_in_thread"] = False
+        _force_channel_reply.set(False)
+        result = adapter._resolve_thread_ts(None, {"thread_id": "parent_ts"})
+        assert result == "parent_ts"
+
+    def test_reply_to_mode_off_with_flag(self, adapter):
+        """reply_to_mode=off + _force_channel_reply: returns None."""
+        adapter.config.reply_to_mode = "off"
+        _force_channel_reply.set(True)
+        result = adapter._resolve_thread_ts(None, {"thread_id": "ts123"})
+        assert result is None
+
+    def test_no_flag_preserves_thread(self, adapter):
+        """Without _force_channel_reply: thread_id preserved (genuine thread)."""
+        adapter.config.extra["reply_in_thread"] = False
+        _force_channel_reply.set(False)
+        result = adapter._resolve_thread_ts(None, {"thread_id": "parent_ts"})
+        assert result == "parent_ts"
+
+    def test_default_config_fully_backward_compatible(self, adapter):
+        """Default config (reply_in_thread=True): entire block skipped, thread preserved."""
+        # Default adapter has reply_in_thread not set (defaults True)
+        # ContextVar defaults False — should not matter, block is skipped
+        result = adapter._resolve_thread_ts("reply_ts", {"thread_id": "parent_ts"})
+        assert result == "parent_ts"
 
 
 # ---------------------------------------------------------------------------
