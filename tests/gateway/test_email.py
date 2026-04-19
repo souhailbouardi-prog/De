@@ -125,6 +125,30 @@ class TestHelperFunctions(unittest.TestCase):
             "john@example.com"
         )
 
+    def test_sender_identity_verified_with_spf_pass(self):
+        from gateway.platforms.email import _sender_identity_verified
+        msg = MIMEText("Hello", "plain", "utf-8")
+        msg["From"] = "Trusted <trusted@example.com>"
+        msg["Authentication-Results"] = (
+            "mx.example.net; spf=pass smtp.mailfrom=trusted@example.com"
+        )
+        self.assertTrue(_sender_identity_verified(msg, "trusted@example.com"))
+
+    def test_sender_identity_verified_with_dkim_alignment(self):
+        from gateway.platforms.email import _sender_identity_verified
+        msg = MIMEText("Hello", "plain", "utf-8")
+        msg["From"] = "Trusted <trusted@example.com>"
+        msg["Authentication-Results"] = (
+            "mx.example.net; dkim=pass header.d=mail.example.com"
+        )
+        self.assertTrue(_sender_identity_verified(msg, "trusted@example.com"))
+
+    def test_sender_identity_unverified_without_auth_results(self):
+        from gateway.platforms.email import _sender_identity_verified
+        msg = MIMEText("Hello", "plain", "utf-8")
+        msg["From"] = "Trusted <trusted@example.com>"
+        self.assertFalse(_sender_identity_verified(msg, "trusted@example.com"))
+
     def test_strip_html_basic(self):
         from gateway.platforms.email import _strip_html
         html = "<p>Hello <b>world</b></p>"
@@ -274,6 +298,118 @@ class TestDispatchMessage(unittest.TestCase):
 
         asyncio.run(adapter._dispatch_message(msg_data))
         adapter._message_handler.assert_not_called()
+
+    def test_allowlist_requires_verified_sender_identity(self):
+        """Allowlisted mode should drop mail without trusted auth results."""
+        import asyncio
+        from gateway.config import PlatformConfig
+
+        with patch.dict(os.environ, {
+            "EMAIL_ADDRESS": "hermes@test.com",
+            "EMAIL_PASSWORD": "secret",
+            "EMAIL_IMAP_HOST": "imap.test.com",
+            "EMAIL_SMTP_HOST": "smtp.test.com",
+            "EMAIL_ALLOWED_USERS": "user@test.com",
+        }):
+            from gateway.platforms.email import EmailAdapter
+            adapter = EmailAdapter(PlatformConfig(enabled=True))
+
+        captured_events = []
+
+        async def capture_handle(event):
+            captured_events.append(event)
+
+        adapter.handle_message = capture_handle
+        msg_data = {
+            "uid": b"1",
+            "sender_addr": "user@test.com",
+            "sender_name": "User",
+            "subject": "Test",
+            "message_id": "<msg1@test.com>",
+            "in_reply_to": "",
+            "body": "Hello",
+            "attachments": [],
+            "date": "",
+            "sender_verified": False,
+        }
+
+        asyncio.run(adapter._dispatch_message(msg_data))
+        self.assertEqual(captured_events, [])
+
+    def test_allowlist_accepts_verified_sender_identity(self):
+        """Allowlisted mode should accept messages with trusted auth results."""
+        import asyncio
+        from gateway.config import PlatformConfig
+
+        with patch.dict(os.environ, {
+            "EMAIL_ADDRESS": "hermes@test.com",
+            "EMAIL_PASSWORD": "secret",
+            "EMAIL_IMAP_HOST": "imap.test.com",
+            "EMAIL_SMTP_HOST": "smtp.test.com",
+            "EMAIL_ALLOWED_USERS": "user@test.com",
+        }):
+            from gateway.platforms.email import EmailAdapter
+            adapter = EmailAdapter(PlatformConfig(enabled=True))
+
+        captured_events = []
+
+        async def capture_handle(event):
+            captured_events.append(event)
+
+        adapter.handle_message = capture_handle
+        msg_data = {
+            "uid": b"1",
+            "sender_addr": "user@test.com",
+            "sender_name": "User",
+            "subject": "Test",
+            "message_id": "<msg1@test.com>",
+            "in_reply_to": "",
+            "body": "Hello",
+            "attachments": [],
+            "date": "",
+            "sender_verified": True,
+        }
+
+        asyncio.run(adapter._dispatch_message(msg_data))
+        self.assertEqual(len(captured_events), 1)
+
+    def test_insecure_trust_from_header_preserves_legacy_behavior(self):
+        """Explicit insecure opt-in should bypass sender verification checks."""
+        import asyncio
+        from gateway.config import PlatformConfig
+
+        with patch.dict(os.environ, {
+            "EMAIL_ADDRESS": "hermes@test.com",
+            "EMAIL_PASSWORD": "secret",
+            "EMAIL_IMAP_HOST": "imap.test.com",
+            "EMAIL_SMTP_HOST": "smtp.test.com",
+            "EMAIL_ALLOWED_USERS": "user@test.com",
+            "EMAIL_INSECURE_TRUST_FROM_HEADER": "true",
+        }):
+            from gateway.platforms.email import EmailAdapter
+            adapter = EmailAdapter(PlatformConfig(enabled=True))
+
+        captured_events = []
+
+        async def capture_handle(event):
+            captured_events.append(event)
+
+        adapter.handle_message = capture_handle
+        msg_data = {
+            "uid": b"1",
+            "sender_addr": "user@test.com",
+            "sender_name": "User",
+            "subject": "Test",
+            "message_id": "<msg1@test.com>",
+            "in_reply_to": "",
+            "body": "Hello",
+            "attachments": [],
+            "date": "",
+            "sender_verified": False,
+        }
+
+        asyncio.run(adapter._dispatch_message(msg_data))
+        self.assertEqual(len(captured_events), 1)
 
     def test_subject_included_in_text(self):
         """Subject should be prepended to body for non-reply emails."""
@@ -761,6 +897,7 @@ class TestFetchNewMessages(unittest.TestCase):
         # Only UID 3 should be fetched (1 and 2 already seen)
         self.assertEqual(len(results), 1)
         self.assertEqual(results[0]["sender_addr"], "user@test.com")
+        self.assertFalse(results[0]["sender_verified"])
         self.assertIn(b"3", adapter._seen_uids)
 
     def test_fetch_no_unseen_messages(self):
@@ -810,6 +947,36 @@ class TestFetchNewMessages(unittest.TestCase):
         self.assertEqual(len(results), 1)
         self.assertEqual(results[0]["sender_addr"], "john@test.com")
         self.assertEqual(results[0]["sender_name"], "John Doe")
+        self.assertFalse(results[0]["sender_verified"])
+
+    def test_fetch_marks_sender_verified_from_auth_results(self):
+        """Authentication-Results should mark the sender as verified."""
+        adapter = self._make_adapter()
+
+        raw_email = MIMEText("Hello", "plain", "utf-8")
+        raw_email["From"] = "trusted@example.com"
+        raw_email["Subject"] = "Test"
+        raw_email["Message-ID"] = "<msg@test.com>"
+        raw_email["Authentication-Results"] = (
+            "mx.example.net; spf=pass smtp.mailfrom=trusted@example.com"
+        )
+
+        mock_imap = MagicMock()
+
+        def uid_handler(command, *args):
+            if command == "search":
+                return ("OK", [b"1"])
+            if command == "fetch":
+                return ("OK", [(b"1", raw_email.as_bytes())])
+            return ("NO", [])
+
+        mock_imap.uid.side_effect = uid_handler
+
+        with patch("imaplib.IMAP4_SSL", return_value=mock_imap):
+            results = adapter._fetch_new_messages()
+
+        self.assertEqual(len(results), 1)
+        self.assertTrue(results[0]["sender_verified"])
 
 
 class TestPollLoop(unittest.TestCase):

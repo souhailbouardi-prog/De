@@ -58,6 +58,13 @@ _AUTOMATED_HEADERS = {
     "List-Unsubscribe": lambda v: bool(v),
 }
 
+_TRUTHY = {"true", "1", "yes"}
+_AUTH_RESULTS_HEADERS = (
+    "Authentication-Results",
+    "ARC-Authentication-Results",
+    "X-Original-Authentication-Results",
+)
+
 # Gmail-safe max length per email body
 MAX_MESSAGE_LENGTH = 50_000
 
@@ -158,6 +165,83 @@ def _extract_email_address(raw: str) -> str:
     return raw.strip().lower()
 
 
+def _normalize_auth_identity(value: str) -> str:
+    """Normalize an auth-result identity token into a comparable string."""
+    normalized = (value or "").strip().strip("<>").strip('"').lower()
+    if normalized.startswith("mailto:"):
+        normalized = normalized[7:]
+    return normalized
+
+
+def _extract_auth_result_value(header_value: str, key: str) -> str:
+    """Extract a ``key=value`` token from an Authentication-Results header."""
+    pattern = rf"(?<![A-Za-z0-9_.-]){re.escape(key)}=([^\s;]+)"
+    match = re.search(pattern, header_value, flags=re.IGNORECASE)
+    if not match:
+        return ""
+    return _normalize_auth_identity(match.group(1))
+
+
+def _domains_align(candidate: str, from_domain: str) -> bool:
+    """Return True if two email identities align to the same domain family."""
+    normalized = _normalize_auth_identity(candidate)
+    if not normalized:
+        return False
+    candidate_domain = normalized.rsplit("@", 1)[-1]
+    from_domain = _normalize_auth_identity(from_domain)
+    return (
+        candidate_domain == from_domain
+        or candidate_domain.endswith(f".{from_domain}")
+        or from_domain.endswith(f".{candidate_domain}")
+    )
+
+
+def _sender_identity_verified(
+    msg: email_lib.message.Message,
+    sender_addr: str,
+) -> bool:
+    """Return True if trusted auth headers support the claimed sender."""
+    sender_addr = _normalize_auth_identity(sender_addr)
+    if "@" not in sender_addr:
+        return False
+
+    from_domain = sender_addr.rsplit("@", 1)[1]
+
+    for header_name in _AUTH_RESULTS_HEADERS:
+        for raw_value in msg.get_all(header_name, []):
+            header_value = " ".join(str(raw_value).split())
+
+            if _extract_auth_result_value(header_value, "dmarc") == "pass":
+                header_from = _extract_auth_result_value(header_value, "header.from")
+                if header_from and _domains_align(header_from, from_domain):
+                    return True
+
+            if _extract_auth_result_value(header_value, "spf") == "pass":
+                mailfrom = (
+                    _extract_auth_result_value(header_value, "smtp.mailfrom")
+                    or _extract_auth_result_value(header_value, "mailfrom")
+                    or _extract_auth_result_value(header_value, "envelope-from")
+                )
+                if mailfrom and (
+                    mailfrom == sender_addr or _domains_align(mailfrom, from_domain)
+                ):
+                    return True
+
+            if _extract_auth_result_value(header_value, "dkim") == "pass":
+                header_identity = _extract_auth_result_value(header_value, "header.i")
+                if header_identity and (
+                    header_identity == sender_addr
+                    or _domains_align(header_identity, from_domain)
+                ):
+                    return True
+
+                signing_domain = _extract_auth_result_value(header_value, "header.d")
+                if signing_domain and _domains_align(signing_domain, from_domain):
+                    return True
+
+    return False
+
+
 def _extract_attachments(
     msg: email_lib.message.Message,
     skip_attachments: bool = False,
@@ -231,6 +315,17 @@ class EmailAdapter(BasePlatformAdapter):
         self._smtp_host = os.getenv("EMAIL_SMTP_HOST", "")
         self._smtp_port = int(os.getenv("EMAIL_SMTP_PORT", "587"))
         self._poll_interval = int(os.getenv("EMAIL_POLL_INTERVAL", "15"))
+        self._allow_all_users = os.getenv("EMAIL_ALLOW_ALL_USERS", "").lower() in _TRUTHY
+        allowed_csv = os.getenv("EMAIL_ALLOWED_USERS", "")
+        self._allowed_users = {
+            entry.strip().lower() for entry in allowed_csv.split(",") if entry.strip()
+        }
+        self._trust_from_header = os.getenv("EMAIL_INSECURE_TRUST_FROM_HEADER", "").lower() in _TRUTHY
+        self._require_sender_verification = (
+            bool(self._allowed_users)
+            and not self._allow_all_users
+            and not self._trust_from_header
+        )
 
         # Skip attachments — configured via config.yaml:
         #   platforms:
@@ -246,6 +341,13 @@ class EmailAdapter(BasePlatformAdapter):
 
         # Map chat_id (sender email) -> last subject + message-id for threading
         self._thread_context: Dict[str, Dict[str, str]] = {}
+
+        if self._trust_from_header and self._allowed_users:
+            logger.warning(
+                "[Email] EMAIL_INSECURE_TRUST_FROM_HEADER=true disables sender-auth "
+                "verification for EMAIL_ALLOWED_USERS. This is unsafe on public mail "
+                "systems and should only be used for trusted internal mail pipelines.",
+            )
 
         logger.info("[Email] Adapter initialized for %s", self._address)
 
@@ -379,6 +481,10 @@ class EmailAdapter(BasePlatformAdapter):
                     if _is_automated_sender(sender_addr, msg_headers):
                         logger.debug("[Email] Skipping automated sender: %s", sender_addr)
                         continue
+                    sender_verified = (
+                        self._trust_from_header
+                        or _sender_identity_verified(msg, sender_addr)
+                    )
                     body = _extract_text_body(msg)
                     attachments = _extract_attachments(msg, skip_attachments=self._skip_attachments)
 
@@ -392,6 +498,7 @@ class EmailAdapter(BasePlatformAdapter):
                         "body": body,
                         "attachments": attachments,
                         "date": msg.get("Date", ""),
+                        "sender_verified": sender_verified,
                     })
             finally:
                 try:
@@ -413,6 +520,15 @@ class EmailAdapter(BasePlatformAdapter):
         # Never reply to automated senders
         if _is_automated_sender(sender_addr, {}):
             logger.debug("[Email] Dropping automated sender at dispatch: %s", sender_addr)
+            return
+
+        if self._require_sender_verification and not msg_data.get("sender_verified", False):
+            logger.warning(
+                "[Email] Rejecting unverified sender identity for %s because "
+                "EMAIL_ALLOWED_USERS is configured and the message lacks trusted "
+                "SPF/DKIM/DMARC results.",
+                sender_addr,
+            )
             return
 
         subject = msg_data["subject"]

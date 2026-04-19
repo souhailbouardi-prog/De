@@ -2186,7 +2186,7 @@ _PLATFORMS = [
              "help": "e.g., smtp.gmail.com for Gmail, smtp.office365.com for Outlook."},
             {"name": "EMAIL_ALLOWED_USERS", "prompt": "Allowed sender emails (comma-separated)", "password": False,
              "is_allowlist": True,
-             "help": "Only emails from these addresses will be processed."},
+             "help": "Only emails from these addresses will be processed. Providers should expose Authentication-Results headers for spoof-resistant checks."},
         ],
     },
     {
