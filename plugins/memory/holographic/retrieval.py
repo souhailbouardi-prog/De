@@ -154,6 +154,10 @@ class FactRetriever:
         # Score against individual fact vectors directly
         where = "WHERE hrr_vector IS NOT NULL"
         params: list = []
+        scope_sql, scope_params = self.store.scope_clause()
+        if scope_sql:
+            where += " " + scope_sql
+            params.extend(scope_params)
         if category:
             where += " AND category = ?"
             params.append(category)
@@ -214,6 +218,10 @@ class FactRetriever:
         # Get all facts with vectors
         where = "WHERE hrr_vector IS NOT NULL"
         params: list = []
+        scope_sql, scope_params = self.store.scope_clause()
+        if scope_sql:
+            where += " " + scope_sql
+            params.extend(scope_params)
         if category:
             where += " AND category = ?"
             params.append(category)
@@ -293,6 +301,10 @@ class FactRetriever:
         # Get all facts with vectors
         where = "WHERE hrr_vector IS NOT NULL"
         params: list = []
+        scope_sql, scope_params = self.store.scope_clause()
+        if scope_sql:
+            where += " " + scope_sql
+            params.extend(scope_params)
         if category:
             where += " AND category = ?"
             params.append(category)
@@ -358,6 +370,10 @@ class FactRetriever:
         # Get all facts with vectors and their linked entities
         where = "WHERE f.hrr_vector IS NOT NULL"
         params: list = []
+        scope_sql, scope_params = self.store.scope_clause("f")
+        if scope_sql:
+            where += " " + scope_sql
+            params.extend(scope_params)
         if category:
             where += " AND f.category = ?"
             params.append(category)
@@ -452,6 +468,10 @@ class FactRetriever:
 
         where = "WHERE hrr_vector IS NOT NULL"
         params: list = []
+        scope_sql, scope_params = self.store.scope_clause()
+        if scope_sql:
+            where += " " + scope_sql
+            params.extend(scope_params)
         if category:
             where += " AND category = ?"
             params.append(category)
@@ -507,14 +527,19 @@ class FactRetriever:
 
         where_sql = " AND ".join(where_clauses)
 
+        # Per-user scoping
+        scope_sql, scope_params = self.store.scope_clause("f")
+
         sql = f"""
             SELECT f.*, facts_fts.rank as fts_rank_raw
             FROM facts_fts
             JOIN facts f ON f.fact_id = facts_fts.rowid
             WHERE {where_sql}
+            {scope_sql}
             ORDER BY facts_fts.rank
             LIMIT ?
         """
+        params.extend(scope_params)
         params.append(limit)
 
         try:

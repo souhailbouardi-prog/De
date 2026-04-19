@@ -170,7 +170,17 @@ class HolographicMemoryProvider(MemoryProvider):
         hrr_weight = float(self._config.get("hrr_weight", 0.3))
         temporal_decay = int(self._config.get("temporal_decay_half_life", 0))
 
-        self._store = MemoryStore(db_path=db_path, default_trust=default_trust, hrr_dim=hrr_dim)
+        # Per-user scoping: gateway platforms pass user_id so each
+        # user's facts are isolated.  CLI sessions (user_id=None)
+        # see all facts (backwards-compatible).
+        user_scope = kwargs.get("user_id")
+
+        self._store = MemoryStore(
+            db_path=db_path,
+            default_trust=default_trust,
+            hrr_dim=hrr_dim,
+            user_scope=user_scope,
+        )
         self._retriever = FactRetriever(
             store=self._store,
             temporal_decay_half_life=temporal_decay,
@@ -183,9 +193,17 @@ class HolographicMemoryProvider(MemoryProvider):
         if not self._store:
             return ""
         try:
-            total = self._store._conn.execute(
-                "SELECT COUNT(*) FROM facts"
-            ).fetchone()[0]
+            if self._store.user_scope is not None:
+                total = self._store._conn.execute(
+                    "SELECT COUNT(*) FROM facts "
+                    "WHERE user_scope IS NULL "
+                    "OR user_scope = ?",
+                    (self._store.user_scope,),
+                ).fetchone()[0]
+            else:
+                total = self._store._conn.execute(
+                    "SELECT COUNT(*) FROM facts"
+                ).fetchone()[0]
         except Exception:
             total = 0
         if total == 0:
@@ -241,7 +259,7 @@ class HolographicMemoryProvider(MemoryProvider):
         self._auto_extract_facts(messages)
 
     def on_memory_write(self, action: str, target: str, content: str) -> None:
-        """Mirror built-in memory writes as facts."""
+        """Mirror built-in memory writes as facts (user-scoped)."""
         if action == "add" and self._store and content:
             try:
                 category = "user_pref" if target == "user" else "general"

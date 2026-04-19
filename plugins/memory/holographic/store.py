@@ -16,7 +16,7 @@ except ImportError:
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS facts (
     fact_id         INTEGER PRIMARY KEY AUTOINCREMENT,
-    content         TEXT NOT NULL UNIQUE,
+    content         TEXT NOT NULL,
     category        TEXT DEFAULT 'general',
     tags            TEXT DEFAULT '',
     trust_score     REAL DEFAULT 0.5,
@@ -24,7 +24,8 @@ CREATE TABLE IF NOT EXISTS facts (
     helpful_count   INTEGER DEFAULT 0,
     created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    hrr_vector      BLOB
+    hrr_vector      BLOB,
+    user_scope      TEXT DEFAULT NULL
 );
 
 CREATE TABLE IF NOT EXISTS entities (
@@ -41,8 +42,12 @@ CREATE TABLE IF NOT EXISTS fact_entities (
     PRIMARY KEY (fact_id, entity_id)
 );
 
-CREATE INDEX IF NOT EXISTS idx_facts_trust    ON facts(trust_score DESC);
-CREATE INDEX IF NOT EXISTS idx_facts_category ON facts(category);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_facts_content_user
+    ON facts(content, COALESCE(user_scope, ''));
+
+CREATE INDEX IF NOT EXISTS idx_facts_trust      ON facts(trust_score DESC);
+CREATE INDEX IF NOT EXISTS idx_facts_category   ON facts(category);
+CREATE INDEX IF NOT EXISTS idx_facts_user_scope ON facts(user_scope);
 CREATE INDEX IF NOT EXISTS idx_entities_name  ON entities(name);
 
 CREATE VIRTUAL TABLE IF NOT EXISTS facts_fts
@@ -103,6 +108,7 @@ class MemoryStore:
         db_path: "str | Path | None" = None,
         default_trust: float = 0.5,
         hrr_dim: int = 1024,
+        user_scope: "str | None" = None,
     ) -> None:
         if db_path is None:
             from hermes_constants import get_hermes_home
@@ -111,6 +117,7 @@ class MemoryStore:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self.default_trust = _clamp_trust(default_trust)
         self.hrr_dim = hrr_dim
+        self.user_scope = user_scope
         self._hrr_available = hrr._HAS_NUMPY
         self._conn: sqlite3.Connection = sqlite3.connect(
             str(self.db_path),
@@ -129,10 +136,18 @@ class MemoryStore:
         """Create tables, indexes, and triggers if they do not exist. Enable WAL mode."""
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.executescript(_SCHEMA)
-        # Migrate: add hrr_vector column if missing (safe for existing databases)
+        # Migrate: add columns if missing (safe for existing databases)
         columns = {row[1] for row in self._conn.execute("PRAGMA table_info(facts)").fetchall()}
         if "hrr_vector" not in columns:
             self._conn.execute("ALTER TABLE facts ADD COLUMN hrr_vector BLOB")
+        if "user_scope" not in columns:
+            self._conn.execute("ALTER TABLE facts ADD COLUMN user_scope TEXT DEFAULT NULL")
+            # Replace the old UNIQUE constraint on content with a
+            # composite unique index that includes user_scope.
+            self._conn.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_facts_content_user "
+                "ON facts(content, COALESCE(user_scope, ''))"
+            )
         self._conn.commit()
 
     # ------------------------------------------------------------------
@@ -147,9 +162,9 @@ class MemoryStore:
     ) -> int:
         """Insert a fact and return its fact_id.
 
-        Deduplicates by content (UNIQUE constraint). On duplicate, returns
-        the existing fact_id without modifying the row. Extracts entities from
-        the content and links them to the fact.
+        Deduplicates by (content, user_scope). On duplicate, returns
+        the existing fact_id without modifying the row. Extracts entities
+        from the content and links them to the fact.
         """
         with self._lock:
             content = content.strip()
@@ -159,17 +174,21 @@ class MemoryStore:
             try:
                 cur = self._conn.execute(
                     """
-                    INSERT INTO facts (content, category, tags, trust_score)
-                    VALUES (?, ?, ?, ?)
+                    INSERT INTO facts (content, category, tags,
+                                       trust_score, user_scope)
+                    VALUES (?, ?, ?, ?, ?)
                     """,
-                    (content, category, tags, self.default_trust),
+                    (content, category, tags,
+                     self.default_trust, self.user_scope),
                 )
                 self._conn.commit()
                 fact_id: int = cur.lastrowid  # type: ignore[assignment]
             except sqlite3.IntegrityError:
-                # Duplicate content — return existing id
+                # Duplicate content for this user — return existing id
                 row = self._conn.execute(
-                    "SELECT fact_id FROM facts WHERE content = ?", (content,)
+                    "SELECT fact_id FROM facts WHERE content = ? "
+                    "AND COALESCE(user_scope, '') = ?",
+                    (content, self.user_scope or ""),
                 ).fetchone()
                 return int(row["fact_id"])
 
@@ -195,6 +214,8 @@ class MemoryStore:
 
         Returns a list of fact dicts ordered by FTS5 rank, then trust_score
         descending. Also increments retrieval_count for matched facts.
+        When ``user_scope`` is set, only facts belonging to that scope
+        (or global facts with NULL user_scope) are returned.
         """
         with self._lock:
             query = query.strip()
@@ -202,6 +223,13 @@ class MemoryStore:
                 return []
 
             params: list = [query, min_trust]
+            scope_clause = ""
+            if self.user_scope is not None:
+                scope_clause = (
+                    "AND (f.user_scope IS NULL "
+                    "OR f.user_scope = ?)"
+                )
+                params.append(self.user_scope)
             category_clause = ""
             if category is not None:
                 category_clause = "AND f.category = ?"
@@ -216,6 +244,7 @@ class MemoryStore:
                 JOIN facts_fts fts ON fts.rowid = f.fact_id
                 WHERE facts_fts MATCH ?
                   AND f.trust_score >= ?
+                  {scope_clause}
                   {category_clause}
                 ORDER BY fts.rank, f.trust_score DESC
                 LIMIT ?
@@ -325,9 +354,18 @@ class MemoryStore:
         """Browse facts ordered by trust_score descending.
 
         Optionally filter by category and minimum trust score.
+        When ``user_scope`` is set, only matching or global facts
+        are returned.
         """
         with self._lock:
             params: list = [min_trust]
+            scope_clause = ""
+            if self.user_scope is not None:
+                scope_clause = (
+                    "AND (user_scope IS NULL "
+                    "OR user_scope = ?)"
+                )
+                params.append(self.user_scope)
             category_clause = ""
             if category is not None:
                 category_clause = "AND category = ?"
@@ -336,9 +374,11 @@ class MemoryStore:
 
             sql = f"""
                 SELECT fact_id, content, category, tags, trust_score,
-                       retrieval_count, helpful_count, created_at, updated_at
+                       retrieval_count, helpful_count, created_at,
+                       updated_at
                 FROM facts
                 WHERE trust_score >= ?
+                  {scope_clause}
                   {category_clause}
                 ORDER BY trust_score DESC
                 LIMIT ?
@@ -558,6 +598,27 @@ class MemoryStore:
     # ------------------------------------------------------------------
     # Utilities
     # ------------------------------------------------------------------
+
+    def scope_clause(
+        self, alias: str = "", column: str = "user_scope"
+    ) -> "tuple[str, list]":
+        """Return a SQL fragment and params that restrict queries to
+        the current ``user_scope`` (or all rows when unscoped).
+
+        Usage::
+
+            clause, params = store.scope_clause("f")
+            sql = f"SELECT ... FROM facts f WHERE ... {clause}"
+            cursor.execute(sql, [...] + params)
+        """
+        prefix = f"{alias}." if alias else ""
+        if self.user_scope is not None:
+            return (
+                f"AND ({prefix}{column} IS NULL "
+                f"OR {prefix}{column} = ?)",
+                [self.user_scope],
+            )
+        return ("", [])
 
     def _row_to_dict(self, row: sqlite3.Row) -> dict:
         """Convert a sqlite3.Row to a plain dict."""
