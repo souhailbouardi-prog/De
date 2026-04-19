@@ -253,6 +253,23 @@ _DESTRUCTIVE_PATTERNS = re.compile(
 _REDIRECT_OVERWRITE = re.compile(r'[^>]>[^>]|^>[^>]')
 
 
+
+def _ensure_v1_suffix(base_url: str) -> str:
+    """Ensure OpenAI-compatible base URLs end with /v1.
+    
+    The OpenAI SDK appends /chat/completions directly to base_url,
+    so https://api.x.ai becomes /chat/completions instead of /v1/chat/completions.
+    Skip paths that are already versioned.
+    """
+    if not base_url:
+        return base_url
+    stripped = base_url.rstrip("/")
+    _versioned = ("/v1", "/v2", "/v3", "/v4", "/anthropic", "/api/v1")
+    if any(stripped.endswith(s) for s in _versioned):
+        return stripped
+    return stripped + "/v1"
+
+
 def _is_destructive_command(cmd: str) -> bool:
     """Heuristic: does this terminal command look like it modifies/deletes files?"""
     if not cmd:
@@ -1033,6 +1050,7 @@ class AIAgent:
             if api_key and base_url:
                 # Explicit credentials from CLI/gateway — construct directly.
                 # The runtime provider resolver already handled auth for us.
+                base_url = _ensure_v1_suffix(base_url)
                 client_kwargs = {"api_key": api_key, "base_url": base_url}
                 if self.provider == "copilot-acp":
                     client_kwargs["command"] = self.acp_command
@@ -5148,7 +5166,7 @@ class AIAgent:
             return False
 
         self.api_key = api_key.strip()
-        self.base_url = base_url.strip().rstrip("/")
+        self.base_url = _ensure_v1_suffix(base_url.strip())
         self._client_kwargs["api_key"] = self.api_key
         self._client_kwargs["base_url"] = self.base_url
 
@@ -5181,7 +5199,7 @@ class AIAgent:
             return False
 
         self.api_key = api_key.strip()
-        self.base_url = base_url.strip().rstrip("/")
+        self.base_url = _ensure_v1_suffix(base_url.strip())
         self._client_kwargs["api_key"] = self.api_key
         self._client_kwargs["base_url"] = self.base_url
         # Nous requests should not inherit OpenRouter-only attribution headers.
