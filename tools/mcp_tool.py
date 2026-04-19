@@ -962,25 +962,33 @@ class MCPServerTask:
 
         # Snapshot child PIDs before spawning so we can track the new one.
         pids_before = _snapshot_child_pids()
-        async with stdio_client(server_params) as (read_stream, write_stream):
-            # Capture the newly spawned subprocess PID for force-kill cleanup.
-            new_pids = _snapshot_child_pids() - pids_before
+        new_pids: set = set()
+        try:
+            async with stdio_client(server_params) as (read_stream, write_stream):
+                # Capture the newly spawned subprocess PID for force-kill cleanup.
+                new_pids = _snapshot_child_pids() - pids_before
+                if new_pids:
+                    with _lock:
+                        _stdio_pids.update(new_pids)
+                async with ClientSession(read_stream, write_stream, **sampling_kwargs) as session:
+                    await session.initialize()
+                    self.session = session
+                    await self._discover_tools()
+                    self._ready.set()
+                    # stdio transport does not use OAuth, but we still honor
+                    # _reconnect_event (e.g. future manual /mcp refresh) for
+                    # consistency with _run_http.
+                    await self._wait_for_lifecycle_event()
+        finally:
+            # Defense: stdio_client's anyio cleanup does not always reap the
+            # subprocess on exception paths (stdin pipe stays open → child
+            # blocks on read). Over long uptimes with transient MCP errors,
+            # each reconnect in run()'s outer loop would otherwise leak one
+            # subprocess. Explicitly reap tracked PIDs here.
             if new_pids:
+                await _reap_pids(new_pids, grace=1.5)
                 with _lock:
-                    _stdio_pids.update(new_pids)
-            async with ClientSession(read_stream, write_stream, **sampling_kwargs) as session:
-                await session.initialize()
-                self.session = session
-                await self._discover_tools()
-                self._ready.set()
-                # stdio transport does not use OAuth, but we still honor
-                # _reconnect_event (e.g. future manual /mcp refresh) for
-                # consistency with _run_http.
-                await self._wait_for_lifecycle_event()
-        # Context exited cleanly — subprocess was terminated by the SDK.
-        if new_pids:
-            with _lock:
-                _stdio_pids.difference_update(new_pids)
+                    _stdio_pids.difference_update(new_pids)
 
     async def _run_http(self, config: dict):
         """Run the server using HTTP/StreamableHTTP transport."""
@@ -2552,6 +2560,47 @@ def shutdown_mcp_servers():
             logger.debug("Error during MCP shutdown: %s", exc)
 
     _stop_mcp_loop()
+
+
+def _pid_alive(pid: int) -> bool:
+    """Return True if the process is still running (signal 0 probe)."""
+    try:
+        os.kill(pid, 0)
+        return True
+    except (ProcessLookupError, PermissionError):
+        return False
+    except OSError:
+        return False
+
+
+async def _reap_pids(pids: set, grace: float = 1.5) -> None:
+    """SIGTERM tracked PIDs, wait up to ``grace`` seconds, then SIGKILL stragglers.
+
+    Called from ``_run_stdio``'s finally block so stdio-MCP subprocesses that
+    the SDK failed to reap (e.g. on anyio cancel-scope error paths) do not
+    accumulate across reconnects.
+    """
+    import signal as _signal
+
+    for pid in pids:
+        try:
+            os.kill(pid, _signal.SIGTERM)
+        except (ProcessLookupError, PermissionError, OSError):
+            pass
+
+    deadline = time.monotonic() + grace
+    while time.monotonic() < deadline:
+        if not any(_pid_alive(p) for p in pids):
+            return
+        await asyncio.sleep(0.1)
+
+    for pid in pids:
+        if _pid_alive(pid):
+            try:
+                os.kill(pid, getattr(_signal, "SIGKILL", _signal.SIGTERM))
+                logger.debug("Force-killed leaked MCP stdio process %d", pid)
+            except (ProcessLookupError, PermissionError, OSError):
+                pass
 
 
 def _kill_orphaned_mcp_children() -> None:
