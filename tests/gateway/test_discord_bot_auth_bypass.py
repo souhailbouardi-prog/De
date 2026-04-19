@@ -172,23 +172,38 @@ def test_bot_bypass_does_not_leak_to_other_platforms(monkeypatch):
 
 
 # -----------------------------------------------------------------------------
-# DISCORD_ALLOWED_ROLES gateway-layer bypass (#7871)
+# DISCORD_ALLOWED_ROLES gateway-layer adapter verification
 # -----------------------------------------------------------------------------
 
 
-def test_discord_role_config_bypasses_gateway_allowlist(monkeypatch):
-    """When DISCORD_ALLOWED_ROLES is set, _is_user_authorized must trust
-    the adapter's pre-filter and authorize. Without this, role-only setups
-    (DISCORD_ALLOWED_ROLES populated, DISCORD_ALLOWED_USERS empty) would
-    hit the 'no allowlists configured' branch and get rejected.
+def test_discord_role_config_requires_adapter_verification(monkeypatch):
+    """When DISCORD_ALLOWED_ROLES is set, gateway auth must still verify
+    the user through the Discord adapter instead of authorizing blindly.
     """
     runner = _make_bare_runner()
-
     monkeypatch.setenv("DISCORD_ALLOWED_ROLES", "1493705176387948674")
-    # Note: DISCORD_ALLOWED_USERS is NOT set — the entire point.
+    runner.adapters = {
+        Platform.DISCORD: SimpleNamespace(
+            _is_allowed_user=lambda user_id: user_id == "100200300"
+        )
+    }
 
-    source = _make_discord_human_source(user_id="999888777")
+    unauthorized = _make_discord_human_source(user_id="999888777")
+    assert runner._is_user_authorized(unauthorized) is False
+
+    source = _make_discord_human_source(user_id="100200300")
     assert runner._is_user_authorized(source) is True
+
+
+def test_discord_role_config_denies_when_adapter_missing(monkeypatch):
+    """If role auth is configured but adapter verification is unavailable,
+    fail closed instead of authorizing everyone.
+    """
+    runner = _make_bare_runner()
+    runner.adapters = {}
+    monkeypatch.setenv("DISCORD_ALLOWED_ROLES", "1493705176387948674")
+    source = _make_discord_human_source(user_id="999888777")
+    assert runner._is_user_authorized(source) is False
 
 
 def test_discord_role_config_still_authorizes_alongside_users(monkeypatch):
@@ -200,9 +215,12 @@ def test_discord_role_config_still_authorizes_alongside_users(monkeypatch):
 
     monkeypatch.setenv("DISCORD_ALLOWED_ROLES", "1493705176387948674")
     monkeypatch.setenv("DISCORD_ALLOWED_USERS", "100200300")
+    runner.adapters = {
+        Platform.DISCORD: SimpleNamespace(_is_allowed_user=lambda _user_id: False)
+    }
 
-    # User on the user allowlist, no role → still authorized at gateway
-    # level via the role bypass (adapter already approved them).
+    # User on the user allowlist remains authorized via allowlist path even
+    # when adapter role-check returns false.
     source = _make_discord_human_source(user_id="100200300")
     assert runner._is_user_authorized(source) is True
 
