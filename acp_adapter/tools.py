@@ -45,6 +45,7 @@ TOOL_KIND_MAP: Dict[str, ToolKind] = {
     "delegate_task": "execute",
     "vision_analyze": "read",
     "image_generate": "execute",
+    "minimax_image_generate": "execute",
     "text_to_speech": "execute",
     # Thinking / meta
     "_thinking": "think",

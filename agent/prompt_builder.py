@@ -835,6 +835,7 @@ def build_nous_subscription_prompt(valid_tool_names: "set[str] | None" = None) -
         "browser_get_images",
         "browser_vision",
         "image_generate",
+        "minimax_image_generate",
         "text_to_speech",
         "terminal",
         "process",

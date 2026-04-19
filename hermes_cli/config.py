@@ -987,6 +987,7 @@ OPTIONAL_ENV_VARS = {
         "description": "MiniMax API key (international)",
         "prompt": "MiniMax API key",
         "url": "https://www.minimax.io/",
+        "tools": ["minimax_image_generate"],
         "password": True,
         "category": "provider",
         "advanced": True,
