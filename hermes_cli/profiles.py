@@ -306,6 +306,24 @@ def _check_gateway_running(profile_dir: Path) -> bool:
     except Exception:
         return False
 
+# Directories to exclude when counting SKILL.md files in a profile.
+# Uses Path.parts comparison (not string matching) for cross-platform safety —
+# str(Path) uses backslashes on Windows, so "/.git/" would never match.
+_SKILL_EXCLUDED_DIRS = frozenset({".git", ".hub"})
+
+
+def _profile_in_excluded_dir(path: Path, root: Path) -> bool:
+    """Return True if *path* has an excluded directory component relative to *root*.
+
+    Uses ``Path.parts`` instead of string matching so the check works on
+    both Unix (``/``) and Windows (``\\``) path separators.
+    """
+    try:
+        rel_parts = path.relative_to(root).parts
+    except ValueError:
+        rel_parts = path.parts
+    return bool(_SKILL_EXCLUDED_DIRS.intersection(rel_parts))
+
 
 def _count_skills(profile_dir: Path) -> int:
     """Count installed skills in a profile."""
@@ -314,7 +332,7 @@ def _count_skills(profile_dir: Path) -> int:
         return 0
     count = 0
     for md in skills_dir.rglob("SKILL.md"):
-        if "/.hub/" not in str(md) and "/.git/" not in str(md):
+        if not _profile_in_excluded_dir(md, skills_dir):
             count += 1
     return count
 

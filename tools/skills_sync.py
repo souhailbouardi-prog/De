@@ -31,6 +31,24 @@ from typing import Dict, List, Tuple
 
 logger = logging.getLogger(__name__)
 
+# Directories to exclude when scanning for SKILL.md files.
+# Uses Path.parts comparison (not string matching) for cross-platform safety —
+# str(Path) uses backslashes on Windows, so "/.git/" would never match.
+_EXCLUDED_DIRS = frozenset({".git", ".github", ".hub"})
+
+
+def _in_excluded_dir(path: Path, root: Path) -> bool:
+    """Return True if *path* has an excluded directory component relative to *root*.
+
+    Uses ``Path.parts`` instead of string matching so the check works on
+    both Unix (``/``) and Windows (``\\``) path separators.
+    """
+    try:
+        rel_parts = path.relative_to(root).parts
+    except ValueError:
+        rel_parts = path.parts
+    return bool(_EXCLUDED_DIRS.intersection(rel_parts))
+
 
 HERMES_HOME = get_hermes_home()
 SKILLS_DIR = HERMES_HOME / "skills"
@@ -140,8 +158,7 @@ def _discover_bundled_skills(bundled_dir: Path) -> List[Tuple[str, Path]]:
         return skills
 
     for skill_md in bundled_dir.rglob("SKILL.md"):
-        path_str = str(skill_md)
-        if "/.git/" in path_str or "/.github/" in path_str or "/.hub/" in path_str:
+        if _in_excluded_dir(skill_md, bundled_dir):
             continue
         skill_dir = skill_md.parent
         skill_name = _read_skill_name(skill_md, skill_dir.name)

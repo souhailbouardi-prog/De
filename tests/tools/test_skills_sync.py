@@ -124,10 +124,47 @@ class TestDiscoverBundledSkills:
         assert "not-a-skill" not in skill_names
 
     def test_ignores_git_directories(self, tmp_path):
+        """SKILL.md inside .git must be ignored regardless of OS path separator."""
         (tmp_path / ".git" / "hooks").mkdir(parents=True)
         (tmp_path / ".git" / "hooks" / "SKILL.md").write_text("# Fake")
         skills = _discover_bundled_skills(tmp_path)
         assert len(skills) == 0
+
+    def test_ignores_github_directories(self, tmp_path):
+        """SKILL.md inside .github must also be ignored."""
+        (tmp_path / ".github" / "workflows").mkdir(parents=True)
+        (tmp_path / ".github" / "workflows" / "SKILL.md").write_text("# Fake")
+        skills = _discover_bundled_skills(tmp_path)
+        assert len(skills) == 0
+
+    def test_ignores_hub_directories(self, tmp_path):
+        """SKILL.md inside .hub must also be ignored."""
+        (tmp_path / ".hub" / "cache").mkdir(parents=True)
+        (tmp_path / ".hub" / "cache" / "SKILL.md").write_text("# Fake")
+        skills = _discover_bundled_skills(tmp_path)
+        assert len(skills) == 0
+
+    def test_git_filter_does_not_affect_legitimate_skills(self, tmp_path):
+        """Skills with 'git' in their name should NOT be filtered out."""
+        (tmp_path / "git-workflow").mkdir()
+        (tmp_path / "git-workflow" / "SKILL.md").write_text("# Git Workflow")
+        skills = _discover_bundled_skills(tmp_path)
+        assert len(skills) == 1
+        assert skills[0][0] == "git-workflow"
+
+    def test_mixed_excluded_and_legitimate(self, tmp_path):
+        """Excluded dirs filtered, legitimate skills kept, in one scan."""
+        (tmp_path / ".git" / "hooks").mkdir(parents=True)
+        (tmp_path / ".git" / "hooks" / "SKILL.md").write_text("# Fake git")
+        (tmp_path / ".github" / "actions").mkdir(parents=True)
+        (tmp_path / ".github" / "actions" / "SKILL.md").write_text("# Fake github")
+        (tmp_path / ".hub" / "data").mkdir(parents=True)
+        (tmp_path / ".hub" / "data" / "SKILL.md").write_text("# Fake hub")
+        (tmp_path / "real-skill").mkdir()
+        (tmp_path / "real-skill" / "SKILL.md").write_text("# Real Skill")
+        skills = _discover_bundled_skills(tmp_path)
+        assert len(skills) == 1
+        assert skills[0][0] == "real-skill"
 
     def test_nonexistent_dir_returns_empty(self, tmp_path):
         skills = _discover_bundled_skills(tmp_path / "nonexistent")
@@ -170,7 +207,7 @@ class TestComputeRelativeDest:
         bundled = Path("/repo/skills")
         skill_dir = Path("/repo/skills/mlops/axolotl")
         dest = _compute_relative_dest(skill_dir, bundled)
-        assert str(dest).endswith("mlops/axolotl")
+        assert dest.parts[-2:] == ("mlops", "axolotl")
 
     def test_flat_skill(self):
         bundled = Path("/repo/skills")
