@@ -1544,6 +1544,12 @@ class GatewayRunner:
         if now - last_ack < _BUSY_ACK_COOLDOWN:
             return True  # interrupt sent, ack already delivered recently
 
+        # Agent-to-agent adapters opt out of the ⚡ ack — it's UX reassurance
+        # for a human recipient; an agent peer reads it as unsolicited
+        # semantic content. Interrupt + pending-queue already happened above.
+        if not getattr(adapter, "WANTS_BUSY_ACK", True):
+            return True
+
         self._busy_ack_ts[session_key] = now
 
         # Build a status-rich acknowledgment
