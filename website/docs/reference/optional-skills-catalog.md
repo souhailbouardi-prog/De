@@ -47,6 +47,7 @@ hermes skills uninstall <skill-name>
 
 | Skill | Description |
 |-------|-------------|
+| **feishu-workbench** | Use Hermes with Feishu/Lark as a practical workbench: diagnose auth, search messages, and handle docs, sheets, bitable, calendar, and task workflows safely. |
 | **one-three-one-rule** | Structured communication framework for proposals and decision-making. |
 
 ## Creative
