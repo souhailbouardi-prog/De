@@ -7137,13 +7137,22 @@ class AIAgent:
             options["num_ctx"] = self._ollama_num_ctx
             extra_body["options"] = options
 
+        mistral_reasoning_effort = self._mistral_reasoning_effort()
+        if mistral_reasoning_effort is not None:
+            api_kwargs["reasoning_effort"] = mistral_reasoning_effort
+
         # Ollama / custom provider: pass think=false when reasoning is disabled.
         # Ollama does not recognise the OpenRouter-style `reasoning` extra_body
         # field, so we use its native `think` parameter instead.
         # This prevents thinking-capable models (Qwen3, etc.) from generating
         # <think> blocks and producing empty-response errors when the user has
         # set reasoning_effort: none.
-        if self.provider == "custom" and self.reasoning_config and isinstance(self.reasoning_config, dict):
+        if (
+            self.provider == "custom"
+            and not self._is_direct_mistral_custom_provider()
+            and self.reasoning_config
+            and isinstance(self.reasoning_config, dict)
+        ):
             _effort = (self.reasoning_config.get("effort") or "").strip().lower()
             _enabled = self.reasoning_config.get("enabled", True)
             if _effort == "none" or _enabled is False:
@@ -7195,6 +7204,37 @@ class AIAgent:
             "qwen/qwen3",
         )
         return any(model.startswith(prefix) for prefix in reasoning_model_prefixes)
+
+    def _is_direct_mistral_custom_provider(self) -> bool:
+        """Return True for custom providers that target Mistral's native API."""
+        return self.provider == "custom" and "api.mistral.ai" in self._base_url_lower
+
+    def _mistral_reasoning_effort(self) -> str | None:
+        """Map Hermes reasoning config onto Mistral's native root-level field.
+
+        Mistral's OpenAI-compatible chat endpoint accepts `reasoning_effort`
+        only for the adjustable `mistral-small-*` family. Magistral reasons
+        natively and other Mistral families do not support the field.
+        """
+        if not self._is_direct_mistral_custom_provider():
+            return None
+
+        model_name = (self.model or "").strip().lower().split("/")[-1]
+        if not model_name.startswith("mistral-small-"):
+            return None
+
+        if self.reasoning_config and isinstance(self.reasoning_config, dict):
+            if self.reasoning_config.get("enabled") is False:
+                return "none"
+            requested_effort = str(
+                self.reasoning_config.get("effort", "medium")
+            ).strip().lower()
+        else:
+            requested_effort = "medium"
+
+        if requested_effort == "none":
+            return "none"
+        return "high"
 
     def _github_models_reasoning_extra_body(self) -> dict | None:
         """Format reasoning payload for GitHub Models/OpenAI-compatible routes."""

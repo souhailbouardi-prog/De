@@ -1088,6 +1088,40 @@ class TestBuildApiKwargs:
         kwargs = agent._build_api_kwargs(messages)
         assert kwargs.get("extra_body", {}).get("think") is None
 
+    def test_custom_mistral_small_uses_root_reasoning_effort(self, agent):
+        agent.provider = "custom"
+        agent.base_url = "https://api.mistral.ai/v1"
+        agent._base_url_lower = agent.base_url.lower()
+        agent.model = "mistral-small-latest"
+        messages = [{"role": "user", "content": "hi"}]
+        kwargs = agent._build_api_kwargs(messages)
+        assert kwargs["reasoning_effort"] == "high"
+        assert "reasoning" not in kwargs.get("extra_body", {})
+        assert kwargs.get("extra_body", {}).get("think") is None
+
+    def test_custom_mistral_small_disabled_uses_root_reasoning_effort_none(self, agent):
+        agent.provider = "custom"
+        agent.base_url = "https://api.mistral.ai/v1"
+        agent._base_url_lower = agent.base_url.lower()
+        agent.model = "mistral-small-latest"
+        agent.reasoning_config = {"enabled": False}
+        messages = [{"role": "user", "content": "hi"}]
+        kwargs = agent._build_api_kwargs(messages)
+        assert kwargs["reasoning_effort"] == "none"
+        assert kwargs.get("extra_body", {}).get("think") is None
+
+    @pytest.mark.parametrize("model", ["magistral-small-latest", "mistral-large-latest"])
+    def test_custom_mistral_unsupported_families_omit_root_reasoning_effort(self, agent, model):
+        agent.provider = "custom"
+        agent.base_url = "https://api.mistral.ai/v1"
+        agent._base_url_lower = agent.base_url.lower()
+        agent.model = model
+        agent.reasoning_config = {"enabled": True, "effort": "high"}
+        messages = [{"role": "user", "content": "hi"}]
+        kwargs = agent._build_api_kwargs(messages)
+        assert "reasoning_effort" not in kwargs
+        assert kwargs.get("extra_body", {}).get("think") is None
+
 
 
 class TestBuildAssistantMessage:
