@@ -331,6 +331,51 @@ class TestRootLevelProviderOverride:
         assert "provider" not in result  # root key still cleaned up
 
 
+class TestRootLevelPrefillMessagesFile:
+    def test_root_prefill_messages_file_is_copied_into_agent_section(self, tmp_path, monkeypatch):
+        """Legacy root-level prefill_messages_file should still populate agent.prefill_messages_file."""
+        import yaml
+
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(yaml.safe_dump({
+            "prefill_messages_file": "prefill.json",
+        }))
+
+        import cli
+        monkeypatch.setattr(cli, "_hermes_home", hermes_home)
+        cfg = cli.load_cli_config()
+
+        assert cfg["prefill_messages_file"] == "prefill.json"
+        assert cfg["agent"]["prefill_messages_file"] == "prefill.json"
+
+    def test_agent_prefill_messages_file_wins_over_legacy_root_key(self, tmp_path, monkeypatch):
+        """An explicit agent.prefill_messages_file should not be replaced by the legacy root key."""
+        import yaml
+
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(yaml.safe_dump({
+            "prefill_messages_file": "legacy.json",
+            "agent": {
+                "prefill_messages_file": "nested.json",
+            },
+        }))
+
+        import cli
+        monkeypatch.setattr(cli, "_hermes_home", hermes_home)
+        cfg = cli.load_cli_config()
+
+        assert cfg["prefill_messages_file"] == "legacy.json"
+        assert cfg["agent"]["prefill_messages_file"] == "nested.json"
+
+
 class TestProviderResolution:
     def test_api_key_is_string_or_none(self):
         cli = _make_cli()
