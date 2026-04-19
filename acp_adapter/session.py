@@ -304,6 +304,10 @@ class SessionManager:
         if state is None:
             return None
         state.cwd = cwd
+        if getattr(state, "agent", None) is not None:
+            setattr(state.agent, "working_dir", cwd)
+            if hasattr(state.agent, "_cached_system_prompt"):
+                state.agent._cached_system_prompt = None
         _register_task_cwd(session_id, cwd)
         self._persist(state)
         return state
@@ -541,6 +545,7 @@ class SessionManager:
             "platform": "acp",
             "enabled_toolsets": ["hermes-acp"],
             "quiet_mode": True,
+            "working_dir": cwd,
             "session_id": session_id,
             "model": model or default_model,
         }

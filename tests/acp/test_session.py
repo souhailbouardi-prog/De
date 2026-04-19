@@ -295,6 +295,17 @@ class TestPersistence:
         mc = json.loads(row["model_config"])
         assert mc["cwd"] == "/new"
 
+    def test_update_cwd_refreshes_agent_working_dir_and_prompt_cache(self, manager):
+        state = manager.create_session(cwd="/old")
+        state.agent.working_dir = "/old"
+        state.agent._cached_system_prompt = "cached"
+
+        updated = manager.update_cwd(state.session_id, "/new")
+
+        assert updated is not None
+        assert updated.agent.working_dir == "/new"
+        assert updated.agent._cached_system_prompt is None
+
     def test_only_restores_acp_sessions(self, manager):
         """get_session should not restore non-ACP sessions from DB."""
         db = manager._get_db()

@@ -734,6 +734,42 @@ class TestBuildSystemPrompt:
         prompt = agent._build_system_prompt()
         assert "NOUS SUBSCRIPTION BLOCK" in prompt
 
+    def test_prefers_explicit_working_dir_for_context_files(self, monkeypatch):
+        with (
+            patch("run_agent.get_tool_definitions", return_value=_make_tool_defs("web_search")),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+            patch("run_agent.build_context_files_prompt", return_value="CTX") as mock_context,
+        ):
+            monkeypatch.setenv("TERMINAL_CWD", "/env/workspace")
+            agent = AIAgent(
+                api_key="test-key-1234567890",
+                quiet_mode=True,
+                skip_memory=True,
+                working_dir="/acp/workspace",
+            )
+
+            prompt = agent._build_system_prompt()
+
+        assert "CTX" in prompt
+        assert mock_context.call_args.kwargs["cwd"] == "/acp/workspace"
+
+    def test_initializes_subdirectory_hints_from_explicit_working_dir(self):
+        with (
+            patch("run_agent.get_tool_definitions", return_value=_make_tool_defs("web_search")),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+        ):
+            agent = AIAgent(
+                api_key="test-key-1234567890",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+                working_dir="/acp/workspace",
+            )
+
+        assert agent._subdirectory_hints.working_dir == Path("/acp/workspace").resolve()
+
     def test_skills_prompt_derives_available_toolsets_from_loaded_tools(self):
         tools = _make_tool_defs("web_search", "skills_list", "skill_view", "skill_manage")
         toolset_map = {
