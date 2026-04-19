@@ -1543,6 +1543,7 @@ def select_provider_and_model(args=None):
         "arcee",
         "nvidia",
         "ollama-cloud",
+        "deepinfra",
     ):
         _model_flow_api_key_provider(config, selected_provider, current_model)
 
@@ -6422,6 +6423,7 @@ For more help on a command:
             "xai",
             "ollama-cloud",
             "huggingface",
+            "deepinfra",
             "zai",
             "kimi-coding",
             "kimi-coding-cn",

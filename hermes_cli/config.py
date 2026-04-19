@@ -1170,6 +1170,21 @@ OPTIONAL_ENV_VARS = {
         "category": "provider",
         "advanced": True,
     },
+    "DEEPINFRA_API_KEY": {
+        "description": "DeepInfra API key (100+ top models via api.deepinfra.com)",
+        "prompt": "DeepInfra API Key",
+        "url": "https://deepinfra.com/dash/api_keys",
+        "password": True,
+        "category": "provider",
+    },
+    "DEEPINFRA_BASE_URL": {
+        "description": "DeepInfra base URL override",
+        "prompt": "DeepInfra base URL (leave empty for default)",
+        "url": None,
+        "password": False,
+        "category": "provider",
+        "advanced": True,
+    },
 
     # ── Tool API keys ──
     "EXA_API_KEY": {

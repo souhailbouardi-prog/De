@@ -1,5 +1,6 @@
 """Tests for API-key provider support (z.ai/GLM, Kimi, MiniMax, AI Gateway)."""
 
+import json
 import os
 
 import pytest
@@ -99,6 +100,17 @@ class TestProviderRegistry:
         assert pconfig.api_key_env_vars == ("HF_TOKEN",)
         assert pconfig.base_url_env_var == "HF_BASE_URL"
 
+    def test_deepinfra_registration(self):
+        pconfig = PROVIDER_REGISTRY["deepinfra"]
+        assert pconfig.id == "deepinfra"
+        assert pconfig.name == "DeepInfra"
+        assert pconfig.auth_type == "api_key"
+
+    def test_deepinfra_env_vars(self):
+        pconfig = PROVIDER_REGISTRY["deepinfra"]
+        assert pconfig.api_key_env_vars == ("DEEPINFRA_API_KEY",)
+        assert pconfig.base_url_env_var == "DEEPINFRA_BASE_URL"
+
     def test_base_urls(self):
         assert PROVIDER_REGISTRY["copilot"].inference_base_url == "https://api.githubcopilot.com"
         assert PROVIDER_REGISTRY["copilot-acp"].inference_base_url == "acp://copilot"
@@ -109,6 +121,7 @@ class TestProviderRegistry:
         assert PROVIDER_REGISTRY["ai-gateway"].inference_base_url == "https://ai-gateway.vercel.sh/v1"
         assert PROVIDER_REGISTRY["kilocode"].inference_base_url == "https://api.kilo.ai/api/gateway"
         assert PROVIDER_REGISTRY["huggingface"].inference_base_url == "https://router.huggingface.co/v1"
+        assert PROVIDER_REGISTRY["deepinfra"].inference_base_url == "https://api.deepinfra.com/v1/openai"
 
     def test_oauth_providers_unchanged(self):
         """Ensure we didn't break the existing OAuth providers."""
@@ -224,6 +237,12 @@ class TestResolveProvider:
     def test_alias_huggingface_hub(self):
         assert resolve_provider("huggingface-hub") == "huggingface"
 
+    def test_explicit_deepinfra(self):
+        assert resolve_provider("deepinfra") == "deepinfra"
+
+    def test_alias_deep_infra(self):
+        assert resolve_provider("deep-infra") == "deepinfra"
+
     def test_unknown_provider_raises(self):
         with pytest.raises(AuthError):
             resolve_provider("nonexistent-provider-xyz")
@@ -263,6 +282,10 @@ class TestResolveProvider:
     def test_auto_detects_hf_token(self, monkeypatch):
         monkeypatch.setenv("HF_TOKEN", "hf_test_token")
         assert resolve_provider("auto") == "huggingface"
+
+    def test_auto_detects_deepinfra_key(self, monkeypatch):
+        monkeypatch.setenv("DEEPINFRA_API_KEY", "test-di-key")
+        assert resolve_provider("auto") == "deepinfra"
 
     def test_openrouter_takes_priority_over_glm(self, monkeypatch):
         """OpenRouter API key should win over GLM in auto-detection."""
@@ -985,3 +1008,111 @@ class TestHuggingFaceModels:
         from hermes_cli.models import _PROVIDER_LABELS
         assert "huggingface" in _PROVIDER_LABELS
         assert _PROVIDER_LABELS["huggingface"] == "Hugging Face"
+
+
+# =============================================================================
+# DeepInfra provider model list tests
+# =============================================================================
+
+class TestDeepInfraModels:
+    """Verify DeepInfra model lists are consistent across all locations."""
+
+    def test_models_py_has_deepinfra(self):
+        from hermes_cli.models import _PROVIDER_MODELS
+        assert "deepinfra" in _PROVIDER_MODELS
+        models = _PROVIDER_MODELS["deepinfra"]
+        assert len(models) >= 5, "Expected at least 5 curated DeepInfra models"
+
+    def test_provider_aliases_in_models_py(self):
+        from hermes_cli.models import _PROVIDER_ALIASES
+        assert _PROVIDER_ALIASES.get("deep-infra") == "deepinfra"
+
+    def test_provider_label(self):
+        from hermes_cli.models import _PROVIDER_LABELS
+        assert "deepinfra" in _PROVIDER_LABELS
+        assert _PROVIDER_LABELS["deepinfra"] == "DeepInfra"
+
+
+class TestFetchDeepInfraModels:
+    """Tests for _fetch_deepinfra_models() live model discovery."""
+
+    def test_returns_filtered_models_on_success(self, monkeypatch):
+        monkeypatch.setenv("DEEPINFRA_API_KEY", "test-key")
+
+        class _Resp:
+            def __enter__(self):
+                return self
+            def __exit__(self, *a):
+                return False
+            def read(self):
+                return json.dumps({"data": [
+                    {"id": "meta-llama/Llama-3-70B-Instruct", "metadata": {}},
+                    {"id": "mistralai/Mistral-Nemo-Instruct-2407", "metadata": {}},
+                    {"id": "BAAI/bge-large-en-v1.5-embed", "metadata": {}},
+                    {"id": "stabilityai/stable-diffusion-xl-base-1.0", "metadata": {}},
+                ]}).encode()
+
+        import urllib.request
+        monkeypatch.setattr(urllib.request, "urlopen", lambda *a, **kw: _Resp())
+        from hermes_cli.models import _fetch_deepinfra_models
+        result = _fetch_deepinfra_models()
+
+        assert result is not None
+        assert "meta-llama/Llama-3-70B-Instruct" in result
+        assert "mistralai/Mistral-Nemo-Instruct-2407" in result
+        # Embedding and image models should be excluded
+        assert not any("embed" in m.lower() for m in result)
+        assert not any("stable-diffusion" in m.lower() for m in result)
+
+    def test_works_without_api_key(self, monkeypatch):
+        monkeypatch.delenv("DEEPINFRA_API_KEY", raising=False)
+
+        class _Resp:
+            def __enter__(self):
+                return self
+            def __exit__(self, *a):
+                return False
+            def read(self):
+                return json.dumps({"data": [
+                    {"id": "meta-llama/Llama-3-70B-Instruct", "metadata": {}},
+                ]}).encode()
+
+        import urllib.request
+        monkeypatch.setattr(urllib.request, "urlopen", lambda *a, **kw: _Resp())
+        from hermes_cli.models import _fetch_deepinfra_models
+        result = _fetch_deepinfra_models()
+        assert result == ["meta-llama/Llama-3-70B-Instruct"]
+
+    def test_returns_none_on_network_failure(self, monkeypatch):
+        monkeypatch.setenv("DEEPINFRA_API_KEY", "test-key")
+        import urllib.request
+        monkeypatch.setattr(urllib.request, "urlopen", lambda *a, **kw: (_ for _ in ()).throw(Exception("timeout")))
+        from hermes_cli.models import _fetch_deepinfra_models
+        assert _fetch_deepinfra_models() is None
+
+    def test_excludes_non_chat_models(self, monkeypatch):
+        monkeypatch.setenv("DEEPINFRA_API_KEY", "test-key")
+
+        class _Resp:
+            def __enter__(self):
+                return self
+            def __exit__(self, *a):
+                return False
+            def read(self):
+                return json.dumps({"data": [
+                    {"id": "Qwen/Qwen3-235B-A22B-Instruct-2507", "metadata": {}},
+                    {"id": "openai/whisper-large-v3", "metadata": {}},
+                    {"id": "some-org/flux-dev", "metadata": {}},
+                    {"id": "sentence-transformers/clip-ViT-B-32", "metadata": {}},
+                    {"id": "microsoft/vit-base-patch16-224", "metadata": {}},
+                    {"id": "some-org/rerank-v2", "metadata": {}},
+                    {"id": "some-org/bark-large", "metadata": {}},
+                    {"id": "nvidia/sdxl-turbo", "metadata": {}},
+                ]}).encode()
+
+        import urllib.request
+        monkeypatch.setattr(urllib.request, "urlopen", lambda *a, **kw: _Resp())
+        from hermes_cli.models import _fetch_deepinfra_models
+        result = _fetch_deepinfra_models()
+
+        assert result == ["Qwen/Qwen3-235B-A22B-Instruct-2507"]

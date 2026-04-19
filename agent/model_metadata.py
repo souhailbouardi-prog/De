@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 # are preserved so the full model name reaches cache lookups and server queries.
 _PROVIDER_PREFIXES: frozenset[str] = frozenset({
     "openrouter", "nous", "openai-codex", "copilot", "copilot-acp",
-    "gemini", "ollama-cloud", "zai", "kimi-coding", "kimi-coding-cn", "minimax", "minimax-cn", "anthropic", "deepseek",
+    "gemini", "ollama-cloud", "zai", "kimi-coding", "kimi-coding-cn", "minimax", "minimax-cn", "anthropic", "deepseek", "deepinfra",
     "opencode-zen", "opencode-go", "ai-gateway", "kilocode", "alibaba",
     "qwen-oauth",
     "xiaomi",
@@ -32,7 +32,7 @@ _PROVIDER_PREFIXES: frozenset[str] = frozenset({
     # Common aliases
     "google", "google-gemini", "google-ai-studio",
     "glm", "z-ai", "z.ai", "zhipu", "github", "github-copilot",
-    "github-models", "kimi", "moonshot", "kimi-cn", "moonshot-cn", "claude", "deep-seek",
+    "github-models", "kimi", "moonshot", "kimi-cn", "moonshot-cn", "claude", "deep-seek", "deep-infra",
     "ollama",
     "opencode", "zen", "go", "vercel", "kilo", "dashscope", "aliyun", "qwen",
     "mimo", "xiaomi-mimo",
@@ -237,6 +237,7 @@ _URL_TO_PROVIDER: Dict[str, str] = {
     "generativelanguage.googleapis.com": "gemini",
     "inference-api.nousresearch.com": "nous",
     "api.deepseek.com": "deepseek",
+    "api.deepinfra.com": "deepinfra",
     "api.githubcopilot.com": "copilot",
     "models.github.ai": "copilot",
     "api.fireworks.ai": "fireworks",

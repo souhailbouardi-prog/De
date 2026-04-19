@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import urllib.request
 import urllib.error
 import time
@@ -305,6 +306,15 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "glm-4.7",
         "MiniMax-M2.5",
     ],
+    "deepinfra": [
+        "stepfun-ai/Step-3.5-Flash",
+        "zai-org/GLM-5.1",
+        "MiniMaxAI/MiniMax-M2.5",
+        "moonshotai/Kimi-K2.5",
+        "nvidia/NVIDIA-Nemotron-3-Super-120B-A12B",
+        "deepseek-ai/DeepSeek-V3.2",
+        "mistralai/Mistral-Nemo-Instruct-2407",
+    ],
     # Curated HF model list — only agentic models that map to OpenRouter defaults.
     "huggingface": [
         "moonshotai/Kimi-K2.5",
@@ -569,6 +579,7 @@ CANONICAL_PROVIDERS: list[ProviderEntry] = [
     ProviderEntry("opencode-go",    "OpenCode Go",              "OpenCode Go (open models, $10/month subscription)"),
     ProviderEntry("ai-gateway",     "Vercel AI Gateway",        "Vercel AI Gateway (200+ models, pay-per-use)"),
     ProviderEntry("bedrock",        "AWS Bedrock",              "AWS Bedrock (Claude, Nova, Llama, DeepSeek — IAM or API key)"),
+    ProviderEntry("deepinfra",      "DeepInfra",                "DeepInfra (100+ top models)"),
 ]
 
 # Derived dicts — used throughout the codebase
@@ -636,6 +647,7 @@ _PROVIDER_ALIASES = {
     "nemotron": "nvidia",
     "ollama": "custom",  # bare "ollama" = local; use "ollama-cloud" for cloud
     "ollama_cloud": "ollama-cloud",
+    "deep-infra": "deepinfra",
 }
 
 
@@ -1310,6 +1322,10 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
         live = _fetch_anthropic_models()
         if live:
             return live
+    if normalized == "deepinfra":
+        live = _fetch_deepinfra_models()
+        if live:
+            return live
     if normalized == "ai-gateway":
         live = _fetch_ai_gateway_models()
         if live:
@@ -1801,6 +1817,42 @@ def probe_api_models(
         "suggested_base_url": alternate_base if alternate_base != normalized else None,
         "used_fallback": False,
     }
+
+
+_DEEPINFRA_EXCLUDE_RE = re.compile(
+    r"(?i)(embed|rerank|whisper|stable-diffusion|flux|sdxl|"
+    r"tts|bark|speech|image-gen|clip|vit-|dpt-)",
+)
+
+
+def _fetch_deepinfra_models(timeout: float = 5.0) -> Optional[list[str]]:
+    """Fetch available chat/instruct models from DeepInfra.
+
+    The DeepInfra ``/models`` endpoint does not require authentication,
+    so this can be called before the user provides an API key.
+    """
+    base_url = os.getenv("DEEPINFRA_BASE_URL", "").strip()
+    if not base_url:
+        base_url = "https://api.deepinfra.com/v1/openai"
+
+    url = base_url.rstrip("/") + "/models?sort_by=openclaw&filter=true"
+    headers: dict[str, str] = {}
+    api_key = os.getenv("DEEPINFRA_API_KEY", "").strip()
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+    req = urllib.request.Request(url, headers=headers)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            data = json.loads(resp.read().decode())
+            models = [
+                m["id"]
+                for m in data.get("data", [])
+                if m.get("id") and m.get("metadata") is not None
+                    and not _DEEPINFRA_EXCLUDE_RE.search(m["id"])
+            ]
+            return models if models else None
+    except Exception:
+        return None
 
 
 def _fetch_ai_gateway_models(timeout: float = 5.0) -> Optional[list[str]]:

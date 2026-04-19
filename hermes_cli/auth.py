@@ -309,6 +309,14 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         api_key_env_vars=(),
         base_url_env_var="BEDROCK_BASE_URL",
     ),
+    "deepinfra": ProviderConfig(
+        id="deepinfra",
+        name="DeepInfra",
+        auth_type="api_key",
+        inference_base_url="https://api.deepinfra.com/v1/openai",
+        api_key_env_vars=("DEEPINFRA_API_KEY",),
+        base_url_env_var="DEEPINFRA_BASE_URL",
+    ),
 }
 
 
@@ -983,6 +991,7 @@ def resolve_provider(
         "hf": "huggingface", "hugging-face": "huggingface", "huggingface-hub": "huggingface",
         "mimo": "xiaomi", "xiaomi-mimo": "xiaomi",
         "aws": "bedrock", "aws-bedrock": "bedrock", "amazon-bedrock": "bedrock", "amazon": "bedrock",
+        "deep-infra": "deepinfra",
         "go": "opencode-go", "opencode-go-sub": "opencode-go",
         "kilo": "kilocode", "kilo-code": "kilocode", "kilo-gateway": "kilocode",
         # Local server aliases — route through the generic custom provider
