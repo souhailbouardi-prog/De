@@ -373,11 +373,7 @@ def run_doctor(args):
     print(color("◆ Auth Providers", Colors.CYAN, Colors.BOLD))
 
     try:
-        from hermes_cli.auth import (
-            get_nous_auth_status,
-            get_codex_auth_status,
-            get_gemini_oauth_auth_status,
-        )
+        from hermes_cli.auth import get_nous_auth_status, get_codex_auth_status
 
         nous_status = get_nous_auth_status()
         if nous_status.get("logged_in"):
@@ -392,20 +388,6 @@ def run_doctor(args):
             check_warn("OpenAI Codex auth", "(not logged in)")
             if codex_status.get("error"):
                 check_info(codex_status["error"])
-
-        gemini_status = get_gemini_oauth_auth_status()
-        if gemini_status.get("logged_in"):
-            email = gemini_status.get("email") or ""
-            project = gemini_status.get("project_id") or ""
-            pieces = []
-            if email:
-                pieces.append(email)
-            if project:
-                pieces.append(f"project={project}")
-            suffix = f" ({', '.join(pieces)})" if pieces else ""
-            check_ok("Google Gemini OAuth", f"(logged in{suffix})")
-        else:
-            check_warn("Google Gemini OAuth", "(not logged in)")
     except Exception as e:
         check_warn("Auth provider status", f"(could not check: {e})")
 
@@ -952,10 +934,24 @@ def run_doctor(args):
             else:
                 check_warn(item["name"], "(system dependency not met)")
 
-        # Count disabled tools with API key requirements
-        api_disabled = [u for u in unavailable if (u.get("missing_vars") or u.get("env_vars"))]
+        # Only summarize missing API keys for toolsets actually enabled in the CLI.
+        # Otherwise default-off / disabled toolsets (for example rl) create noisy
+        # false positives in the final "Found N issue(s)" summary.
+        try:
+            from hermes_cli.config import load_config
+            from hermes_cli.tools_config import _get_platform_tools
+
+            enabled_cli_toolsets = set(_get_platform_tools(load_config(), "cli", include_default_mcp_servers=False))
+        except Exception:
+            enabled_cli_toolsets = set()
+
+        api_disabled = [
+            u for u in unavailable
+            if (u.get("missing_vars") or u.get("env_vars"))
+            and (not enabled_cli_toolsets or u.get("name") in enabled_cli_toolsets)
+        ]
         if api_disabled:
-            issues.append("Run 'hermes setup' to configure missing API keys for full tool access")
+            issues.append("Run 'hermes setup' to configure missing API keys for enabled toolsets")
     except Exception as e:
         check_warn("Could not check tool availability", f"({e})")
     
