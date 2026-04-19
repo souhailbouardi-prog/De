@@ -124,14 +124,16 @@ services:
     container_name: hermes
     restart: unless-stopped
     command: gateway run
-    ports:
-      - "8642:8642"
     volumes:
       - ~/.hermes:/opt/data
     networks:
       - hermes-net
     # Uncomment to forward specific env vars instead of using .env file:
-    # environment:
+    environment:
+      - API_SERVER_ENABLED=true
+      - API_SERVER_PORT=8642
+      - API_SERVER_HOST=0.0.0.0
+      - API_SERVER_KEY=averystrongpassword
     #   - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
     #   - OPENAI_API_KEY=${OPENAI_API_KEY}
     #   - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
@@ -145,13 +147,14 @@ services:
     image: nousresearch/hermes-agent:latest
     container_name: hermes-dashboard
     restart: unless-stopped
-    command: dashboard --host 0.0.0.0
+    command: dashboard --host 0.0.0.0 --insecure
     ports:
-      - "9119:9119"
+      - "127.0.0.1:9119:9119"
     volumes:
       - ~/.hermes:/opt/data
     environment:
       - GATEWAY_HEALTH_URL=http://hermes:8642
+      - GATEWAY_HEALTH_KEY=averystrongpassword
     networks:
       - hermes-net
     depends_on:
@@ -166,6 +169,11 @@ networks:
   hermes-net:
     driver: bridge
 ```
+
+This configuration ensures that the API endpoint is only exposed to the dashboard and
+that the dashboard itself is only accessible without a password from the same machine.
+This can be secured with e.g. tailscale to provide a https:// url on the tailnet with
+`tailscale serve --bg --https 9119 9119`
 
 Start with `docker compose up -d` and view logs with `docker compose logs -f`.
 
