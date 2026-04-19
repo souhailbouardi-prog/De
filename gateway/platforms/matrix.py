@@ -326,7 +326,7 @@ class MatrixAdapter(BasePlatformAdapter):
                     )
                     return False
         except Exception as exc:
-            logger.error("Matrix: post-upload key verification failed: %s", exc)
+            logger.error("Matrix: post-upload key verification failed: %s", exc, exc_info=True)
             return False
         return True
 
@@ -342,6 +342,7 @@ class MatrixAdapter(BasePlatformAdapter):
             logger.error(
                 "Matrix: cannot verify device keys on server: %s — refusing E2EE",
                 exc,
+                exc_info=True,
             )
             return False
 
@@ -356,7 +357,7 @@ class MatrixAdapter(BasePlatformAdapter):
             try:
                 await olm.share_keys()
             except Exception as exc:
-                logger.error("Matrix: failed to re-upload device keys: %s", exc)
+                logger.error("Matrix: failed to re-upload device keys: %s", exc, exc_info=True)
                 return False
             return await self._reverify_keys_after_upload(client, local_ed25519)
 
@@ -396,6 +397,7 @@ class MatrixAdapter(BasePlatformAdapter):
                     "Try generating a new access token to get a fresh device.",
                     client.device_id,
                     exc,
+                    exc_info=True,
                 )
                 return False
             return await self._reverify_keys_after_upload(client, local_ed25519)
@@ -465,6 +467,7 @@ class MatrixAdapter(BasePlatformAdapter):
                 logger.error(
                     "Matrix: whoami failed — check MATRIX_ACCESS_TOKEN and MATRIX_HOMESERVER: %s",
                     exc,
+                    exc_info=True,
                 )
                 await api.session.close()
                 return False
