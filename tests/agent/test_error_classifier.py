@@ -849,3 +849,45 @@ class TestAdversarialEdgeCases:
         )
         result = classify_api_error(e, provider="openrouter")
         assert result.reason == FailoverReason.model_not_found
+
+    def test_dict_typed_message_does_not_crash(self):
+        # Regression for #11233: Pydantic/FastAPI validation errors return
+        # `message` as a dict, not a string. Classifier must not raise
+        # AttributeError trying to call .lower() on the dict.
+        pydantic_body = {
+            "object": "error",
+            "message": {
+                "detail": [
+                    {
+                        "type": "extra_forbidden",
+                        "loc": ["body", "think"],
+                        "msg": "Extra inputs are not permitted",
+                    }
+                ]
+            },
+        }
+        # Flat body shape (hits the `body.get("message")` sites)
+        e_flat = MockAPIError("validation error", status_code=422, body=pydantic_body)
+        assert isinstance(classify_api_error(e_flat), ClassifiedError)
+
+        # Nested under "error" (hits the `err_obj.get("message")` sites)
+        e_nested = MockAPIError(
+            "validation error",
+            status_code=422,
+            body={"error": pydantic_body},
+        )
+        assert isinstance(classify_api_error(e_nested), ClassifiedError)
+
+        # OpenRouter-style wrapped inside metadata.raw (hits _metadata_msg site)
+        import json as _json
+        e_wrapped = MockAPIError(
+            "Provider returned error",
+            status_code=400,
+            body={
+                "error": {
+                    "message": "Provider returned error",
+                    "metadata": {"raw": _json.dumps({"error": pydantic_body})},
+                }
+            },
+        )
+        assert isinstance(classify_api_error(e_wrapped, provider="openrouter"), ClassifiedError)
