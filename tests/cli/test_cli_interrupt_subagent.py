@@ -38,10 +38,15 @@ class TestCLISubagentInterrupt(unittest.TestCase):
         child_started = threading.Event()
         child_api_call_count = 0
 
-        # Create a real-enough parent agent
+        # Create a real-enough parent agent.  We bypass AIAgent.__init__ so
+        # the fake parent doesn't need real credentials/clients, but that
+        # means we have to set every attribute interrupt() and the delegate
+        # path touch — including the execution-thread sentinel added in
+        # commit-history so that _set_interrupt() can scope correctly.
         parent = AIAgent.__new__(AIAgent)
         parent._interrupt_requested = False
         parent._interrupt_message = None
+        parent._execution_thread_id = None
         parent._active_children = []
         parent._active_children_lock = threading.Lock()
         parent.quiet_mode = True
