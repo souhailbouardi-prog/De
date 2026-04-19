@@ -293,4 +293,82 @@ class TestSearchHints:
         assert "offset=100" in raw
 
 
+# ---------------------------------------------------------------------------
+# Regression test for Issue #2672: docker_mount_cwd_to_workspace missing from file_tools
+# ---------------------------------------------------------------------------
+
+class TestDockerMountCwdToWorkspace:
+    """Regression test for Issue #2672.
+
+    The docker_mount_cwd_to_workspace config flag should be passed to
+    _create_environment when creating Docker environments from file_tools.
+    Without this fix, file tools would ignore the host cwd mount setting.
+    """
+
+    def test_container_config_includes_docker_mount_cwd_to_workspace(self, monkeypatch):
+        """Verify _get_file_ops passes docker_mount_cwd_to_workspace in container_config.
+
+        This ensures that when a file tool triggers Docker environment creation,
+        the host cwd mount setting is respected (Issue #2672).
+        """
+        monkeypatch.setenv("TERMINAL_ENV", "docker")
+        monkeypatch.setenv("TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE", "true")
+
+        # Import after env vars are set
+        from tools.terminal_tool import _get_env_config
+        config = _get_env_config()
+
+        # Config should include the mount flag
+        assert "docker_mount_cwd_to_workspace" in config
+        assert config["docker_mount_cwd_to_workspace"] is True
+
+    def test_container_config_dict_builds_correctly(self, monkeypatch):
+        """Verify the container_config dict includes docker_mount_cwd_to_workspace.
+
+        This tests the specific code path in file_tools._get_file_ops that was
+        missing the docker_mount_cwd_to_workspace key (Issue #2672).
+        """
+        import threading
+        from unittest.mock import patch, MagicMock
+
+        monkeypatch.setenv("TERMINAL_ENV", "docker")
+        monkeypatch.setenv("TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE", "true")
+        monkeypatch.setenv("TERMINAL_CWD", "/home/test/project")
+
+        # Mock the environment creation to capture the container_config
+        captured_config = {}
+
+        def mock_create_environment(env_type, image, cwd, timeout, ssh_config, container_config, local_config, task_id, host_cwd=None):
+            if container_config:
+                captured_config.update(container_config)
+            return MagicMock()
+
+        # Clear caches to ensure fresh creation
+        from tools.file_tools import _file_ops_cache, _file_ops_lock
+        from tools.terminal_tool import _active_environments, _env_lock, _creation_locks, _creation_locks_lock
+
+        with _file_ops_lock:
+            _file_ops_cache.clear()
+        with _env_lock:
+            _active_environments.clear()
+        with _creation_locks_lock:
+            _creation_locks.clear()
+
+        with patch("tools.terminal_tool._create_environment", side_effect=mock_create_environment):
+            from tools.file_tools import _get_file_ops
+            try:
+                _get_file_ops(task_id="test-2672")
+            except Exception:
+                # We only care about capturing the config, exceptions are ok
+                pass
+
+        # Verify docker_mount_cwd_to_workspace is in the container_config
+        assert "docker_mount_cwd_to_workspace" in captured_config, (
+            f"Missing 'docker_mount_cwd_to_workspace' in container_config. "
+            f"Got keys: {list(captured_config.keys())}. "
+            "This regression indicates Issue #2672 has re-occurred."
+        )
+        assert captured_config["docker_mount_cwd_to_workspace"] is True
+
+
 
