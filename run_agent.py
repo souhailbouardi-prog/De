@@ -9808,14 +9808,26 @@ class AIAgent:
                                 "error": _exhaust_error,
                             }
 
-                        if self.api_mode in ("chat_completions", "bedrock_converse"):
-                            assistant_message = response.choices[0].message
-                            if not assistant_message.tool_calls:
+                        if self.api_mode in ("chat_completions", "bedrock_converse", "anthropic_messages"):
+                            # Normalize the truncated response into _trunc_assistant
+                            # so all API modes share the same continuation logic.
+                            if self.api_mode in ("chat_completions", "bedrock_converse"):
+                                _trunc_assistant = response.choices[0].message
+                            else:
+                                # Anthropic: build a lightweight SimpleNamespace from
+                                # the raw response so the rest of the code works
+                                # identically to chat_completions.
+                                from agent.anthropic_adapter import normalize_anthropic_response as _nar_trunc
+                                _trunc_assistant, _ = _nar_trunc(
+                                    response, strip_tool_prefix=self._is_anthropic_oauth
+                                )
+
+                            if not _trunc_assistant.tool_calls:
                                 length_continue_retries += 1
-                                interim_msg = self._build_assistant_message(assistant_message, finish_reason)
+                                interim_msg = self._build_assistant_message(_trunc_assistant, finish_reason)
                                 messages.append(interim_msg)
-                                if assistant_message.content:
-                                    truncated_response_prefix += assistant_message.content
+                                if _trunc_assistant.content:
+                                    truncated_response_prefix += _trunc_assistant.content
 
                                 if length_continue_retries < 3:
                                     self._vprint(
@@ -9848,9 +9860,16 @@ class AIAgent:
                                     "error": "Response remained truncated after 3 continuation attempts",
                                 }
 
-                        if self.api_mode in ("chat_completions", "bedrock_converse"):
-                            assistant_message = response.choices[0].message
-                            if assistant_message.tool_calls:
+                        if self.api_mode in ("chat_completions", "bedrock_converse", "anthropic_messages"):
+                            if self.api_mode in ("chat_completions", "bedrock_converse"):
+                                _trunc_assistant2 = response.choices[0].message
+                            else:
+                                from agent.anthropic_adapter import normalize_anthropic_response as _nar_trunc2
+                                _trunc_assistant2, _ = _nar_trunc2(
+                                    response, strip_tool_prefix=self._is_anthropic_oauth
+                                )
+
+                            if _trunc_assistant2.tool_calls:
                                 if truncated_tool_call_retries < 1:
                                     truncated_tool_call_retries += 1
                                     self._vprint(
