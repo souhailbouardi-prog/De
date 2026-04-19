@@ -9,6 +9,7 @@ or a temp file (local).
 import json
 import logging
 import os
+import select
 import shlex
 import subprocess
 import threading
@@ -423,6 +424,11 @@ class BaseEnvironment(ABC):
 
         Shared across all backends — not overridden.
 
+        Uses select() with a short timeout to read stdout instead of a
+        blocking iterator. This prevents the drain thread from hanging
+        forever when a background child process (e.g. a dev server) keeps
+        the pipe open after the parent exits.
+
         Fires the ``activity_callback`` (if set on this instance) every 10s
         while the process is running so the gateway's inactivity timeout
         doesn't kill long-running commands.
@@ -435,16 +441,42 @@ class BaseEnvironment(ABC):
         ``sleep 300``-survives-30-min bug Physikal and I both hit.
         """
         output_chunks: list[str] = []
+        _stop_drain = threading.Event()
+        # Incremental decoder to avoid splitting multibyte characters
+        # across chunk boundaries (copilot review feedback)
+        encoding = getattr(proc.stdout, "encoding", "utf-8") or "utf-8"
+        _decoder_cls = __import__("codecs").getincrementaldecoder(encoding)
+        _decoder = _decoder_cls(errors="replace")
 
         def _drain():
+            """Drain stdout using select() so the loop is interruptible.
+
+            On stop signal, flush any remaining bytes still available in the
+            pipe so output is not lost (copilot review feedback).
+            """
             try:
-                for line in proc.stdout:
-                    output_chunks.append(line)
-            except UnicodeDecodeError:
-                output_chunks.clear()
-                output_chunks.append(
-                    "[binary output detected — raw bytes not displayable]"
-                )
+                fd = proc.stdout.fileno()
+                while True:
+                    select_timeout = 0.0 if _stop_drain.is_set() else 0.3
+                    try:
+                        ready, _, _ = select.select([fd], [], [], select_timeout)
+                    except (ValueError, OSError):
+                        break
+                    if ready:
+                        try:
+                            data = os.read(fd, 4096)
+                            if not data:
+                                break
+                            output_chunks.append(_decoder.decode(data))
+                        except OSError:
+                            break
+                    elif _stop_drain.is_set():
+                        # No more data available after stop signal — done
+                        break
+                # Flush any remaining buffered bytes in the incremental decoder
+                remaining = _decoder.decode(b"", final=True)
+                if remaining:
+                    output_chunks.append(remaining)
             except (ValueError, OSError):
                 pass
 
@@ -487,7 +519,12 @@ class BaseEnvironment(ABC):
                             _tid, _pid, _iter_count, time.monotonic() - _activity_state["start"],
                         )
                     self._kill_process(proc)
+                    _stop_drain.set()
                     drain_thread.join(timeout=2)
+                    try:
+                        proc.stdout.close()
+                    except Exception:
+                        pass
                     return {
                         "output": "".join(output_chunks) + "\n[Command interrupted]",
                         "returncode": 130,
@@ -500,7 +537,12 @@ class BaseEnvironment(ABC):
                             _tid, _pid, _iter_count, timeout,
                         )
                     self._kill_process(proc)
+                    _stop_drain.set()
                     drain_thread.join(timeout=2)
+                    try:
+                        proc.stdout.close()
+                    except Exception:
+                        pass
                     partial = "".join(output_chunks)
                     timeout_msg = f"\n[Command timed out after {timeout}s]"
                     return {
@@ -548,13 +590,19 @@ class BaseEnvironment(ABC):
                 )
             try:
                 self._kill_process(proc)
+                _stop_drain.set()
                 drain_thread.join(timeout=2)
+                try:
+                    proc.stdout.close()
+                except Exception:
+                    pass
             except Exception:
                 pass  # cleanup is best-effort
             raise
-
+        # Process exited normally — signal drain thread and close stdout
+        # so the pipe EOF propagates even if background children hold it.
+        _stop_drain.set()
         drain_thread.join(timeout=5)
-
         try:
             proc.stdout.close()
         except Exception:
