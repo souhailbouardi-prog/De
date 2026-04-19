@@ -137,6 +137,12 @@ class RunState:
     api_process: Optional[subprocess.Popen] = None
     trainer_process: Optional[subprocess.Popen] = None
     env_process: Optional[subprocess.Popen] = None
+    # Strong references to async workers. asyncio.create_task() only
+    # gives the event loop a weak reference — Python can GC the task
+    # mid-run and silently drop training-process supervision. Storing
+    # them on RunState anchors the lifetime to _active_runs.
+    spawn_task: Optional[asyncio.Task] = None
+    monitor_task: Optional[asyncio.Task] = None
 
 
 # Global state
@@ -419,8 +425,10 @@ async def _spawn_training_run(run_state: RunState, config_path: Path):
         run_state.start_time = time.time()
         logger.info("[%s] Training run started successfully!", run_id)
         
-        # Start background monitoring
-        asyncio.create_task(_monitor_training_run(run_state))
+        # Start background monitoring. Storing the task on RunState keeps
+        # a strong reference (RunState lives in _active_runs) so the
+        # supervisor is not garbage-collected mid-run.
+        run_state.monitor_task = asyncio.create_task(_monitor_training_run(run_state))
         
     except Exception as e:
         run_state.status = "failed"
@@ -792,8 +800,10 @@ async def rl_start_training() -> str:
     
     _active_runs[run_id] = run_state
     
-    # Start training in background
-    asyncio.create_task(_spawn_training_run(run_state, config_path))
+    # Start training in background. Keep a strong reference via
+    # RunState so the spawn coroutine is not garbage-collected before
+    # it finishes launching the three training processes.
+    run_state.spawn_task = asyncio.create_task(_spawn_training_run(run_state, config_path))
     
     return json.dumps({
         "run_id": run_id,

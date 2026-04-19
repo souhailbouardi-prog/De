@@ -140,3 +140,32 @@ class TestStopTrainingRunStatus:
         state = _make_run_state()
         _stop_training_run(state)  # should not raise
         assert state.status == "pending"
+
+
+class TestRunStateAsyncTaskFields:
+    """Regression: RunState must carry strong references to its async
+    supervisor tasks so Python's weak-reference tracking cannot GC them
+    mid-run (Python docs warn about this for ``asyncio.create_task``).
+    """
+
+    def test_spawn_task_and_monitor_task_default_none(self):
+        state = _make_run_state()
+        assert state.spawn_task is None
+        assert state.monitor_task is None
+
+    def test_task_fields_accept_asyncio_task_instances(self):
+        import asyncio
+
+        async def _run():
+            async def _noop():
+                return None
+
+            spawn = asyncio.create_task(_noop())
+            monitor = asyncio.create_task(_noop())
+            state = _make_run_state(spawn_task=spawn, monitor_task=monitor)
+            assert state.spawn_task is spawn
+            assert state.monitor_task is monitor
+            await spawn
+            await monitor
+
+        asyncio.run(_run())
