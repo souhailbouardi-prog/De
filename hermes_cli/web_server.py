@@ -678,6 +678,10 @@ def _denormalize_config_from_web(config: Dict[str, Any]) -> Dict[str, Any]:
     Also handles ``model_context_length`` — writes it back into the model dict
     as ``context_length``.  A value of 0 or absent means "auto-detect" (omitted
     from the dict so get_model_context_length() uses its normal resolution).
+
+    When the model string changes, provider auto-detection is run so that
+    ``model.provider`` is kept in sync with ``model.default`` — matching the
+    behaviour of the ``hermes model`` CLI command.
     """
     config = dict(config)
     # Remove any _model_meta that might have leaked in (shouldn't happen
@@ -699,8 +703,37 @@ def _denormalize_config_from_web(config: Dict[str, Any]) -> Dict[str, Any]:
             disk_config = load_config()
             disk_model = disk_config.get("model")
             if isinstance(disk_model, dict):
-                # Preserve all subkeys, update default with the new value
-                disk_model["default"] = model_val
+                # Only re-detect the provider when the model value actually
+                # changed — avoids overwriting an explicit provider when the
+                # user saves unrelated config fields.
+                disk_default = disk_model.get("default", "") or disk_model.get("name", "") or ""
+                resolved_model = model_val  # default: keep raw input
+                if model_val != disk_default:
+                    current_provider = disk_model.get("provider", "") or ""
+                    current_base_url = disk_model.get("base_url", "") or ""
+                    is_custom = current_provider in ("custom", "local") or current_provider.startswith("custom:") or (
+                        "localhost" in current_base_url or "127.0.0.1" in current_base_url
+                    )
+                    if not is_custom:
+                        try:
+                            from hermes_cli.models import detect_provider_for_model
+
+                            detected = detect_provider_for_model(model_val, current_provider)
+                            if detected is not None:
+                                new_provider, resolved_model = detected
+                                disk_model["provider"] = new_provider
+                                # Clear provider-specific endpoint settings when the
+                                # provider changes, matching _update_config_for_provider.
+                                if new_provider != current_provider:
+                                    disk_model.pop("base_url", None)
+                                    disk_model.pop("api_mode", None)
+                            # else: resolved_model stays as raw model_val
+                        except Exception:
+                            pass  # auto-detection failed — keep existing provider
+
+                # Update default to the resolved model name (may differ from
+                # the raw input if detect_provider_for_model rewrote it).
+                disk_model["default"] = resolved_model
                 # Write context_length into the model dict (0 = remove/auto)
                 if ctx_override > 0:
                     disk_model["context_length"] = ctx_override

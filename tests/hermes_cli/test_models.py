@@ -155,6 +155,41 @@ class TestDetectProviderForModel:
         # Should find it on OpenRouter with full slug
         assert result[1] == "anthropic/claude-opus-4.6"
 
+    def test_codex_curated_openrouter_model_keeps_codex_provider(self):
+        with patch(
+            "hermes_cli.models.fetch_openrouter_models",
+            return_value=[("openai/gpt-5.4-mini", "recommended")],
+        ), patch(
+            "hermes_cli.auth.get_codex_auth_status",
+            return_value={"logged_in": True},
+        ), patch(
+            "hermes_cli.models.provider_model_ids",
+            return_value=["openai/gpt-5.4-mini"],
+        ):
+            result = detect_provider_for_model("openai/gpt-5.4-mini", "openai-codex")
+            # Returns normalized (provider, bare_model) so the caller
+            # persists a provider-native model ID instead of an OpenRouter slug.
+            assert result == ("openai-codex", "gpt-5.4-mini")
+
+    def test_codex_curated_openrouter_model_falls_back_without_codex_auth(self):
+        with patch(
+            "hermes_cli.models.fetch_openrouter_models",
+            return_value=[("openai/gpt-5.4-mini", "recommended")],
+        ), patch(
+            "hermes_cli.auth.get_codex_auth_status",
+            return_value={"logged_in": False},
+        ):
+            result = detect_provider_for_model("openai/gpt-5.4-mini", "openai-codex")
+        assert result == ("openrouter", "openai/gpt-5.4-mini")
+
+    def test_non_codex_openrouter_model_can_switch_from_codex(self):
+        with patch(
+            "hermes_cli.models.fetch_openrouter_models",
+            return_value=[("deepseek/deepseek-chat", "")],
+        ):
+            result = detect_provider_for_model("deepseek/deepseek-chat", "openai-codex")
+        assert result == ("openrouter", "deepseek/deepseek-chat")
+
     def test_unknown_model_returns_none(self):
         """Completely unknown model names should return None."""
         with patch("hermes_cli.models.fetch_openrouter_models", return_value=LIVE_OPENROUTER_MODELS):
