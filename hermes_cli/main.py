@@ -6431,6 +6431,7 @@ For more help on a command:
             "xiaomi",
             "arcee",
             "nvidia",
+            "qiniu",
         ],
         default=None,
         help="Inference provider (default: auto)",
