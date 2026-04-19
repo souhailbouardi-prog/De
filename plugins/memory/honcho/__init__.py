@@ -1236,12 +1236,24 @@ class HonchoMemoryProvider(MemoryProvider):
         for t in (self._prefetch_thread, self._sync_thread):
             if t and t.is_alive():
                 t.join(timeout=5.0)
-        # Flush any remaining messages
+        # Gracefully flush + join the async writer thread, then close the
+        # underlying HTTP client. Without this, the background writer and
+        # httpx connection pool can still be live during interpreter teardown,
+        # which caused crashes at exit.
         if self._manager:
             try:
-                self._manager.flush_all()
-            except Exception:
-                pass
+                self._manager.shutdown()
+            except Exception as e:
+                logger.debug("Honcho manager shutdown error: %s", e)
+            try:
+                client = getattr(self._manager, "_honcho", None) or getattr(
+                    self._manager, "honcho", None
+                )
+                http = getattr(client, "_http", None) if client else None
+                if http is not None and hasattr(http, "close"):
+                    http.close()
+            except Exception as e:
+                logger.debug("Honcho HTTP client close error: %s", e)
 
 
 # ---------------------------------------------------------------------------
