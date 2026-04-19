@@ -2561,6 +2561,13 @@ class DiscordAdapter(BasePlatformAdapter):
                 auto_archive_duration=auto_archive_duration,
                 reason=reason,
             )
+            # Add the command invoker to the thread so they can see and interact with it
+            # This is required for private threads where the creator isn't auto-added
+            try:
+                if interaction.user:
+                    await thread.add_user(interaction.user)
+            except Exception as add_err:
+                logger.warning("[%s] Failed to add user to thread: %s", self.name, add_err)
             if starter_message:
                 await thread.send(starter_message)
             return {
@@ -2577,6 +2584,12 @@ class DiscordAdapter(BasePlatformAdapter):
                     auto_archive_duration=auto_archive_duration,
                     reason=reason,
                 )
+                # Add the command invoker to the thread (fallback path)
+                try:
+                    if interaction.user:
+                        await thread.add_user(interaction.user)
+                except Exception as add_err:
+                    logger.warning("[%s] Failed to add user to thread (fallback): %s", self.name, add_err)
                 return {
                     "success": True,
                     "thread_id": str(thread.id),
