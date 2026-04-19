@@ -1032,26 +1032,40 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
 
 
 def _load_config() -> dict:
-    """Load delegation config from CLI_CONFIG or persistent config.
+    """Load delegation config from persistent config, falling back to runtime.
 
-    Checks the runtime config (cli.py CLI_CONFIG) first, then falls back
-    to the persistent config (hermes_cli/config.py load_config()) so that
-    ``delegation.model`` / ``delegation.provider`` are picked up regardless
-    of the entry point (CLI, gateway, cron).
+    Disk config (config.yaml) is authoritative. Runtime config (cli.py
+    CLI_CONFIG) is only used to fill keys missing from disk. This prevents
+    long-running processes (gateway, cron) from using stale runtime defaults
+    that mask edits made to config.yaml after startup.
     """
+    from hermes_cli.config import DEFAULT_CONFIG, read_raw_config
+
+    defaults = dict(DEFAULT_CONFIG.get("delegation", {}))
+    raw_disk = {}
     try:
-        from cli import CLI_CONFIG
-        cfg = CLI_CONFIG.get("delegation", {})
-        if cfg:
-            return cfg
+        raw_disk = read_raw_config().get("delegation", {}) or {}
     except Exception:
         pass
+
+    runtime_cfg = {}
     try:
-        from hermes_cli.config import load_config
-        full = load_config()
-        return full.get("delegation", {})
+        from cli import CLI_CONFIG
+        runtime_cfg = CLI_CONFIG.get("delegation", {}) or {}
     except Exception:
-        return {}
+        pass
+
+    # Start from defaults, overlay raw disk config.
+    # We use read_raw_config() instead of load_config() because load_config()
+    # deep-merges DEFAULT_CONFIG, so keys like max_iterations always appear
+    # "present" even when the user never set them in config.yaml. By tracking
+    # raw disk keys explicitly, runtime can still fill truly missing values.
+    merged = dict(defaults)
+    merged.update(raw_disk)
+    for k, v in runtime_cfg.items():
+        if k not in raw_disk and v not in (None, ""):
+            merged[k] = v
+    return merged
 
 
 # ---------------------------------------------------------------------------
