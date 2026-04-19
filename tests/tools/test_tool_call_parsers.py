@@ -272,3 +272,136 @@ class TestMistralParser:
         text = "[TOOL_CALLS] not valid json"
         content, tool_calls = parser.parse(text)
         assert tool_calls is None
+
+
+# ─── Gemma 4 parser tests ─────────────────────────────────────────────
+
+class TestGemma4Parser:
+    @pytest.fixture
+    def parser(self):
+        return get_parser("gemma4")
+
+    def test_no_tool_call(self, parser):
+        text = "Hello, I can help you with that."
+        content, tool_calls = parser.parse(text)
+        assert content == text
+        assert tool_calls is None
+
+    def test_single_arg_double_quotes(self, parser):
+        text = '<|tool_call>call:search(query: "latest blockchain news")<tool_call|>'
+        content, tool_calls = parser.parse(text)
+        assert tool_calls is not None
+        assert len(tool_calls) == 1
+        assert tool_calls[0].function.name == "search"
+        args = json.loads(tool_calls[0].function.arguments)
+        assert args["query"] == "latest blockchain news"
+
+    def test_single_arg_single_quotes(self, parser):
+        text = "<|tool_call>call:search(query: 'blockchain news')<tool_call|>"
+        content, tool_calls = parser.parse(text)
+        assert tool_calls is not None
+        assert len(tool_calls) == 1
+        args = json.loads(tool_calls[0].function.arguments)
+        assert args["query"] == "blockchain news"
+
+    def test_multi_arg(self, parser):
+        text = "<|tool_call>call:send_message(target='#announcements', message='Hello everyone')<tool_call|>"
+        content, tool_calls = parser.parse(text)
+        assert tool_calls is not None
+        assert len(tool_calls) == 1
+        assert tool_calls[0].function.name == "send_message"
+        args = json.loads(tool_calls[0].function.arguments)
+        assert args["target"] == "#announcements"
+        assert args["message"] == "Hello everyone"
+
+    def test_integer_arg(self, parser):
+        text = "<|tool_call>call:add_item(database='Members', name='Alice', priority=1)<tool_call|>"
+        content, tool_calls = parser.parse(text)
+        assert tool_calls is not None
+        args = json.loads(tool_calls[0].function.arguments)
+        assert args["name"] == "Alice"
+        assert args["priority"] == 1
+
+    def test_dict_arg(self, parser):
+        text = "<|tool_call>call:create_database(title='Members', properties={'name': 'text', 'dept': 'select'})<tool_call|>"
+        content, tool_calls = parser.parse(text)
+        assert tool_calls is not None
+        args = json.loads(tool_calls[0].function.arguments)
+        assert args["title"] == "Members"
+        assert isinstance(args["properties"], dict)
+        assert args["properties"]["name"] == "text"
+
+    def test_korean_content(self, parser):
+        text = "<|tool_call>call:send_message(target='리서치팀', message='내일 세미나가 있습니다')<tool_call|>"
+        content, tool_calls = parser.parse(text)
+        assert tool_calls is not None
+        args = json.loads(tool_calls[0].function.arguments)
+        assert args["target"] == "리서치팀"
+        assert args["message"] == "내일 세미나가 있습니다"
+
+    def test_preceding_text_preserved(self, parser):
+        text = "Let me search that for you.\n<|tool_call>call:search(query: 'test')<tool_call|>"
+        content, tool_calls = parser.parse(text)
+        assert tool_calls is not None
+        assert content is not None
+        assert "search that" in content
+
+    def test_multiple_tool_calls(self, parser):
+        text = (
+            "<|tool_call>call:search(query: 'blockchain')<tool_call|>\n"
+            "<|tool_call>call:send_message(target: '#news', message: 'results')<tool_call|>"
+        )
+        content, tool_calls = parser.parse(text)
+        assert tool_calls is not None
+        assert len(tool_calls) == 2
+        names = {tc.function.name for tc in tool_calls}
+        assert "search" in names
+        assert "send_message" in names
+
+    def test_tool_call_ids_are_unique(self, parser):
+        text = (
+            "<|tool_call>call:search(query: 'a')<tool_call|>\n"
+            "<|tool_call>call:search(query: 'b')<tool_call|>"
+        )
+        _, tool_calls = parser.parse(text)
+        assert tool_calls is not None
+        ids = [tc.id for tc in tool_calls]
+        assert len(ids) == len(set(ids)), "Tool call IDs must be unique"
+
+    def test_brace_syntax(self, parser):
+        """Test alternate brace syntax from issue #6626."""
+        text = '<|tool_call>call:search_files{pattern: "/var/log", target: "files"}<tool_call|>'
+        content, tool_calls = parser.parse(text)
+        assert tool_calls is not None
+        assert tool_calls[0].function.name == "search_files"
+        args = json.loads(tool_calls[0].function.arguments)
+        assert args["pattern"] == "/var/log"
+
+    def test_brace_syntax_with_special_quotes(self, parser):
+        """Test brace syntax with <|"|> quote delimiters from issue #6626."""
+        text = '<|tool_call>call:search_files{pattern:<|"|>/var/log<|"|>,target:<|"|>files<|"|>}<tool_call|>'
+        content, tool_calls = parser.parse(text)
+        assert tool_calls is not None
+        assert tool_calls[0].function.name == "search_files"
+        args = json.loads(tool_calls[0].function.arguments)
+        assert args["pattern"] == "/var/log"
+
+    def test_empty_string(self, parser):
+        content, tool_calls = parser.parse("")
+        assert tool_calls is None
+
+    def test_truncated_tool_call(self, parser):
+        """Unclosed tag — model truncated mid-generation."""
+        text = "<|tool_call>call:search(query: 'test')"
+        content, tool_calls = parser.parse(text)
+        # Should handle gracefully — either parse or return None
+        if tool_calls is not None:
+            assert tool_calls[0].function.name == "search"
+
+    def test_empty_args(self, parser):
+        text = "<|tool_call>call:get_status()<tool_call|>"
+        content, tool_calls = parser.parse(text)
+        assert tool_calls is not None
+        assert tool_calls[0].function.name == "get_status"
+        args = json.loads(tool_calls[0].function.arguments)
+        assert args == {}
