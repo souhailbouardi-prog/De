@@ -596,3 +596,74 @@ class TestAvailability:
         monkeypatch.setenv("HINDSIGHT_MODE", "local")
         p = HindsightMemoryProvider()
         assert p.is_available()
+
+
+# ---------------------------------------------------------------------------
+# Regression: daemon health check (#7149)
+# ---------------------------------------------------------------------------
+
+
+class TestDaemonHealthCheck:
+    """Regression: _get_client must restart daemon after idle timeout (#7149)."""
+
+    def test_daemon_restarted_when_not_running(self, provider):
+        """If manager.is_running() returns False, _ensure_started is called."""
+        mock_client = _make_mock_client()
+        mock_manager = MagicMock()
+        mock_manager.is_running.return_value = False
+        mock_client._manager = mock_manager
+        mock_client._ensure_started = MagicMock()
+
+        provider._client = mock_client
+        provider._mode = "local_embedded"
+
+        result = provider._get_client()
+        mock_client._ensure_started.assert_called_once()
+        assert result is mock_client
+
+    def test_no_restart_when_running(self, provider):
+        """If daemon is running, _ensure_started is NOT called."""
+        mock_client = _make_mock_client()
+        mock_manager = MagicMock()
+        mock_manager.is_running.return_value = True
+        mock_client._manager = mock_manager
+        mock_client._ensure_started = MagicMock()
+
+        provider._client = mock_client
+        provider._mode = "local_embedded"
+
+        result = provider._get_client()
+        mock_client._ensure_started.assert_not_called()
+        assert result is mock_client
+
+    def test_client_cleared_on_restart_failure(self, provider):
+        """If _ensure_started raises, client is set to None."""
+        mock_client = _make_mock_client()
+        mock_manager = MagicMock()
+        mock_manager.is_running.return_value = False
+        mock_client._manager = mock_manager
+        mock_client._ensure_started = MagicMock(side_effect=RuntimeError("daemon failed"))
+
+        provider._client = mock_client
+        provider._mode = "local_embedded"
+
+        # The health check should clear _client to None on failure.
+        # The subsequent re-creation attempt will fail because
+        # hindsight is not installed in the test env, so catch that.
+        try:
+            provider._get_client()
+        except (ModuleNotFoundError, ImportError):
+            pass  # Expected — hindsight package not installed
+        assert provider._client is None or provider._client is not mock_client
+
+    def test_no_health_check_for_cloud_mode(self, provider):
+        """Health check only runs for local_embedded, not cloud mode."""
+        mock_client = _make_mock_client()
+        mock_client._manager = MagicMock()
+
+        provider._client = mock_client
+        provider._mode = "cloud"
+
+        result = provider._get_client()
+        mock_client._manager.is_running.assert_not_called()
+        assert result is mock_client

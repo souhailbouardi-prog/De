@@ -437,7 +437,28 @@ class HindsightMemoryProvider(MemoryProvider):
         ]
 
     def _get_client(self):
-        """Return the cached Hindsight client (created once, reused)."""
+        """Return the cached Hindsight client (created once, reused).
+
+        For local_embedded mode, verifies the daemon is still alive and
+        restarts it if the idle timeout shut it down.
+        """
+        # Health check: if we have a cached local_embedded client, verify
+        # the daemon is still running.  The daemon auto-stops after 5 min
+        # of inactivity; without this check, subsequent operations fail
+        # with "Cannot connect to host 127.0.0.1:8888".
+        if self._client is not None and self._mode == "local_embedded":
+            try:
+                manager = getattr(self._client, "_manager", None)
+                profile = self._config.get("profile", "hermes")
+                if manager and hasattr(manager, "is_running") and not manager.is_running(profile):
+                    logger.info("Hindsight daemon stopped (idle timeout), restarting...")
+                    self._client._ensure_started()
+                    logger.info("Hindsight daemon restarted successfully")
+            except Exception as e:
+                logger.warning("Failed to restart hindsight daemon: %s", e)
+                # Clear client so it gets re-created on next call
+                self._client = None
+
         if self._client is None:
             if self._mode == "local_embedded":
                 from hindsight import HindsightEmbedded
