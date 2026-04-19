@@ -308,8 +308,9 @@ def _build_child_agent(
     else:
         parent_toolsets = set(DEFAULT_TOOLSETS)
 
-    if toolsets:
-        # Intersect with parent — subagent must not gain tools the parent lacks
+    if toolsets is not None:
+        # Intersect with parent — subagent must not gain tools the parent lacks.
+        # An explicit empty list means "no tools", not "inherit from parent".
         child_toolsets = _strip_blocked_tools([t for t in toolsets if t in parent_toolsets])
     elif parent_agent and parent_enabled is not None:
         child_toolsets = _strip_blocked_tools(parent_enabled)
