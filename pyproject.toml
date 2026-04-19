@@ -133,4 +133,6 @@ testpaths = ["tests"]
 markers = [
     "integration: marks tests requiring external services (API keys, Modal, etc.)",
 ]
-addopts = "-m 'not integration' -n auto"
+# Parallelism is enabled in CI via explicit `-n auto` (see `.github/workflows/tests.yml`).
+# Keep default addopts xdist-free so `pytest --version` / bare installs do not hard-fail.
+addopts = "-m 'not integration'"
