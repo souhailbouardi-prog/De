@@ -8787,11 +8787,16 @@ class HermesCLI:
                 # Handle /model directly on the UI thread so interactive pickers
                 # can safely use prompt_toolkit terminal handoff helpers.
                 if self._should_handle_model_command_inline(text, has_images=has_images):
+                    # Clear the buffer BEFORE process_command so that the
+                    # model picker's _capture_modal_input_snapshot() saves
+                    # an empty string instead of "/model".  Without this,
+                    # _restore_modal_input_snapshot() puts "/model" back
+                    # into the input field when the picker closes.
+                    event.app.current_buffer.reset(append_to_history=True)
                     if not self.process_command(text):
                         self._should_exit = True
                         if event.app.is_running:
                             event.app.exit()
-                    event.app.current_buffer.reset(append_to_history=True)
                     return
 
                 # Snapshot and clear attached images
