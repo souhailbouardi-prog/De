@@ -59,3 +59,26 @@ def test_resolve_turn_route_falls_back_to_primary_when_route_runtime_cannot_be_r
     assert result["model"] == "anthropic/claude-sonnet-4"
     assert result["runtime"]["provider"] == "openrouter"
     assert result["label"] is None
+
+
+def test_resolve_turn_route_skips_cheap_model_when_session_override_active():
+    """When a session override is active, smart routing must not replace the primary model."""
+    from agent.smart_model_routing import resolve_turn_route
+
+    primary = {
+        "model": "gpt-5.4",
+        "provider": "openai-codex",
+        "base_url": "https://chatgpt.com/backend-api/codex",
+        "api_mode": "codex_responses",
+        "api_key": "sk-session",
+    }
+    # "hi" is a trivially simple message that would normally trigger cheap routing
+    result = resolve_turn_route(
+        "hi",
+        _BASE_CONFIG,
+        primary,
+        session_override_active=True,
+    )
+    assert result["model"] == "gpt-5.4"
+    assert result["runtime"]["provider"] == "openai-codex"
+    assert result["label"] is None

@@ -1081,9 +1081,15 @@ class GatewayRunner:
 
         return model, runtime_kwargs
 
-    def _resolve_turn_agent_config(self, user_message: str, model: str, runtime_kwargs: dict) -> dict:
+    def _resolve_turn_agent_config(
+        self, user_message: str, model: str, runtime_kwargs: dict, *, session_key: str | None = None,
+    ) -> dict:
         from agent.smart_model_routing import resolve_turn_route
         from hermes_cli.models import resolve_fast_mode_overrides
+
+        session_override_active = bool(
+            session_key and self._session_model_overrides.get(session_key)
+        )
 
         primary = {
             "model": model,
@@ -1095,7 +1101,12 @@ class GatewayRunner:
             "args": list(runtime_kwargs.get("args") or []),
             "credential_pool": runtime_kwargs.get("credential_pool"),
         }
-        route = resolve_turn_route(user_message, getattr(self, "_smart_model_routing", {}), primary)
+        route = resolve_turn_route(
+            user_message,
+            getattr(self, "_smart_model_routing", {}),
+            primary,
+            session_override_active=session_override_active,
+        )
 
         service_tier = getattr(self, "_service_tier", None)
         if not service_tier:
@@ -6307,7 +6318,8 @@ class GatewayRunner:
             reasoning_config = self._load_reasoning_config()
             self._reasoning_config = reasoning_config
             self._service_tier = self._load_service_tier()
-            turn_route = self._resolve_turn_agent_config(prompt, model, runtime_kwargs)
+            _bg_session_key = self._session_key_for_source(source) if source else None
+            turn_route = self._resolve_turn_agent_config(prompt, model, runtime_kwargs, session_key=_bg_session_key)
 
             def run_sync():
                 agent = AIAgent(
@@ -6474,7 +6486,7 @@ class GatewayRunner:
             platform_key = _platform_config_key(source.platform)
             reasoning_config = self._load_reasoning_config()
             self._service_tier = self._load_service_tier()
-            turn_route = self._resolve_turn_agent_config(question, model, runtime_kwargs)
+            turn_route = self._resolve_turn_agent_config(question, model, runtime_kwargs, session_key=session_key)
             pr = self._provider_routing
 
             # Snapshot history from running agent or stored transcript
@@ -9490,7 +9502,7 @@ class GatewayRunner:
                 except Exception as _e:
                     logger.debug("interim_assistant_callback error: %s", _e)
 
-            turn_route = self._resolve_turn_agent_config(message, model, runtime_kwargs)
+            turn_route = self._resolve_turn_agent_config(message, model, runtime_kwargs, session_key=session_key)
 
             # Check agent cache — reuse the AIAgent from the previous message
             # in this session to preserve the frozen system prompt and tool

@@ -107,12 +107,23 @@ def choose_cheap_model_route(user_message: str, routing_config: Optional[Dict[st
     return route
 
 
-def resolve_turn_route(user_message: str, routing_config: Optional[Dict[str, Any]], primary: Dict[str, Any]) -> Dict[str, Any]:
+def resolve_turn_route(
+    user_message: str,
+    routing_config: Optional[Dict[str, Any]],
+    primary: Dict[str, Any],
+    *,
+    session_override_active: bool = False,
+) -> Dict[str, Any]:
     """Resolve the effective model/runtime for one turn.
 
     Returns a dict with model/runtime/signature/label fields.
+
+    When *session_override_active* is ``True`` the user has explicitly
+    switched model/provider via ``/model``.  In that case cheap-model
+    routing is skipped so the session override is honoured for every
+    turn, regardless of message complexity heuristics.
     """
-    route = choose_cheap_model_route(user_message, routing_config)
+    route = None if session_override_active else choose_cheap_model_route(user_message, routing_config)
     if not route:
         return {
             "model": primary.get("model"),

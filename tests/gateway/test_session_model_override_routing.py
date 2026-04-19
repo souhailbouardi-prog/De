@@ -123,6 +123,59 @@ def test_run_agent_prefers_session_override_over_global_runtime(monkeypatch):
     assert _CapturingAgent.last_init["api_key"] == "***"
 
 
+def test_smart_routing_skipped_when_session_override_active(monkeypatch):
+    """smart_model_routing must not replace a /model session override with the cheap model."""
+    monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: {})
+    monkeypatch.setattr(gateway_run, "load_dotenv", lambda *args, **kwargs: None)
+    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", _explode_runtime_resolution)
+
+    fake_run_agent = types.ModuleType("run_agent")
+    fake_run_agent.AIAgent = _CapturingAgent
+    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+
+    _CapturingAgent.last_init = None
+    runner = _make_runner()
+
+    # Enable smart routing with a cheap model that would match a simple message
+    runner._smart_model_routing = {
+        "enabled": True,
+        "max_simple_chars": 160,
+        "max_simple_words": 28,
+        "cheap_model": {
+            "provider": "openrouter",
+            "model": "openai/gpt-4o-mini",
+        },
+    }
+
+    source = SessionSource(
+        platform=Platform.LOCAL,
+        chat_id="cli",
+        chat_name="CLI",
+        chat_type="dm",
+        user_id="user-1",
+    )
+    session_key = "agent:main:local:dm"
+    runner._session_model_overrides[session_key] = _codex_override()
+
+    # "hi" is a short, simple message that smart routing would normally reroute
+    result = asyncio.run(
+        runner._run_agent(
+            message="hi",
+            context_prompt="",
+            history=[],
+            source=source,
+            session_id="session-1",
+            session_key=session_key,
+        )
+    )
+
+    assert result["final_response"] == "ok"
+    assert _CapturingAgent.last_init is not None
+    # Session override must win over smart routing
+    assert _CapturingAgent.last_init["model"] == "gpt-5.4"
+    assert _CapturingAgent.last_init["provider"] == "openai-codex"
+
+
 @pytest.mark.asyncio
 async def test_background_task_prefers_session_override_over_global_runtime(monkeypatch):
     monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: {})
