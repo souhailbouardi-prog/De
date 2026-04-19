@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectOption } from "@/components/ui/select";
@@ -25,6 +26,12 @@ export function AutoField({
 }: AutoFieldProps) {
   const rawLabel = schemaKey.split(".").pop() ?? schemaKey;
   const label = rawLabel.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+
+  const isObjectList =
+    schema.type === "list" && Array.isArray(value) && value.some((item) => typeof item === "object" && item !== null && !Array.isArray(item));
+  const [objectListText, setObjectListText] = useState(() =>
+    isObjectList ? JSON.stringify(value, null, 2) : "",
+  );
 
   if (schema.type === "boolean") {
     return (
@@ -94,6 +101,32 @@ export function AutoField({
   }
 
   if (schema.type === "list") {
+    if (isObjectList) {
+      return (
+        <div className="grid gap-1.5">
+          <Label className="text-sm">{label}</Label>
+          <FieldHint schema={schema} schemaKey={schemaKey} />
+          <textarea
+            className="flex min-h-[120px] w-full border border-input bg-transparent px-3 py-2 font-mono text-sm shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+            value={objectListText}
+            onChange={(e) => {
+              const next = e.target.value;
+              setObjectListText(next);
+              try {
+                const parsed = JSON.parse(next);
+                if (Array.isArray(parsed)) {
+                  onChange(parsed);
+                }
+              } catch {
+                // Keep the local JSON editor responsive while the user is typing.
+              }
+            }}
+            placeholder='[{"provider":"openai","model":"gpt-5-mini"}]'
+          />
+        </div>
+      );
+    }
+
     return (
       <div className="grid gap-1.5">
         <Label className="text-sm">{label}</Label>
