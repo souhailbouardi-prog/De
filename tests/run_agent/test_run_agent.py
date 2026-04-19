@@ -4349,3 +4349,167 @@ class TestMemoryProviderTurnStart:
         import inspect
         src = inspect.getsource(AIAgent.run_conversation)
         assert "on_turn_start(self._user_turn_count" in src
+
+
+# ---------------------------------------------------------------------------
+# Circuit breaker for consecutive identical tool failures (issue #12395)
+# ---------------------------------------------------------------------------
+
+
+class TestToolRetryCircuitBreaker:
+    """Circuit breaker should stop agent after N consecutive identical tool failures."""
+
+    def test_circuit_breaker_fires_after_three_identical_failures(self, monkeypatch):
+        """When the same tool call fails 3 times in a row with identical args, circuit breaker stops the loop."""
+        monkeypatch.setenv("HERMES_TOOL_RETRY_LIMIT", "3")
+
+        # Create agent with send_message tool defined
+        with (
+            patch("run_agent.get_tool_definitions", return_value=_make_tool_defs("send_message")),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+        ):
+            agent = AIAgent(
+                api_key="test-key-1234567890",
+                base_url="https://openrouter.ai/api/v1",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+            agent.client = MagicMock()
+
+        # Mock tool that always fails
+        def failing_tool(name, args, task_id, **kwargs):
+            return '{"error": "Connection refused"}'
+
+        # Track how many times the LLM was called
+        llm_call_count = [0]
+
+        # Mock LLM that always calls the same failing tool with same arguments
+        def mock_llm_call(*args, **kwargs):
+            llm_call_count[0] += 1
+            tool_call = _mock_tool_call(
+                name="send_message",
+                arguments='{"message": "hello"}',
+                call_id=f"call_{llm_call_count[0]}"
+            )
+            return _mock_response(
+                content="",
+                tool_calls=[tool_call],
+                finish_reason="tool_calls"
+            )
+
+        agent.client.chat.completions.create = mock_llm_call
+
+        with (
+            patch("run_agent.handle_function_call", side_effect=failing_tool),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("Send a message")
+
+        # Should stop after 3 identical failures (circuit breaker fires)
+        # Not after max_iterations (which would be much higher)
+        assert llm_call_count[0] <= 4, (
+            f"Expected circuit breaker to stop after ~3 LLM calls, but got {llm_call_count[0]}"
+        )
+
+        # Result should be completed (circuit breaker triggered)
+        assert result["completed"] is True
+
+    def test_circuit_breaker_resets_on_different_tool_calls(self, monkeypatch):
+        """Circuit breaker should reset if tool calls change."""
+        monkeypatch.setenv("HERMES_TOOL_RETRY_LIMIT", "3")
+
+        # Create agent with multiple tools
+        with (
+            patch("run_agent.get_tool_definitions", return_value=_make_tool_defs("send_message", "different_tool")),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+        ):
+            agent = AIAgent(
+                api_key="test-key-1234567890",
+                base_url="https://openrouter.ai/api/v1",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+            agent.client = MagicMock()
+
+        def varying_tool_handler(name, args, task_id, **kwargs):
+            return '{"error": "fail"}'
+
+        llm_calls = [0]
+
+        def mock_llm_varying(*args, **kwargs):
+            llm_calls[0] += 1
+            # First 2 calls: send_message
+            # Next 2 calls: different_tool (should reset counter)
+            # Next 3 calls: send_message again (should trigger circuit breaker)
+            if llm_calls[0] <= 2:
+                tool_name = "send_message"
+                args = '{"msg": "hello"}'
+            elif llm_calls[0] <= 4:
+                tool_name = "different_tool"
+                args = '{"data": "test"}'
+            else:
+                tool_name = "send_message"
+                args = '{"msg": "hello"}'
+
+            tc = _mock_tool_call(name=tool_name, arguments=args, call_id=f"call_{llm_calls[0]}")
+            return _mock_response(content="", tool_calls=[tc], finish_reason="tool_calls")
+
+        agent.client.chat.completions.create = mock_llm_varying
+
+        with (
+            patch("run_agent.handle_function_call", side_effect=varying_tool_handler),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("Test varying tools")
+
+        # Should make more than 3 calls because counter resets when tools change
+        # But should eventually stop when send_message fails 3 times consecutively
+        assert llm_calls[0] >= 5, "Should allow retries when tool calls differ"
+        assert llm_calls[0] <= 8, "Should eventually stop after consecutive failures"
+
+    def test_circuit_breaker_respects_env_var(self, monkeypatch):
+        """HERMES_TOOL_RETRY_LIMIT environment variable should control the limit."""
+        monkeypatch.setenv("HERMES_TOOL_RETRY_LIMIT", "2")
+
+        # Create agent with failing_tool defined
+        with (
+            patch("run_agent.get_tool_definitions", return_value=_make_tool_defs("failing_tool")),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+        ):
+            agent = AIAgent(
+                api_key="test-key-1234567890",
+                base_url="https://openrouter.ai/api/v1",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+            agent.client = MagicMock()
+
+        llm_calls = [0]
+
+        def failing_tool(name, args, task_id, **kwargs):
+            return '{"error": "always fails"}'
+
+        def mock_llm(*args, **kwargs):
+            llm_calls[0] += 1
+            tc = _mock_tool_call(name="failing_tool", arguments='{"x": 1}', call_id=f"call_{llm_calls[0]}")
+            return _mock_response(content="", tool_calls=[tc], finish_reason="tool_calls")
+
+        agent.client.chat.completions.create = mock_llm
+
+        with (
+            patch("run_agent.handle_function_call", side_effect=failing_tool),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("Test env var limit")
+
+        # Should stop after 2 failures when HERMES_TOOL_RETRY_LIMIT=2
+        assert llm_calls[0] <= 3, f"Expected ~2 LLM calls with limit=2, got {llm_calls[0]}"

@@ -8755,6 +8755,11 @@ class AIAgent:
         self._mute_post_response = False
         self._unicode_sanitization_passes = 0
 
+        # Circuit breaker for consecutive identical failing tool calls (#12395)
+        self._consecutive_tool_fail_count = 0
+        self._last_failed_tool_sig = None
+        self._tool_retry_limit = int(os.environ.get('HERMES_TOOL_RETRY_LIMIT', '3'))
+
         # Pre-turn connection health check: detect and clean up dead TCP
         # connections left over from provider outages or dropped streams.
         # This prevents the next API call from hanging on a zombie socket.
@@ -11302,7 +11307,73 @@ class AIAgent:
                     # Save session log incrementally (so progress is visible even if interrupted)
                     self._session_messages = messages
                     self._save_session_log(messages)
-                    
+
+                    # Circuit breaker: detect consecutive identical failing tool calls (#12395)
+                    # Build signature from current tool calls
+                    current_tool_sig = tuple(
+                        (tc.function.name, tc.function.arguments)
+                        for tc in assistant_message.tool_calls
+                    )
+
+                    # Find the tool results that were just added (last N messages)
+                    num_tool_calls = len(assistant_message.tool_calls)
+                    tool_result_msgs = []
+                    for msg in reversed(messages):
+                        if msg.get("role") == "tool":
+                            tool_result_msgs.append(msg)
+                            if len(tool_result_msgs) >= num_tool_calls:
+                                break
+                    tool_result_msgs.reverse()
+
+                    # Check if all tools failed
+                    all_failed = True
+                    for i, tc in enumerate(assistant_message.tool_calls):
+                        if i < len(tool_result_msgs):
+                            result_content = tool_result_msgs[i].get("content", "")
+                            is_failure, _ = _detect_tool_failure(tc.function.name, result_content)
+                            if not is_failure:
+                                all_failed = False
+                                break
+
+                    # Update circuit breaker state
+                    if all_failed and current_tool_sig == self._last_failed_tool_sig:
+                        # Same failing tools - increment counter
+                        self._consecutive_tool_fail_count += 1
+
+                        if self._consecutive_tool_fail_count >= self._tool_retry_limit:
+                            # Circuit breaker triggered
+                            _turn_exit_reason = "circuit_breaker_triggered"
+                            logger.warning(
+                                "Circuit breaker triggered after %d consecutive identical failing tool calls",
+                                self._consecutive_tool_fail_count
+                            )
+
+                            # Append warning to the last tool result
+                            if tool_result_msgs:
+                                last_tool_result = tool_result_msgs[-1]
+                                warning = (
+                                    "\n\n[CIRCUIT BREAKER] This operation has failed "
+                                    f"{self._consecutive_tool_fail_count} consecutive times with "
+                                    "the same arguments. Do not retry — inform the user about "
+                                    "the failure and move on."
+                                )
+                                last_tool_result["content"] = last_tool_result.get("content", "") + warning
+
+                            # Exit the loop
+                            final_response = (
+                                "The operation failed repeatedly. I've stopped retrying "
+                                "to avoid wasting tokens."
+                            )
+                            break
+                    elif all_failed:
+                        # Different failing tools - update signature and reset/start counter
+                        self._last_failed_tool_sig = current_tool_sig
+                        self._consecutive_tool_fail_count = 1
+                    else:
+                        # At least one tool succeeded - reset circuit breaker
+                        self._consecutive_tool_fail_count = 0
+                        self._last_failed_tool_sig = None
+
                     # Continue loop for next response
                     continue
                 
