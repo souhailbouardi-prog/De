@@ -34,7 +34,7 @@ from __future__ import annotations
 
 import logging
 from abc import ABC, abstractmethod
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -223,9 +223,23 @@ class MemoryProvider(ABC):
     def on_memory_write(self, action: str, target: str, content: str) -> None:
         """Called when the built-in memory tool writes an entry.
 
-        action: 'add', 'replace', or 'remove'
+        action: 'add', 'replace', 'remove', or 'update'
         target: 'memory' or 'user'
         content: the entry content
 
         Use to mirror built-in memory writes to your backend.
         """
+
+    def weighted_retrieve(
+        self,
+        target: str,
+        query: str = "",
+        top_k: int = 5,
+        min_score: float = 0.0,
+    ):
+        """Retrieve entries sorted by priority * weight * recency score.
+
+        Override to implement weighted retrieval in external providers.
+        Default: fall back to empty list.
+        """
+        return []
