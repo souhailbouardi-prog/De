@@ -1719,6 +1719,9 @@ class HermesCLI:
         # busy_input_mode: "interrupt" (Enter interrupts current run) or "queue" (Enter queues for next turn)
         _bim = CLI_CONFIG["display"].get("busy_input_mode", "interrupt")
         self.busy_input_mode = "queue" if str(_bim).strip().lower() == "queue" else "interrupt"
+        # ctrl_c_priority: "interrupt_agent" (default) or "clear_input"
+        _ccp = CLI_CONFIG["display"].get("ctrl_c_priority", "interrupt_agent")
+        self.ctrl_c_priority = "clear_input" if str(_ccp).strip().lower() == "clear_input" else "interrupt_agent"
 
         self.verbose = verbose if verbose is not None else (self.tool_progress_mode == "verbose")
         
@@ -9012,13 +9015,21 @@ class HermesCLI:
                 event.app.invalidate()
                 return
 
+            # When the user prefers "clear_input", Ctrl+C behaves like bash:
+            # clear the buffer first; only interrupt the agent when the buffer is empty.
+            if self.ctrl_c_priority == "clear_input" and (event.app.current_buffer.text or self._attached_images):
+                event.app.current_buffer.reset()
+                self._attached_images.clear()
+                event.app.invalidate()
+                return
+
             if self._agent_running and self.agent:
                 if now - self._last_ctrl_c_time < 2.0:
                     print("\n⚡ Force exiting...")
                     self._should_exit = True
                     event.app.exit()
                     return
-                
+
                 self._last_ctrl_c_time = now
                 print("\n⚡ Interrupting agent... (press Ctrl+C again to force exit)")
                 self.agent.interrupt()

@@ -559,6 +559,7 @@ DEFAULT_CONFIG = {
         "personality": "kawaii",
         "resume_display": "full",
         "busy_input_mode": "interrupt",
+        "ctrl_c_priority": "interrupt_agent",  # "interrupt_agent" | "clear_input"
         "bell_on_complete": False,
         "show_reasoning": False,
         "streaming": False,
