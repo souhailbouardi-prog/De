@@ -10658,6 +10658,12 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
                 except (ProcessLookupError, PermissionError, OSError):
                     pass
             remove_pid_file()
+            # remove_pid_file() is a no-op when the PID doesn't match.
+            # Force-unlink to cover the old-process-crashed case.
+            try:
+                (get_hermes_home() / "gateway.pid").unlink(missing_ok=True)
+            except Exception:
+                pass
             # Clean up any takeover marker the old process didn't consume
             # (e.g. SIGKILL'd before its shutdown handler could read it).
             try:
@@ -10807,8 +10813,25 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     
     # Write PID file so CLI can detect gateway is running
     import atexit
-    from gateway.status import write_pid_file, remove_pid_file
-    write_pid_file()
+    from gateway.status import write_pid_file, remove_pid_file, get_running_pid
+    # Defensive re-check: another --replace racer may have started
+    # while we were initializing. If so, yield and exit.
+    _current_pid = get_running_pid()
+    if _current_pid is not None and _current_pid != os.getpid():
+        logger.error(
+            "Another gateway instance (PID %d) started during our startup. "
+            "Exiting to avoid double-running.", _current_pid
+        )
+        await runner.stop()
+        return False
+    try:
+        write_pid_file()
+    except FileExistsError:
+        logger.error(
+            "PID file race lost to another gateway instance. Exiting."
+        )
+        await runner.stop()
+        return False
     atexit.register(remove_pid_file)
     
     # Start background cron ticker so scheduled jobs fire automatically.
