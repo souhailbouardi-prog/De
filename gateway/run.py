@@ -10469,8 +10469,13 @@ class GatewayRunner:
             interrupt_monitor.cancel()
             _notify_task.cancel()
 
-            # Wait for stream consumer to finish its final edit
+            # Wait for stream consumer to finish its final edit.
+            # If no consumer was ever created (streaming disabled, or setup
+            # failed), cancel the poller up front so the wait_for below
+            # returns immediately instead of burning the full 5s timeout.
             if stream_task:
+                if stream_consumer_holder[0] is None:
+                    stream_task.cancel()
                 try:
                     await asyncio.wait_for(stream_task, timeout=5.0)
                 except (asyncio.TimeoutError, asyncio.CancelledError):
