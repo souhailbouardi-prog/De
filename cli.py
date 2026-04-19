@@ -4751,6 +4751,7 @@ class HermesCLI:
                     result.new_model,
                     base_url=result.base_url or self.base_url,
                     api_key=result.api_key or self.api_key,
+                    config_context_length=getattr(self, "_config_context_length", None),
                     provider=result.target_provider,
                 )
                 _cprint(f"    Context: {ctx:,} tokens")
@@ -4978,6 +4979,7 @@ class HermesCLI:
                     result.new_model,
                     base_url=result.base_url or self.base_url,
                     api_key=result.api_key or self.api_key,
+                    config_context_length=getattr(self, "_config_context_length", None),
                     provider=result.target_provider,
                 )
                 _cprint(f"    Context: {ctx:,} tokens")
@@ -7930,7 +7932,9 @@ class HermesCLI:
                 from agent.context_references import preprocess_context_references
                 from agent.model_metadata import get_model_context_length
                 _ctx_len = get_model_context_length(
-                    self.model, base_url=self.base_url or "", api_key=self.api_key or "")
+                    self.model, base_url=self.base_url or "", api_key=self.api_key or "",
+                    config_context_length=getattr(self, "_config_context_length", None),
+                )
                 _ctx_result = preprocess_context_references(
                     message, cwd=os.getcwd(), context_length=_ctx_len)
                 if _ctx_result.expanded or _ctx_result.blocked:
