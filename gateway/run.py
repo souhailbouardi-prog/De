@@ -3336,8 +3336,8 @@ class GatewayRunner:
         # Emit command:* hook for any recognized slash command.
         # GATEWAY_KNOWN_COMMANDS is derived from the central COMMAND_REGISTRY
         # in hermes_cli/commands.py — no hardcoded set to maintain here.
-        from hermes_cli.commands import GATEWAY_KNOWN_COMMANDS, resolve_command as _resolve_cmd
-        if command and command in GATEWAY_KNOWN_COMMANDS:
+        from hermes_cli.commands import get_gateway_known_commands, resolve_command as _resolve_cmd
+        if command and command in get_gateway_known_commands():
             await self.hooks.emit(f"command:{command}", {
                 "platform": source.platform.value if source.platform else "",
                 "user_id": source.user_id,
@@ -3360,6 +3360,9 @@ class GatewayRunner:
         
         if canonical == "profile":
             return await self._handle_profile_command(event)
+
+        if canonical == "project":
+            return await self._handle_project_command(event)
 
         if canonical == "status":
             return await self._handle_status_command(event)
@@ -3596,7 +3599,7 @@ class GatewayRunner:
                     # Normalize to hyphenated form before checking known
                     # built-ins (command may be an alias target set by the
                     # quick-command block above, so _cmd_def can be stale).
-                    if command.replace("_", "-") not in GATEWAY_KNOWN_COMMANDS:
+                    if command.replace("_", "-") not in get_gateway_known_commands():
                         logger.warning(
                             "Unrecognized slash command /%s from %s — "
                             "replying with unknown-command notice",
@@ -4841,6 +4844,81 @@ class GatewayRunner:
         ]
 
         return "\n".join(lines)
+
+    async def _handle_project_command(self, event: MessageEvent) -> str:
+        """Handle /project — delegates to the project_context plugin's logic."""
+        import asyncio
+        from pathlib import Path
+
+        args = event.get_command_args().strip()
+
+        def _do_project(args: str) -> str:
+            # Import from the installed plugin path (~/.hermes/plugins/project_context)
+            import sys
+            plugin_path = Path.home() / ".hermes" / "plugins" / "project_context"
+            if str(plugin_path) not in sys.path:
+                sys.path.insert(0, str(plugin_path))
+            from context_manager import (
+                get_active_project,
+                list_projects,
+                switch_to_project,
+                clear_project,
+                load_context,
+                get_project_path,
+            )
+
+            # Mirror the logic in project_context/commands.py:handle_project_command
+            parts = args.split()
+            first = parts[0].lower() if parts else ""
+
+            # /project list
+            if first in ("list", "--list", "-l"):
+                projects = list_projects()
+                current = get_active_project()
+                if not projects:
+                    return "No projects found. Create one with `/project <name>`."
+                lines = [f"  {p}{' ← current' if p == current else ''}" for p in projects]
+                return "Known projects:\n" + "\n".join(lines)
+
+            # /project none
+            if first == "none":
+                was = get_active_project()
+                clear_project()
+                return f"Cleared active project (was: {was})." if was else "No active project to clear."
+
+            # /project (no args) — show current
+            if not args:
+                current = get_active_project()
+                if not current:
+                    return (
+                        "No active project.\n"
+                        "Use `/project <name>` to set a project, or `/project list` to see known projects.\n"
+                        "Projects are stored under ~/.hermes/projects/."
+                    )
+                ctx = load_context(current)
+                path = get_project_path(current)
+                preview = ""
+                if ctx:
+                    preview = "\n\n" + (ctx[:200].strip() + "..." if len(ctx) > 200 else ctx.strip())
+                return f"Active project: {current}\nPath: {path}\nContext:{preview}"
+
+            # /project <name> — switch or create
+            name = args
+            result = switch_to_project(name)
+            if not result["ok"]:
+                return f"Failed to switch project: {result.get('error')}"
+            if result["new"]:
+                path = get_project_path(result["name"])
+                return (
+                    f"Created and switched to new project: {result['name']}\n"
+                    f"Project path: {path}\n\n"
+                    f"The context.md is empty. Tell me what this project is and I'll fill it in.\n"
+                    f"Use `/project` to see the current context once you've described it."
+                )
+            return f"Switched to project: {result['name']}\n(was: {result['was'] or 'none'})\nContext loaded."
+
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(None, _do_project, args)
 
     async def _handle_status_command(self, event: MessageEvent) -> str:
         """Handle /status command."""

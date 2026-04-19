@@ -249,15 +249,39 @@ for _cmd in COMMAND_REGISTRY:
 # Gateway helpers
 # ---------------------------------------------------------------------------
 
-# Set of all command names + aliases recognized by the gateway.
-# Includes config-gated commands so the gateway can dispatch them
-# (the handler checks the config gate at runtime).
-GATEWAY_KNOWN_COMMANDS: frozenset[str] = frozenset(
-    name
-    for cmd in COMMAND_REGISTRY
-    if not cmd.cli_only or cmd.gateway_config_gate
-    for name in (cmd.name, *cmd.aliases)
-)
+def _get_all_gateway_commands() -> frozenset[str]:
+    """Build the full set of gateway-known command names from static registry + plugins."""
+    static = frozenset(
+        name
+        for cmd in COMMAND_REGISTRY
+        if not cmd.cli_only or cmd.gateway_config_gate
+        for name in (cmd.name, *cmd.aliases)
+    )
+    # Merge in any plugin-registered CLI commands so their hooks fire in the gateway.
+    try:
+        from hermes_cli.plugins import get_plugin_manager
+        pm = get_plugin_manager()
+        plugin_names = set(pm._cli_commands.keys())
+        static = static | frozenset(plugin_names)
+    except Exception:
+        pass
+    return static
+
+
+def get_gateway_known_commands() -> frozenset[str]:
+    """Dynamic set of all gateway-recognized command names (static registry + live plugins)."""
+    return _get_all_gateway_commands()
+
+
+# Kept as a module-level cached frozenset for fast-path checks.
+# Re-computed once at first access after plugins are loaded.
+_cached_gateway_commands: frozenset[str] | None = None
+
+
+def GATEWAY_KNOWN_COMMANDS() -> frozenset[str]:
+    """Thunk: re-computes from live plugin manager on every call.
+    Use this in dispatch code that needs up-to-date plugin command names."""
+    return _get_all_gateway_commands()
 
 
 # Commands with explicit Level-2 running-agent handlers in gateway/run.py.
