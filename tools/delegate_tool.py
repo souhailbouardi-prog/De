@@ -279,7 +279,9 @@ def _build_child_agent(
     # ACP transport overrides — lets a non-ACP parent spawn ACP child agents
     override_acp_command: Optional[str] = None,
     override_acp_args: Optional[List[str]] = None,
-):
+    override_acp_multi_turn: bool = False,
+    override_acp_max_rounds: int = 3,
+) -> str:
     """
     Build a child AIAgent on the main thread (thread-safe construction).
     Returns the constructed child agent without running it.
@@ -381,6 +383,8 @@ def _build_child_agent(
         api_mode=effective_api_mode,
         acp_command=effective_acp_command,
         acp_args=effective_acp_args,
+        acp_multi_turn=override_acp_multi_turn,
+        acp_max_rounds=override_acp_max_rounds,
         max_iterations=max_iterations,
         max_tokens=getattr(parent_agent, "max_tokens", None),
         reasoning_config=child_reasoning,
@@ -685,6 +689,8 @@ def delegate_task(
     max_iterations: Optional[int] = None,
     acp_command: Optional[str] = None,
     acp_args: Optional[List[str]] = None,
+    acp_multi_turn: bool = False,
+    acp_max_rounds: int = 3,
     parent_agent=None,
 ) -> str:
     """
@@ -696,6 +702,8 @@ def delegate_task(
 
     Returns JSON with results array, one entry per task.
     """
+    if acp_max_rounds < 1:
+        acp_max_rounds = 1
     if parent_agent is None:
         return tool_error("delegate_task requires a parent agent context.")
 
@@ -777,6 +785,8 @@ def delegate_task(
                 override_api_mode=creds["api_mode"],
                 override_acp_command=t.get("acp_command") or acp_command,
                 override_acp_args=t.get("acp_args") or acp_args,
+                override_acp_multi_turn=t.get("acp_multi_turn", False) or bool(acp_multi_turn),
+                override_acp_max_rounds=t.get("acp_max_rounds", acp_max_rounds),
             )
             # Override with correct parent tool names (before child construction mutated global)
             child._delegate_saved_tool_names = _parent_tool_names
@@ -1173,6 +1183,23 @@ DELEGATE_TASK_SCHEMA = {
                     "Only used when acp_command is set. Example: ['--acp', '--stdio', '--model', 'claude-opus-4-6']"
                 ),
             },
+            "acp_multi_turn": {
+                "type": "boolean",
+                "description": (
+                    "When true (and acp_command is set), use persistent ACP session mode. "
+                    "The child agent keeps the ACP subprocess alive and reuses the same session_id "
+                    "across multiple turns, enabling true multi-turn collaboration with Claude Code. "
+                    "Default: false (one-shot, kills process after each prompt)."
+                ),
+            },
+            "acp_max_rounds": {
+                "type": "integer",
+                "description": (
+                    "Maximum number of prompt rounds in persistent ACP session (default: 3). "
+                    "Only used when acp_multi_turn=true. The child agent can decide when to stop "
+                    "early if the task is complete."
+                ),
+            },
         },
         "required": [],
     },
@@ -1194,6 +1221,8 @@ registry.register(
         max_iterations=args.get("max_iterations"),
         acp_command=args.get("acp_command"),
         acp_args=args.get("acp_args"),
+        acp_multi_turn=bool(args.get("acp_multi_turn", False)),
+        acp_max_rounds=int(args.get("acp_max_rounds", 3)),
         parent_agent=kw.get("parent_agent")),
     check_fn=check_delegate_requirements,
     emoji="🔀",

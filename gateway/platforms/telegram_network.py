@@ -62,7 +62,11 @@ class TelegramFallbackTransport(httpx.AsyncBaseTransport):
         self._fallback_ips = [ip for ip in dict.fromkeys(_normalize_fallback_ips(fallback_ips))]
         proxy_url = _resolve_proxy_url()
         if proxy_url and "proxy" not in transport_kwargs:
-            transport_kwargs["proxy"] = proxy_url
+            try:
+                transport_kwargs["proxy"] = httpx.Proxy(proxy_url)
+            except Exception:
+                # httpx.Proxy may not be available in all httpx versions
+                pass
         self._primary = httpx.AsyncHTTPTransport(**transport_kwargs)
         self._fallbacks = {
             ip: httpx.AsyncHTTPTransport(**transport_kwargs) for ip in self._fallback_ips

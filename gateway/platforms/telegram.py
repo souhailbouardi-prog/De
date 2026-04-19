@@ -83,6 +83,24 @@ from gateway.platforms.telegram_network import (
 )
 
 
+# Patch HTTPXRequest for httpx 0.25 compatibility (proxy → proxies)
+import httpx as _httpx
+from telegram.request import HTTPXRequest as _HTTPXRequest
+import inspect as _inspect
+_ac_params = list(_inspect.signature(_httpx.AsyncClient.__init__).parameters.keys())
+if 'proxy' not in _ac_params and 'proxies' in _ac_params:
+    _orig_build = _HTTPXRequest._build_client
+    def _patched_build_client(self):
+        kwargs = dict(self._client_kwargs)
+        if 'proxy' in kwargs:
+            proxy_val = kwargs.pop('proxy')
+            if proxy_val is not None:
+                kwargs['proxies'] = proxy_val
+        self._client_kwargs = kwargs
+        return _orig_build(self)
+    _HTTPXRequest._build_client = _patched_build_client
+
+
 def check_telegram_requirements() -> bool:
     """Check if Telegram dependencies are available."""
     return TELEGRAM_AVAILABLE
@@ -678,7 +696,13 @@ class TelegramAdapter(BasePlatformAdapter):
                 "write_timeout": _env_float("HERMES_TELEGRAM_HTTP_WRITE_TIMEOUT", 20.0),
             }
 
-            proxy_url = resolve_proxy_url("TELEGRAM_PROXY")
+            # Allow explicit HERMES_TELEGRAM_PROXY="" to skip macOS system proxy
+            if "HERMES_TELEGRAM_PROXY" not in os.environ:
+                proxy_url = resolve_proxy_url("TELEGRAM_PROXY")
+            elif not os.environ["HERMES_TELEGRAM_PROXY"]:
+                proxy_url = None
+            else:
+                proxy_url = os.environ["HERMES_TELEGRAM_PROXY"]
             disable_fallback = (os.getenv("HERMES_TELEGRAM_DISABLE_FALLBACK_IPS", "").strip().lower() in ("1", "true", "yes", "on"))
             fallback_ips = self._fallback_ips()
             if not fallback_ips:

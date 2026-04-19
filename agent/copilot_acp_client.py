@@ -279,6 +279,234 @@ class CopilotACPClient:
         self.is_closed = False
         self._active_process: subprocess.Popen[str] | None = None
         self._active_process_lock = threading.Lock()
+        # Persistent session state
+        self._initialized: bool = False
+        self._session_id: str | None = None
+        self._session_lock = threading.Lock()
+        self._update_buffer: list[tuple[str, str]] = []
+        self._update_callback: Any | None = None
+        self._persistent_mode: bool = False  # If True, don't kill process after _run_prompt
+
+    # ── Persistent session API ──────────────────────────────────────
+
+    def start_session(self, *, cwd: str | None = None, mcp_servers: list | None = None) -> str:
+        """Start the ACP subprocess (if not already running), initialize, and create a new session.
+
+        Returns the session_id. Can be called multiple times to create multiple sessions
+        within the same subprocess (Claude Code supports multiple concurrent sessions).
+        """
+        target_cwd = str(Path(cwd or self._acp_cwd).resolve())
+        mcp_servers = mcp_servers or []
+
+        with self._active_process_lock:
+            # Start process if not running
+            if self._active_process is None or self._active_process.poll() is not None:
+                self._start_process(target_cwd)
+
+            # Initialize handshake (once per process lifetime)
+            if not self._initialized:
+                self._request("initialize", {
+                    "protocolVersion": 1,
+                    "clientCapabilities": {
+                        "fs": {
+                            "readTextFile": True,
+                            "writeTextFile": True,
+                        }
+                    },
+                    "clientInfo": {
+                        "name": "hermes-agent",
+                        "title": "Hermes Agent",
+                        "version": "0.0.0",
+                    },
+                })
+                self._initialized = True
+
+            # Create a new session
+            session = self._request("session/new", {
+                "cwd": target_cwd,
+                "mcpServers": mcp_servers,
+            }) or {}
+            session_id = str(session.get("sessionId") or "").strip()
+            if not session_id:
+                raise RuntimeError("Copilot ACP did not return a sessionId.")
+
+            with self._session_lock:
+                self._session_id = session_id
+
+            return session_id
+
+    def send_prompt(
+        self,
+        session_id: str,
+        prompt_text: str,
+        *,
+        timeout: float | None = None,
+        on_update: Any | None = None,
+    ) -> tuple[str, str]:
+        """Send a prompt to an existing ACP session without killing the process.
+
+        Args:
+            session_id: The session to send to (from start_session).
+            prompt_text: The user prompt.
+            timeout: Seconds to wait (default: 900).
+            on_update: Optional callback called as (update_kind, text) for each
+                       session/update event (e.g. "agent_message_chunk", "agent_thought_chunk").
+
+        Returns:
+            (response_text, reasoning_text)
+        """
+        timeout_seconds = float(timeout or _DEFAULT_TIMEOUT_SECONDS)
+        text_parts: list[str] = []
+        reasoning_parts: list[str] = []
+
+        # Temporarily set the update callback
+        old_callback = self._update_callback
+        self._update_callback = on_update
+
+        try:
+            self._request(
+                "session/prompt",
+                {
+                    "sessionId": session_id,
+                    "prompt": [{"type": "text", "text": prompt_text}],
+                },
+                text_parts=text_parts,
+                reasoning_parts=reasoning_parts,
+                timeout_seconds=timeout_seconds,
+            )
+        finally:
+            self._update_callback = old_callback
+
+        return "".join(text_parts), "".join(reasoning_parts)
+
+    def stop_session(self, session_id: str | None = None) -> None:
+        """Optionally close an ACP session. The ACP protocol may not support session/close,
+        so this method is best-effort — failures are silently ignored."""
+        sid = session_id or self._session_id
+        if not sid:
+            return
+        try:
+            with self._session_lock:
+                self._request("session/close", {"sessionId": sid}, timeout_seconds=5.0)
+        except Exception:
+            pass  # Protocol may not support session/close
+        with self._session_lock:
+            if self._session_id == sid:
+                self._session_id = None
+
+    def _start_process(self, cwd: str) -> None:
+        """Internal: start the ACP subprocess. Caller must hold _active_process_lock."""
+        # If restarting after a crash, reset the initialization flag so the new
+        # process goes through the initialize handshake.
+        if self._active_process is not None and self._active_process.poll() is not None:
+            self._initialized = False
+            self._session_id = None
+            self._request_id_counter = 0
+        try:
+            proc = subprocess.Popen(
+                [self._acp_command] + self._acp_args,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                bufsize=1,
+                cwd=cwd,
+            )
+        except FileNotFoundError as exc:
+            raise RuntimeError(
+                f"Could not start Copilot ACP command '{self._acp_command}'. "
+                "Install GitHub Copilot CLI or set HERMES_COPILOT_ACP_COMMAND/COPILOT_CLI_PATH."
+            ) from exc
+
+        if proc.stdin is None or proc.stdout is None:
+            proc.kill()
+            raise RuntimeError("Copilot ACP process did not expose stdin/stdout pipes.")
+
+        self.is_closed = False
+        self._active_process = proc
+        self._inbox: queue.Queue[dict[str, Any]] = queue.Queue()
+        self._stderr_tail: deque[str] = deque(maxlen=40)
+
+        def _stdout_reader() -> None:
+            for line in proc.stdout:
+                try:
+                    self._inbox.put(json.loads(line))
+                except Exception:
+                    self._inbox.put({"raw": line.rstrip("\n")})
+
+        def _stderr_reader() -> None:
+            if proc.stderr is None:
+                return
+            for line in proc.stderr:
+                self._stderr_tail.append(line.rstrip("\n"))
+
+        self._out_thread = threading.Thread(target=_stdout_reader, daemon=True)
+        self._err_thread = threading.Thread(target=_stderr_reader, daemon=True)
+        self._out_thread.start()
+        self._err_thread.start()
+
+    def _request(
+        self,
+        method: str,
+        params: dict[str, Any],
+        *,
+        text_parts: list[str] | None = None,
+        reasoning_parts: list[str] | None = None,
+        timeout_seconds: float = _DEFAULT_TIMEOUT_SECONDS,
+    ) -> Any:
+        """Internal: send a JSON-RPC request and wait for the matching response."""
+        proc = self._active_process
+        if proc is None:
+            raise RuntimeError("ACP process is not running. Call start_session() first.")
+        if proc.stdin is None:
+            raise RuntimeError("ACP process stdin is not available.")
+
+        next_id = getattr(self, "_request_id_counter", 0) + 1
+        self._request_id_counter = next_id  # type: ignore[attr-defined]
+        request_id = next_id
+
+        payload = {
+            "jsonrpc": "2.0",
+            "id": request_id,
+            "method": method,
+            "params": params,
+        }
+        proc.stdin.write(json.dumps(payload) + "\n")
+        proc.stdin.flush()
+
+        deadline = time.time() + timeout_seconds
+        while time.time() < deadline:
+            if proc.poll() is not None:
+                break
+            try:
+                msg = self._inbox.get(timeout=0.1)
+            except queue.Empty:
+                continue
+
+            if self._handle_server_message(
+                msg,
+                process=proc,
+                cwd=self._acp_cwd,
+                text_parts=text_parts,
+                reasoning_parts=reasoning_parts,
+            ):
+                continue
+
+            if msg.get("id") != request_id:
+                continue
+            if "error" in msg:
+                err = msg.get("error") or {}
+                raise RuntimeError(
+                    f"Copilot ACP {method} failed: {err.get('message') or err}"
+                )
+            return msg.get("result")
+
+        stderr_text = "\n".join(self._stderr_tail).strip()
+        if proc.poll() is not None and stderr_text:
+            raise RuntimeError(f"Copilot ACP process exited early: {stderr_text}")
+        raise TimeoutError(f"Timed out waiting for Copilot ACP response to {method}.")
+
+    # ── Legacy API (backward compatible) ────────────────────────────
 
     def close(self) -> None:
         proc: subprocess.Popen[str] | None
@@ -286,6 +514,10 @@ class CopilotACPClient:
             proc = self._active_process
             self._active_process = None
         self.is_closed = True
+        # Reset session state
+        self._initialized = False
+        self._session_id = None
+        self._update_buffer.clear()
         if proc is None:
             return
         try:
@@ -334,6 +566,9 @@ class CopilotACPClient:
             timeout_seconds=_effective_timeout,
         )
 
+        if self._persistent_mode:
+            self._acp_rounds_used = getattr(self, "_acp_rounds_used", 0) + 1
+
         tool_calls, cleaned_text = _extract_tool_calls_from_text(response_text)
 
         usage = SimpleNamespace(
@@ -358,146 +593,28 @@ class CopilotACPClient:
         )
 
     def _run_prompt(self, prompt_text: str, *, timeout_seconds: float) -> tuple[str, str]:
-        try:
-            proc = subprocess.Popen(
-                [self._acp_command] + self._acp_args,
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                bufsize=1,
-                cwd=self._acp_cwd,
-            )
-        except FileNotFoundError as exc:
-            raise RuntimeError(
-                f"Could not start Copilot ACP command '{self._acp_command}'. "
-                "Install GitHub Copilot CLI or set HERMES_COPILOT_ACP_COMMAND/COPILOT_CLI_PATH."
-            ) from exc
+        """Legacy one-shot prompt (with optional persistent mode).
 
-        if proc.stdin is None or proc.stdout is None:
-            proc.kill()
-            raise RuntimeError("Copilot ACP process did not expose stdin/stdout pipes.")
+        When _persistent_mode=False (default): behaves exactly like before
+        — starts session, sends prompt, kills process in finally.
 
-        self.is_closed = False
-        with self._active_process_lock:
-            self._active_process = proc
-
-        inbox: queue.Queue[dict[str, Any]] = queue.Queue()
-        stderr_tail: deque[str] = deque(maxlen=40)
-
-        def _stdout_reader() -> None:
-            for line in proc.stdout:
-                try:
-                    inbox.put(json.loads(line))
-                except Exception:
-                    inbox.put({"raw": line.rstrip("\n")})
-
-        def _stderr_reader() -> None:
-            if proc.stderr is None:
-                return
-            for line in proc.stderr:
-                stderr_tail.append(line.rstrip("\n"))
-
-        out_thread = threading.Thread(target=_stdout_reader, daemon=True)
-        err_thread = threading.Thread(target=_stderr_reader, daemon=True)
-        out_thread.start()
-        err_thread.start()
-
-        next_id = 0
-
-        def _request(method: str, params: dict[str, Any], *, text_parts: list[str] | None = None, reasoning_parts: list[str] | None = None) -> Any:
-            nonlocal next_id
-            next_id += 1
-            request_id = next_id
-            payload = {
-                "jsonrpc": "2.0",
-                "id": request_id,
-                "method": method,
-                "params": params,
-            }
-            proc.stdin.write(json.dumps(payload) + "\n")
-            proc.stdin.flush()
-
-            deadline = time.time() + timeout_seconds
-            while time.time() < deadline:
-                if proc.poll() is not None:
-                    break
-                try:
-                    msg = inbox.get(timeout=0.1)
-                except queue.Empty:
-                    continue
-
-                if self._handle_server_message(
-                    msg,
-                    process=proc,
-                    cwd=self._acp_cwd,
-                    text_parts=text_parts,
-                    reasoning_parts=reasoning_parts,
-                ):
-                    continue
-
-                if msg.get("id") != request_id:
-                    continue
-                if "error" in msg:
-                    err = msg.get("error") or {}
-                    raise RuntimeError(
-                        f"Copilot ACP {method} failed: {err.get('message') or err}"
-                    )
-                return msg.get("result")
-
-            stderr_text = "\n".join(stderr_tail).strip()
-            if proc.poll() is not None and stderr_text:
-                raise RuntimeError(f"Copilot ACP process exited early: {stderr_text}")
-            raise TimeoutError(f"Timed out waiting for Copilot ACP response to {method}.")
-
-        try:
-            _request(
-                "initialize",
-                {
-                    "protocolVersion": 1,
-                    "clientCapabilities": {
-                        "fs": {
-                            "readTextFile": True,
-                            "writeTextFile": True,
-                        }
-                    },
-                    "clientInfo": {
-                        "name": "hermes-agent",
-                        "title": "Hermes Agent",
-                        "version": "0.0.0",
-                    },
-                },
-            )
-            session = _request(
-                "session/new",
-                {
-                    "cwd": self._acp_cwd,
-                    "mcpServers": [],
-                },
-            ) or {}
-            session_id = str(session.get("sessionId") or "").strip()
-            if not session_id:
-                raise RuntimeError("Copilot ACP did not return a sessionId.")
-
-            text_parts: list[str] = []
-            reasoning_parts: list[str] = []
-            _request(
-                "session/prompt",
-                {
-                    "sessionId": session_id,
-                    "prompt": [
-                        {
-                            "type": "text",
-                            "text": prompt_text,
-                        }
-                    ],
-                },
-                text_parts=text_parts,
-                reasoning_parts=reasoning_parts,
-            )
-            return "".join(text_parts), "".join(reasoning_parts)
-        finally:
-            self.close()
+        When _persistent_mode=True: reuses existing session if available,
+        does NOT kill process after the prompt.
+        """
+        if self._persistent_mode:
+            # Reuse existing session or create a new one (but don't kill after)
+            if self._session_id and self._active_process and self._active_process.poll() is None:
+                session_id = self._session_id
+            else:
+                session_id = self.start_session()
+            return self.send_prompt(session_id, prompt_text, timeout=timeout_seconds)
+        else:
+            # One-shot legacy behavior
+            session_id = self.start_session()
+            try:
+                return self.send_prompt(session_id, prompt_text, timeout=timeout_seconds)
+            finally:
+                self.close()
 
     def _handle_server_message(
         self,
@@ -524,6 +641,12 @@ class CopilotACPClient:
                 text_parts.append(chunk_text)
             elif kind == "agent_thought_chunk" and chunk_text and reasoning_parts is not None:
                 reasoning_parts.append(chunk_text)
+            # Notify external callback if set
+            if kind and self._update_callback is not None:
+                try:
+                    self._update_callback(kind, chunk_text)
+                except Exception:
+                    pass  # Don't let callback errors break the session
             return True
 
         if process.stdin is None:
