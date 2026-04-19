@@ -148,7 +148,7 @@ def make_step_cb(
 
                 if isinstance(tool_info, dict):
                     tool_name = tool_info.get("name") or tool_info.get("function_name")
-                    result = tool_info.get("result") or tool_info.get("output")
+                    result = tool_info.get("result") if "result" in tool_info else tool_info.get("output")
                     function_args = tool_info.get("arguments") or tool_info.get("args")
                 elif isinstance(tool_info, str):
                     tool_name = tool_info
