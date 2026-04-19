@@ -279,6 +279,37 @@ def _is_destructive_command(cmd: str) -> bool:
     return False
 
 
+def _unwrap_parameters(args: dict) -> dict:
+    """Unwrap the {'parameters': '<json string>'} envelope that some models emit.
+
+    Qwen3-family models (and occasionally others) sometimes encode all tool
+    arguments as a single ``parameters`` key whose value is a JSON-encoded
+    string of the real argument dict, e.g.:
+
+        {"parameters": "{\"action\": \"add\", \"target\": \"memory\", ...}"}
+
+    instead of the expected flat dict:
+
+        {"action": "add", "target": "memory", ...}
+
+    When this pattern is detected the inner JSON string is parsed and returned.
+    Any other shape is returned unchanged.
+    """
+    if (
+        args
+        and len(args) == 1
+        and "parameters" in args
+        and isinstance(args["parameters"], str)
+    ):
+        try:
+            inner = json.loads(args["parameters"])
+            if isinstance(inner, dict):
+                return inner
+        except json.JSONDecodeError:
+            pass
+    return args
+
+
 def _should_parallelize_tool_batch(tool_calls) -> bool:
     """Return True when a tool-call batch is safe to run concurrently."""
     if len(tool_calls) <= 1:
@@ -292,7 +323,7 @@ def _should_parallelize_tool_batch(tool_calls) -> bool:
     for tool_call in tool_calls:
         tool_name = tool_call.function.name
         try:
-            function_args = json.loads(tool_call.function.arguments)
+            function_args = _unwrap_parameters(json.loads(tool_call.function.arguments))
         except Exception:
             logging.debug(
                 "Could not parse args for %s — defaulting to sequential; raw=%s",
@@ -7954,7 +7985,7 @@ class AIAgent:
                 self._iters_since_skill = 0
 
             try:
-                function_args = json.loads(tool_call.function.arguments)
+                function_args = _unwrap_parameters(json.loads(tool_call.function.arguments))
             except json.JSONDecodeError:
                 function_args = {}
             if not isinstance(function_args, dict):
@@ -8245,7 +8276,7 @@ class AIAgent:
             function_name = tool_call.function.name
 
             try:
-                function_args = json.loads(tool_call.function.arguments)
+                function_args = _unwrap_parameters(json.loads(tool_call.function.arguments))
             except json.JSONDecodeError as e:
                 logging.warning(f"Unexpected JSON error after validation: {e}")
                 function_args = {}

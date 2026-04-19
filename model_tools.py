@@ -371,6 +371,21 @@ def coerce_tool_args(tool_name: str, args: Dict[str, Any]) -> Dict[str, Any]:
     if not args or not isinstance(args, dict):
         return args
 
+    # Unwrap {"parameters": "<json string>"} envelope emitted by some models
+    # (e.g. Qwen3-family via qwen3_coder vLLM parser) that confuse the tool
+    # schema's "parameters" field name with a literal argument key.
+    if (
+        len(args) == 1
+        and "parameters" in args
+        and isinstance(args["parameters"], str)
+    ):
+        try:
+            inner = json.loads(args["parameters"])
+            if isinstance(inner, dict):
+                args = inner
+        except (json.JSONDecodeError, ValueError):
+            pass
+
     schema = registry.get_schema(tool_name)
     if not schema:
         return args
