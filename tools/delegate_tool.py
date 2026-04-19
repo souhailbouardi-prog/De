@@ -982,6 +982,9 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
         elif "api.anthropic.com" in base_lower:
             provider = "anthropic"
             api_mode = "anthropic_messages"
+        elif "api.kimi.com/coding" in base_lower:
+            provider = "custom"
+            api_mode = "anthropic_messages"
 
         return {
             "model": configured_model,

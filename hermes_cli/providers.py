@@ -421,6 +421,16 @@ def determine_api_mode(provider: str, base_url: str = "") -> str:
     """
     pdef = get_provider(provider)
     if pdef is not None:
+        # Even for known providers, check URL heuristics for special endpoints
+        # (e.g. kimi /coding endpoint needs anthropic_messages even on 'custom')
+        if base_url:
+            url_lower = base_url.rstrip("/").lower()
+            if "api.kimi.com/coding" in url_lower:
+                return "anthropic_messages"
+            if url_lower.endswith("/anthropic") or "api.anthropic.com" in url_lower:
+                return "anthropic_messages"
+            if "api.openai.com" in url_lower:
+                return "codex_responses"
         return TRANSPORT_TO_API_MODE.get(pdef.transport, "chat_completions")
 
     # Direct provider checks for providers not in HERMES_OVERLAYS
@@ -431,6 +441,8 @@ def determine_api_mode(provider: str, base_url: str = "") -> str:
     if base_url:
         url_lower = base_url.rstrip("/").lower()
         if url_lower.endswith("/anthropic") or "api.anthropic.com" in url_lower:
+            return "anthropic_messages"
+        if "api.kimi.com/coding" in url_lower:
             return "anthropic_messages"
         if "api.openai.com" in url_lower:
             return "codex_responses"
