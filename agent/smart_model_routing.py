@@ -95,6 +95,14 @@ def choose_cheap_model_route(user_message: str, routing_config: Optional[Dict[st
     if _URL_RE.search(text):
         return None
 
+    # CJK text has no whitespace-separated "words", so word-count based
+    # heuristics fail badly.  A 160-char Chinese sentence looks like a
+    # single "word" and slips through as 'simple'.  Detect CJK density
+    # and treat CJK-heavy messages as complex (#8516).
+    cjk_chars = len(_CJK_RE.findall(text))
+    if cjk_chars > 0 and cjk_chars / max(len(text), 1) > 0.2:
+        return None
+
     lowered = text.lower()
     words = {token.strip(".,:;!?()[]{}\"'`") for token in lowered.split()}
     if words & _COMPLEX_KEYWORDS:
