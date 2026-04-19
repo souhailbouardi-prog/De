@@ -494,6 +494,7 @@ DEFAULT_CONFIG = {
             "base_url": "",        # direct OpenAI-compatible endpoint (takes precedence over provider)
             "api_key": "",         # API key for base_url (falls back to OPENAI_API_KEY)
             "timeout": 120,        # seconds — LLM API call timeout; vision payloads need generous timeout
+            "extra_body": {},      # OpenAI-compatible provider-specific request fields
             "download_timeout": 30,  # seconds — image HTTP download timeout; increase for slow connections
         },
         "web_extract": {
@@ -502,6 +503,7 @@ DEFAULT_CONFIG = {
             "base_url": "",
             "api_key": "",
             "timeout": 360,        # seconds (6min) — per-attempt LLM summarization timeout; increase for slow local models
+            "extra_body": {},
         },
         "compression": {
             "provider": "auto",
@@ -509,6 +511,7 @@ DEFAULT_CONFIG = {
             "base_url": "",
             "api_key": "",
             "timeout": 120,        # seconds — compression summarises large contexts; increase for local models
+            "extra_body": {},
         },
         "session_search": {
             "provider": "auto",
@@ -516,6 +519,8 @@ DEFAULT_CONFIG = {
             "base_url": "",
             "api_key": "",
             "timeout": 30,
+            "extra_body": {},
+            "max_concurrency": 3,  # Clamp parallel summaries to avoid request-burst 429s on small providers
         },
         "skills_hub": {
             "provider": "auto",
@@ -523,6 +528,7 @@ DEFAULT_CONFIG = {
             "base_url": "",
             "api_key": "",
             "timeout": 30,
+            "extra_body": {},
         },
         "approval": {
             "provider": "auto",
@@ -530,6 +536,7 @@ DEFAULT_CONFIG = {
             "base_url": "",
             "api_key": "",
             "timeout": 30,
+            "extra_body": {},
         },
         "mcp": {
             "provider": "auto",
@@ -537,6 +544,7 @@ DEFAULT_CONFIG = {
             "base_url": "",
             "api_key": "",
             "timeout": 30,
+            "extra_body": {},
         },
         "flush_memories": {
             "provider": "auto",
@@ -544,6 +552,7 @@ DEFAULT_CONFIG = {
             "base_url": "",
             "api_key": "",
             "timeout": 30,
+            "extra_body": {},
         },
         "title_generation": {
             "provider": "auto",
@@ -551,6 +560,7 @@ DEFAULT_CONFIG = {
             "base_url": "",
             "api_key": "",
             "timeout": 30,
+            "extra_body": {},
         },
     },
     
@@ -819,7 +829,7 @@ DEFAULT_CONFIG = {
     },
 
     # Config schema version - bump this when adding new required fields
-    "_config_version": 19,
+    "_config_version": 20,
 }
 
 # =============================================================================
