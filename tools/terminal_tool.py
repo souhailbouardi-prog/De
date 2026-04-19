@@ -871,7 +871,7 @@ def _cleanup_inactive_envs(lifetime_seconds: int = 300):
             if "404" in error_str or "not found" in error_str.lower():
                 logger.info("Environment for task %s already cleaned up", task_id)
             else:
-                logger.warning("Error cleaning up environment for task %s: %s", task_id, e)
+                logger.warning("Error cleaning up environment for task %s: %s", task_id, e, exc_info=True)
 
 
 def _cleanup_thread_worker():
@@ -1002,7 +1002,7 @@ def cleanup_vm(task_id: str):
         if "404" in error_str or "not found" in error_str.lower():
             logger.info("Environment for task %s already cleaned up", task_id)
         else:
-            logger.warning("Error cleaning up environment for task %s: %s", task_id, e)
+            logger.warning("Error cleaning up environment for task %s: %s", task_id, e, exc_info=True)
 
 
 def _atexit_cleanup():

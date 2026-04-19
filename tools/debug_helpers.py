@@ -86,7 +86,7 @@ class DebugSession:
                 json.dump(payload, f, indent=2, ensure_ascii=False)
             logger.debug("%s debug log saved: %s", self.tool_name, filepath)
         except Exception as e:
-            logger.error("Error saving %s debug log: %s", self.tool_name, e)
+            logger.error("Error saving %s debug log: %s", self.tool_name, e, exc_info=True)
 
     def get_session_info(self) -> Dict[str, Any]:
         """Return a summary dict suitable for returning from get_debug_session_info()."""
