@@ -1468,8 +1468,15 @@ class FeishuAdapter(BasePlatformAdapter):
         chat_id: str,
         message_id: str,
         content: str,
+        *,
+        finalize: bool = False,
     ) -> SendResult:
-        """Edit a previously sent Feishu text/post message."""
+        """Edit a previously sent Feishu text/post message.
+
+        ``finalize`` is accepted for compatibility with the shared gateway
+        streaming interface but intentionally ignored because Feishu's normal
+        message-edit API does not need an explicit end-of-stream signal.
+        """
         if not self._client:
             return SendResult(success=False, error="Not connected")
 
