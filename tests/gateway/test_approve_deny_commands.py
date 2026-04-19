@@ -334,6 +334,25 @@ class TestBareTextNoLongerApproves:
         # "yes" is not /approve — entry should still be pending
         assert not entry.event.is_set()
 
+    @pytest.mark.asyncio
+    async def test_tongyi_approves_pending_command_once(self):
+        """Plain-text '同意' should approve once when an approval is pending."""
+        from tools.approval import _ApprovalEntry, _gateway_queues
+
+        runner = _make_runner()
+        source = _make_source()
+        session_key = runner._session_key_for_source(source)
+
+        entry = _ApprovalEntry({"command": "test"})
+        _gateway_queues[session_key] = [entry]
+
+        event = MessageEvent(text="同意", source=source, message_id="m2")
+        result = await runner._message_handler(event)
+
+        assert "approved" in result.lower()
+        assert entry.event.is_set()
+        assert entry.result == "once"
+
 
 # ------------------------------------------------------------------
 # End-to-end blocking flow

@@ -3038,6 +3038,26 @@ class GatewayRunner:
                 label = response_text if len(response_text) <= 20 else response_text[:20] + "…"
                 return f"✓ Sent `{label}` to the update process."
 
+        # Friendly natural-language alias: when a dangerous command approval is
+        # pending, plain-text “同意” means approve once.
+        if (event.text or "").strip() == "同意":
+            from tools.approval import has_blocking_approval
+            if has_blocking_approval(_quick_key):
+                synthetic = MessageEvent(
+                    text="/approve",
+                    source=event.source,
+                    raw_message=event.raw_message,
+                    message_id=event.message_id,
+                    media_urls=event.media_urls,
+                    media_types=event.media_types,
+                    reply_to_message_id=event.reply_to_message_id,
+                    reply_to_text=event.reply_to_text,
+                    auto_skill=event.auto_skill,
+                    internal=event.internal,
+                    timestamp=event.timestamp,
+                )
+                return await self._handle_approve_command(synthetic)
+
         # PRIORITY handling when an agent is already running for this session.
         # Default behavior is to interrupt immediately so user text/stop messages
         # are handled with minimal latency.
@@ -5512,11 +5532,27 @@ class GatewayRunner:
         else:
             try:
                 from agent.model_metadata import get_model_context_length
+                # Resolve context_length from custom_providers models dict
+                _fb_ctx = None
+                if custom_provs and isinstance(custom_provs, list):
+                    for _cp_e in custom_provs:
+                        if not isinstance(_cp_e, dict):
+                            continue
+                        _cp_u = (_cp_e.get("base_url") or "").rstrip("/")
+                        _fb_base = (result.base_url or current_base_url or "").rstrip("/")
+                        if _cp_u and _cp_u == _fb_base:
+                            _cp_m = _cp_e.get("models", {})
+                            if isinstance(_cp_m, dict):
+                                _fb_mc = _cp_m.get(result.new_model, {})
+                                if isinstance(_fb_mc, dict):
+                                    _fb_ctx = _fb_mc.get("context_length")
+                            break
                 ctx = get_model_context_length(
                     result.new_model,
                     base_url=result.base_url or current_base_url,
                     api_key=result.api_key or current_api_key,
                     provider=result.target_provider,
+                    config_context_length=_fb_ctx,
                 )
                 lines.append(f"Context: {ctx:,} tokens")
             except Exception:
@@ -9236,15 +9272,15 @@ class GatewayRunner:
                                     adapter.name,
                                 )
                             can_edit = False
-                            await adapter.send(chat_id=source.chat_id, content=msg, metadata=_progress_metadata)
+                            await adapter.send(chat_id=source.chat_id, content=msg, metadata={**(_progress_metadata or {}), "silent": True})
                     else:
                         if can_edit:
                             # First tool: send all accumulated text as new message
                             full_text = "\n".join(progress_lines)
-                            result = await adapter.send(chat_id=source.chat_id, content=full_text, metadata=_progress_metadata)
+                            result = await adapter.send(chat_id=source.chat_id, content=full_text, metadata={**(_progress_metadata or {}), "silent": True})
                         else:
                             # Editing unsupported: send just this line
-                            result = await adapter.send(chat_id=source.chat_id, content=msg, metadata=_progress_metadata)
+                            result = await adapter.send(chat_id=source.chat_id, content=msg, metadata={**(_progress_metadata or {}), "silent": True})
                         if result.success and result.message_id:
                             progress_msg_id = result.message_id
 

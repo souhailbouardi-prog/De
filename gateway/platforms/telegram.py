@@ -978,6 +978,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 for _send_attempt in range(3):
                     try:
                         # Try Markdown first, fall back to plain text if it fails
+                        _silent = (metadata or {}).get("silent", False)
                         try:
                             msg = await self._bot.send_message(
                                 chat_id=int(chat_id),
@@ -986,6 +987,7 @@ class TelegramAdapter(BasePlatformAdapter):
                                 reply_to_message_id=reply_to_id,
                                 message_thread_id=effective_thread_id,
                                 **self._link_preview_kwargs(),
+                                disable_notification=_silent,
                             )
                         except Exception as md_error:
                             # Markdown parsing failed, try plain text
@@ -999,6 +1001,7 @@ class TelegramAdapter(BasePlatformAdapter):
                                     reply_to_message_id=reply_to_id,
                                     message_thread_id=effective_thread_id,
                                     **self._link_preview_kwargs(),
+                                    disable_notification=_silent,
                                 )
                             else:
                                 raise
