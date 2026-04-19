@@ -600,6 +600,27 @@ def _qwen_portal_headers() -> dict:
     }
 
 
+def validate_minimum_context(
+    model_name: str, context_length: int, config_context_length: int | None
+) -> None:
+    """Raise ValueError if the model context is below 64K and no config override is set.
+
+    Skip the check when the user explicitly set model.context_length in
+    config.yaml — they accept the reduced window and the error message
+    itself tells them to do this.
+    """
+    from agent.model_metadata import MINIMUM_CONTEXT_LENGTH
+
+    if context_length and context_length < MINIMUM_CONTEXT_LENGTH and config_context_length is None:
+        raise ValueError(
+            f"Model {model_name} has a context window of {context_length:,} tokens, "
+            f"which is below the minimum {MINIMUM_CONTEXT_LENGTH:,} required "
+            f"by Hermes Agent.  Choose a model with at least "
+            f"{MINIMUM_CONTEXT_LENGTH // 1000}K context, or set "
+            f"model.context_length in config.yaml to override."
+        )
+
+
 class AIAgent:
     """
     AI Agent with tool calling capabilities.
@@ -1597,14 +1618,7 @@ class AIAgent:
         # for reliable tool-calling workflows (64K tokens).
         from agent.model_metadata import MINIMUM_CONTEXT_LENGTH
         _ctx = getattr(self.context_compressor, "context_length", 0)
-        if _ctx and _ctx < MINIMUM_CONTEXT_LENGTH:
-            raise ValueError(
-                f"Model {self.model} has a context window of {_ctx:,} tokens, "
-                f"which is below the minimum {MINIMUM_CONTEXT_LENGTH:,} required "
-                f"by Hermes Agent.  Choose a model with at least "
-                f"{MINIMUM_CONTEXT_LENGTH // 1000}K context, or set "
-                f"model.context_length in config.yaml to override."
-            )
+        validate_minimum_context(self.model, _ctx, self._config_context_length)
 
         # Inject context engine tool schemas (e.g. lcm_grep, lcm_describe, lcm_expand)
         self._context_engine_tool_names: set = set()
