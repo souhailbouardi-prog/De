@@ -233,6 +233,29 @@ class TestBackup:
         zips = list(tmp_path.glob("hermes-backup-*.zip"))
         assert len(zips) == 1
 
+    def test_clamps_pre_1980_timestamps_in_backup(self, tmp_path, monkeypatch):
+        """Files older than 1980 should not abort the backup archive."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        _make_hermes_tree(hermes_home)
+
+        legacy_file = hermes_home / "sessions" / "legacy.txt"
+        legacy_file.write_text("legacy\n")
+        os.utime(legacy_file, (1, 1))
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+        out_zip = tmp_path / "backup.zip"
+        args = Namespace(output=str(out_zip))
+
+        from hermes_cli.backup import run_backup
+        run_backup(args)
+
+        with zipfile.ZipFile(out_zip, "r") as zf:
+            assert "sessions/legacy.txt" in zf.namelist()
+            assert zf.getinfo("sessions/legacy.txt").date_time[0] == 1980
+
 
 # ---------------------------------------------------------------------------
 # _validate_backup_zip tests

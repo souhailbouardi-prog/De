@@ -183,7 +183,15 @@ def run_backup(args) -> None:
     errors = []
     t0 = time.monotonic()
 
-    with zipfile.ZipFile(out_path, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as zf:
+    # Clamp pre-1980 mtimes to the earliest ZIP-compatible timestamp instead
+    # of aborting the entire backup on older files.
+    with zipfile.ZipFile(
+        out_path,
+        "w",
+        zipfile.ZIP_DEFLATED,
+        compresslevel=6,
+        strict_timestamps=False,
+    ) as zf:
         for i, (abs_path, rel_path) in enumerate(files_to_add, 1):
             try:
                 # Safe copy for SQLite databases (handles WAL mode)
