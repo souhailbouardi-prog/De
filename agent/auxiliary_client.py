@@ -1583,7 +1583,14 @@ def resolve_provider_client(
                     model or custom_entry.get("model") or _read_main_model() or "gpt-4o-mini",
                     provider,
                 )
-                client = OpenAI(api_key=custom_key, base_url=custom_base)
+                extra = {}
+                if "api.kimi.com" in custom_base.lower():
+                    extra["default_headers"] = {"User-Agent": "KimiCLI/1.30.0"}
+                elif "api.githubcopilot.com" in custom_base.lower():
+                    from hermes_cli.models import copilot_default_headers
+
+                    extra["default_headers"] = copilot_default_headers()
+                client = OpenAI(api_key=custom_key, base_url=custom_base, **extra)
                 client = _wrap_if_needed(client, final_model, custom_base)
                 logger.debug(
                     "resolve_provider_client: named custom provider %r (%s)",

@@ -1781,6 +1781,7 @@ class AIAgent:
                 "api_key": effective_key,
                 "base_url": effective_base,
             }
+            self._apply_client_headers_for_base_url(effective_base)
             self.client = self._create_openai_client(
                 dict(self._client_kwargs),
                 reason="switch_model",
