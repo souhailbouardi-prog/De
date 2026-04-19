@@ -17,23 +17,27 @@ def test_version_string_no_v_prefix():
 
 
 def test_check_for_updates_uses_cache(tmp_path, monkeypatch):
-    """When cache is fresh, check_for_updates should return cached value without calling git."""
+    """When cache is fresh and HEAD hasn't moved, check_for_updates should return cached value."""
     from hermes_cli.banner import check_for_updates
 
-    # Create a fake git repo and fresh cache
+    # Create a fake git repo and fresh cache with matching HEAD
     repo_dir = tmp_path / "hermes-agent"
     repo_dir.mkdir()
     (repo_dir / ".git").mkdir()
 
+    fake_head = "abc123def456"
     cache_file = tmp_path / ".update_check"
-    cache_file.write_text(json.dumps({"ts": time.time(), "behind": 3}))
+    cache_file.write_text(json.dumps({"ts": time.time(), "behind": 3, "head": fake_head}))
+
+    head_result = MagicMock(returncode=0, stdout=fake_head + "\n")
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    with patch("hermes_cli.banner.subprocess.run") as mock_run:
+    with patch("hermes_cli.banner.subprocess.run", return_value=head_result) as mock_run:
         result = check_for_updates()
 
     assert result == 3
-    mock_run.assert_not_called()
+    # Only git rev-parse HEAD should be called (to check if HEAD moved), no fetch/rev-list
+    assert mock_run.call_count == 1
 
 
 def test_check_for_updates_expired_cache(tmp_path, monkeypatch):
@@ -55,7 +59,41 @@ def test_check_for_updates_expired_cache(tmp_path, monkeypatch):
         result = check_for_updates()
 
     assert result == 5
-    assert mock_run.call_count == 2  # git fetch + git rev-list
+    assert mock_run.call_count == 3  # git rev-parse HEAD + git fetch + git rev-list
+
+
+def test_check_for_updates_head_changed_invalidates_cache(tmp_path, monkeypatch):
+    """When HEAD changes (e.g. manual git pull), fresh cache should be invalidated."""
+    from hermes_cli.banner import check_for_updates
+
+    repo_dir = tmp_path / "hermes-agent"
+    repo_dir.mkdir()
+    (repo_dir / ".git").mkdir()
+
+    # Fresh cache says 5 behind, recorded at old HEAD
+    cache_file = tmp_path / ".update_check"
+    cache_file.write_text(json.dumps({
+        "ts": time.time(), "behind": 5, "head": "old_head_abc123"
+    }))
+
+    def mock_subprocess_run(cmd, **kwargs):
+        if "rev-parse" in cmd:
+            return MagicMock(returncode=0, stdout="new_head_def456\n")
+        # git fetch + git rev-list both succeed, now 0 behind
+        return MagicMock(returncode=0, stdout="0\n")
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    with patch("hermes_cli.banner.subprocess.run", side_effect=mock_subprocess_run) as mock_run:
+        result = check_for_updates()
+
+    # Should have re-fetched and recounted because HEAD moved
+    assert result == 0
+    assert mock_run.call_count == 3  # rev-parse + fetch + rev-list
+
+    # Cache should now contain the new HEAD
+    cached = json.loads(cache_file.read_text())
+    assert cached["head"] == "new_head_def456"
+    assert cached["behind"] == 0
 
 
 def test_check_for_updates_no_git_dir(tmp_path, monkeypatch):

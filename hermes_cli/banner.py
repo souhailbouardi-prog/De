@@ -140,12 +140,25 @@ def check_for_updates() -> Optional[int]:
     if not (repo_dir / ".git").exists():
         return None
 
-    # Read cache
+    # Read cache — invalidate if HEAD has moved (e.g. manual git pull)
     now = time.time()
+    current_head = None
+    try:
+        head_result = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            capture_output=True, text=True, timeout=5,
+            cwd=str(repo_dir),
+        )
+        if head_result.returncode == 0:
+            current_head = head_result.stdout.strip()
+    except Exception:
+        pass
     try:
         if cache_file.exists():
             cached = json.loads(cache_file.read_text())
-            if now - cached.get("ts", 0) < _UPDATE_CHECK_CACHE_SECONDS:
+            cache_fresh = now - cached.get("ts", 0) < _UPDATE_CHECK_CACHE_SECONDS
+            head_unchanged = current_head is None or cached.get("head") == current_head
+            if cache_fresh and head_unchanged:
                 return cached.get("behind")
     except Exception:
         pass
@@ -174,9 +187,12 @@ def check_for_updates() -> Optional[int]:
     except Exception:
         behind = None
 
-    # Write cache
+    # Write cache (include HEAD hash so manual git pull invalidates it)
     try:
-        cache_file.write_text(json.dumps({"ts": now, "behind": behind}))
+        cache_data = {"ts": now, "behind": behind}
+        if current_head:
+            cache_data["head"] = current_head
+        cache_file.write_text(json.dumps(cache_data))
     except Exception:
         pass
 
