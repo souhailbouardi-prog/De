@@ -66,6 +66,7 @@ CONFIGURABLE_TOOLSETS = [
     ("messaging",       "📨 Cross-Platform Messaging",  "send_message"),
     ("rl",              "🧪 RL Training",               "Tinker-Atropos training tools"),
     ("homeassistant",    "🏠 Home Assistant",           "smart home device control"),
+    ("messaging",        "💬 Messaging",                "send_message"),
 ]
 
 # Toolsets that are OFF by default for new installs.
