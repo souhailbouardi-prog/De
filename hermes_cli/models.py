@@ -1054,7 +1054,17 @@ def detect_provider_for_model(
     if not name:
         return None
 
+    current_provider = normalize_provider(current_provider)
     name_lower = name.lower()
+    prefix_provider = ""
+    stripped_name = name
+    stripped_lower = name_lower
+    if "/" in name:
+        raw_prefix, remainder = name.split("/", 1)
+        prefix_provider = normalize_provider(raw_prefix.strip())
+        if remainder.strip():
+            stripped_name = remainder.strip()
+            stripped_lower = stripped_name.lower()
 
     # --- Step 0: bare provider name typed as model ---
     # If someone types `/model nous` or `/model anthropic`, treat it as a
@@ -1074,58 +1084,136 @@ def detect_provider_for_model(
     # Aggregators list other providers' models — never auto-switch TO them
     _AGGREGATORS = {"nous", "openrouter", "ai-gateway", "copilot", "kilocode"}
 
+    try:
+        from hermes_cli.auth import PROVIDER_REGISTRY, has_usable_secret, _load_auth_store
+    except Exception:
+        PROVIDER_REGISTRY = {}
+        _load_auth_store = None
+
+        def has_usable_secret(value: object, *, min_length: int = 4) -> bool:
+            return isinstance(value, str) and len(value.strip()) >= min_length
+
+    try:
+        from hermes_cli.config import get_compatible_custom_providers, load_config
+    except Exception:
+        get_compatible_custom_providers = None
+        load_config = None
+
+    try:
+        from agent.credential_pool import load_pool
+    except Exception:
+        load_pool = None
+
+    matching_prefix_strip_providers = {
+        "zai", "kimi-coding", "minimax", "minimax-cn",
+        "alibaba", "qwen-oauth", "xiaomi", "custom",
+    }
+    custom_provider_keys: Optional[set[str]] = None
+
+    def _model_matches_catalog(models: list[str], provider_id: str) -> Optional[str]:
+        if any(name_lower == model.lower() for model in models):
+            return name
+        if (
+            prefix_provider
+            and provider_id in matching_prefix_strip_providers
+            and any(stripped_lower == model.lower() for model in models)
+        ):
+            return stripped_name
+        return None
+
+    def _provider_has_routable_credentials(provider_id: str) -> bool:
+        pconfig = PROVIDER_REGISTRY.get(provider_id)
+        if pconfig:
+            for env_var in pconfig.api_key_env_vars:
+                if has_usable_secret(os.getenv(env_var, "").strip()):
+                    return True
+
+        if load_pool is not None:
+            try:
+                pool = load_pool(provider_id)
+                if pool.has_credentials():
+                    return True
+            except Exception:
+                pass
+
+        if _load_auth_store is not None:
+            try:
+                store = _load_auth_store()
+                if (
+                    provider_id in store.get("providers", {})
+                    or provider_id in store.get("credential_pool", {})
+                ):
+                    return True
+            except Exception:
+                pass
+
+        nonlocal custom_provider_keys
+        if custom_provider_keys is None:
+            custom_provider_keys = set()
+            if get_compatible_custom_providers and load_config:
+                try:
+                    for entry in get_compatible_custom_providers(load_config()):
+                        if not isinstance(entry, dict):
+                            continue
+                        key_candidates = [
+                            normalize_provider(str(entry.get("provider_key", "") or "").strip()),
+                            normalize_provider(str(entry.get("name", "") or "").strip()),
+                        ]
+                        api_key = str(entry.get("api_key", "") or "").strip()
+                        key_env = str(entry.get("key_env", "") or "").strip()
+                        has_secret = has_usable_secret(api_key)
+                        if not has_secret and key_env:
+                            has_secret = has_usable_secret(os.getenv(key_env, "").strip())
+                        if has_secret:
+                            custom_provider_keys.update(
+                                candidate
+                                for candidate in key_candidates
+                                if candidate and candidate != "custom"
+                            )
+                except Exception:
+                    custom_provider_keys = set()
+        return provider_id in custom_provider_keys
+
     # If the model belongs to the current provider's catalog, don't suggest switching
     current_models = _PROVIDER_MODELS.get(current_provider, [])
-    if any(name_lower == m.lower() for m in current_models):
+    if _model_matches_catalog(current_models, current_provider):
         return None
 
     # --- Step 1: check static provider catalogs for a direct match ---
-    direct_match: Optional[str] = None
+    direct_matches: list[tuple[str, str]] = []
+    seen_providers: set[str] = set()
     for pid, models in _PROVIDER_MODELS.items():
-        if pid == current_provider or pid in _AGGREGATORS:
+        canonical_provider = normalize_provider(pid)
+        if canonical_provider == current_provider or canonical_provider in seen_providers:
             continue
-        if any(name_lower == m.lower() for m in models):
-            direct_match = pid
-            break
+        if canonical_provider in _AGGREGATORS:
+            continue
+        matched_name = _model_matches_catalog(models, canonical_provider)
+        if matched_name:
+            direct_matches.append((canonical_provider, matched_name))
+            seen_providers.add(canonical_provider)
 
-    if direct_match:
-        # Check if we have credentials for this provider — env vars,
-        # credential pool, or auth store entries.
-        has_creds = False
-        try:
-            from hermes_cli.auth import PROVIDER_REGISTRY
-            pconfig = PROVIDER_REGISTRY.get(direct_match)
-            if pconfig:
-                import os
-                for env_var in pconfig.api_key_env_vars:
-                    if os.getenv(env_var, "").strip():
-                        has_creds = True
-                        break
-        except Exception:
-            pass
-        # Also check credential pool and auth store — covers OAuth,
-        # Claude Code tokens, and other non-env-var credentials (#10300).
-        if not has_creds:
-            try:
-                from agent.credential_pool import load_pool
-                pool = load_pool(direct_match)
-                if pool.has_credentials():
-                    has_creds = True
-            except Exception:
-                pass
-        if not has_creds:
-            try:
-                from hermes_cli.auth import _load_auth_store
-                store = _load_auth_store()
-                if direct_match in store.get("providers", {}) or direct_match in store.get("credential_pool", {}):
-                    has_creds = True
-            except Exception:
-                pass
+    if direct_matches:
+        credentialed_matches = [
+            (provider_id, matched_name)
+            for provider_id, matched_name in direct_matches
+            if _provider_has_routable_credentials(provider_id)
+        ]
 
-        # Always return the direct provider match.  If credentials are
-        # missing, the client init will give a clear error rather than
-        # silently routing through the wrong provider (#10300).
-        return (direct_match, name)
+        if credentialed_matches:
+            if prefix_provider:
+                for provider_id, matched_name in credentialed_matches:
+                    if provider_id == prefix_provider:
+                        return (provider_id, matched_name)
+            return credentialed_matches[0]
+
+        # No direct creds — try to find this model on OpenRouter instead
+        or_slug = _find_openrouter_slug(name)
+        if or_slug:
+            return ("openrouter", or_slug)
+        # Still return the direct provider — credential resolution will
+        # give a clear error rather than silently using the wrong provider
+        return direct_matches[0]
 
     # --- Step 2: check OpenRouter catalog ---
     # First try exact match (handles provider/model format)
