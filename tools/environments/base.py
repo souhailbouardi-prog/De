@@ -610,6 +610,16 @@ class BaseEnvironment(ABC):
         # it means the non-blocking loop itself stopped cooperating.
         drain_thread.join(timeout=2)
 
+        # If the drain thread is still running after the shell exited, a
+        # backgrounded child (e.g. `python3 -m http.server 8080 &`) inherited
+        # the stdout pipe and is keeping it open. Without cleanup the child
+        # stays alive holding ports/fds, and the next terminal call's drain
+        # can block on the same pipe. Reap the whole process group so the
+        # command returns cleanly and leaves no orphans.
+        if drain_thread.is_alive():
+            self._kill_process(proc)
+            drain_thread.join(timeout=2)
+
         try:
             proc.stdout.close()
         except Exception:

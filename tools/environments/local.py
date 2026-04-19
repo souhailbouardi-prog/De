@@ -276,22 +276,38 @@ class LocalEnvironment(BaseEnvironment):
         return proc
 
     def _kill_process(self, proc):
-        """Kill the entire process group (all children)."""
-        try:
-            if _IS_WINDOWS:
-                proc.terminate()
-            else:
-                pgid = os.getpgid(proc.pid)
-                os.killpg(pgid, signal.SIGTERM)
-                try:
-                    proc.wait(timeout=1.0)
-                except subprocess.TimeoutExpired:
-                    os.killpg(pgid, signal.SIGKILL)
-        except (ProcessLookupError, PermissionError):
+        """Kill the entire process group (all children).
+
+        ``_run_bash`` spawns the shell with ``preexec_fn=os.setsid``, making
+        it the leader of a new session/process group with ``pgid == pid``.
+        Signal the group via ``proc.pid`` directly rather than calling
+        ``os.getpgid(proc.pid)``: when this runs in the post-poll cleanup
+        path the leader is already reaped, and ``getpgid`` then raises
+        ``ProcessLookupError`` — the previous code fell back to
+        ``proc.kill()``, which is a no-op on a dead leader and leaves the
+        group's other members (e.g. a backgrounded ``http.server``) alive.
+        """
+        if _IS_WINDOWS:
             try:
-                proc.kill()
+                proc.terminate()
             except Exception:
                 pass
+            return
+
+        pgid = proc.pid
+        try:
+            os.killpg(pgid, signal.SIGTERM)
+        except (ProcessLookupError, PermissionError):
+            pass
+        try:
+            proc.wait(timeout=1.0)
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(pgid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                pass
+        except Exception:
+            pass
 
     def _update_cwd(self, result: dict):
         """Read CWD from temp file (local-only, no round-trip needed)."""
