@@ -190,7 +190,7 @@ _APPROVAL_LABEL_MAP: Dict[str, str] = {
 }
 _FEISHU_BOT_MSG_TRACK_SIZE = 512                   # LRU size for tracking sent message IDs
 _FEISHU_REPLY_FALLBACK_CODES = frozenset({230011, 231003})  # reply target withdrawn/missing → create fallback
-_FEISHU_ACK_EMOJI = "OK"
+_FEISHU_ACK_EMOJI = "OneSecond"
 
 # QR onboarding constants
 _ONBOARD_ACCOUNTS_URLS = {
@@ -1130,6 +1130,7 @@ class FeishuAdapter(BasePlatformAdapter):
         self._sent_message_id_order: List[str] = []  # LRU order for _sent_message_ids_to_chat
         self._chat_info_cache: Dict[str, Dict[str, Any]] = {}
         self._message_text_cache: Dict[str, Optional[str]] = {}
+        self._ack_reactions: Dict[str, str] = {}  # inbound message_id → reaction_id (for ACK withdrawal)
         self._app_lock_identity: Optional[str] = None
         self._text_batch_state = FeishuBatchState()
         self._pending_text_batches = self._text_batch_state.events
@@ -2315,7 +2316,10 @@ class FeishuAdapter(BasePlatformAdapter):
             response = await asyncio.to_thread(self._client.im.v1.message_reaction.create, request)
             if response and getattr(response, "success", lambda: False)():
                 data = getattr(response, "data", None)
-                return getattr(data, "reaction_id", None)
+                reaction_id = getattr(data, "reaction_id", None)
+                if reaction_id:
+                    self._ack_reactions[message_id] = reaction_id
+                return reaction_id
             logger.warning(
                 "[Feishu] Failed to add ack reaction to %s: code=%s msg=%s",
                 message_id,
@@ -2325,6 +2329,35 @@ class FeishuAdapter(BasePlatformAdapter):
         except Exception:
             logger.warning("[Feishu] Failed to add ack reaction to %s", message_id, exc_info=True)
         return None
+
+    async def _remove_ack_reaction(self, message_id: str) -> None:
+        """Remove the ACK emoji reaction from an inbound message after the bot replies."""
+        reaction_id = self._ack_reactions.pop(message_id, None)
+        if not reaction_id or not self._client:
+            return
+        try:
+            from lark_oapi.api.im.v1 import (  # lazy import
+                DeleteMessageReactionRequest,
+            )
+            request = (
+                DeleteMessageReactionRequest.builder()
+                .message_id(message_id)
+                .reaction_id(reaction_id)
+                .build()
+            )
+            response = await asyncio.to_thread(self._client.im.v1.message_reaction.delete, request)
+            if response and getattr(response, "success", lambda: False)():
+                logger.debug("[Feishu] Removed ack reaction %s from %s", reaction_id, message_id)
+            else:
+                logger.debug(
+                    "[Feishu] Failed to remove ack reaction %s from %s: code=%s msg=%s",
+                    reaction_id,
+                    message_id,
+                    getattr(response, "code", None),
+                    getattr(response, "msg", None),
+                )
+        except Exception:
+            logger.debug("[Feishu] Failed to remove ack reaction from %s", message_id, exc_info=True)
 
     # =========================================================================
     # Webhook server and security
@@ -3661,6 +3694,8 @@ class FeishuAdapter(BasePlatformAdapter):
                             reply_to=None,
                             metadata=metadata,
                         )
+                if reply_to and self._response_succeeded(response):
+                    await self._remove_ack_reaction(reply_to)
                 return response
             except Exception as exc:
                 last_error = exc
