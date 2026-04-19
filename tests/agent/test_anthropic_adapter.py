@@ -1169,6 +1169,11 @@ class TestGetAnthropicMaxOutput:
         # claude-3-5-sonnet (8192) should win over a hypothetical shorter match
         assert _get_anthropic_max_output("claude-3-5-sonnet-20241022") == 8_192
 
+    def test_qwen3_6_plus_dashscope(self):
+        """qwen3.6-plus via Alibaba DashScope /apps/anthropic is capped at 65K output."""
+        from agent.anthropic_adapter import _get_anthropic_max_output
+        assert _get_anthropic_max_output("qwen3.6-plus") == 65_536
+
 
 # ---------------------------------------------------------------------------
 # _to_plain_data hardening

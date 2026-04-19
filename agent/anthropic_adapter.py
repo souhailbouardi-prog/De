@@ -88,6 +88,8 @@ _ANTHROPIC_OUTPUT_LIMITS = {
     "claude-3-haiku":      4_096,
     # Third-party Anthropic-compatible providers
     "minimax":            131_072,
+    # Alibaba DashScope via /apps/anthropic — output capped at 65K
+    "qwen3-6-plus":        65_536,
 }
 
 # For any model not in the table, assume the highest current limit.
