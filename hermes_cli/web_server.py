@@ -750,7 +750,16 @@ async def get_env_vars():
 
 
 @app.put("/api/env")
-async def set_env_var(body: EnvVarUpdate):
+async def set_env_var(body: EnvVarUpdate, request: Request):
+    # --- Token check ---
+    auth = request.headers.get("authorization", "")
+    if auth != f"Bearer {_SESSION_TOKEN}":
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    # --- Whitelist check ---
+    if body.key not in OPTIONAL_ENV_VARS:
+        raise HTTPException(status_code=400, detail=f"{body.key} is not an allowed env var")
+
     try:
         save_env_value(body.key, body.value)
         return {"ok": True, "key": body.key}
@@ -760,7 +769,16 @@ async def set_env_var(body: EnvVarUpdate):
 
 
 @app.delete("/api/env")
-async def remove_env_var(body: EnvVarDelete):
+async def remove_env_var(body: EnvVarDelete, request: Request):
+    # --- Token check ---
+    auth = request.headers.get("authorization", "")
+    if auth != f"Bearer {_SESSION_TOKEN}":
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    # --- Whitelist check ---
+    if body.key not in OPTIONAL_ENV_VARS:
+        raise HTTPException(status_code=400, detail=f"{body.key} is not an allowed env var")
+
     try:
         removed = remove_env_value(body.key)
         if not removed:
