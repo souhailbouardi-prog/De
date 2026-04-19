@@ -27,7 +27,7 @@ import time
 import uuid
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 from urllib.parse import quote, urlparse
 
 logger = logging.getLogger(__name__)
@@ -1129,6 +1129,10 @@ class WeixinAdapter(BasePlatformAdapter):
         self._poll_session: Optional[aiohttp.ClientSession] = None
         self._send_session: Optional[aiohttp.ClientSession] = None
         self._poll_task: Optional[asyncio.Task] = None
+        # Strong references to fire-and-forget background tasks so the
+        # event loop's weak-ref-only tracking of asyncio.create_task()
+        # does not garbage-collect them mid-flight.
+        self._bg_tasks: Set[asyncio.Task] = set()
         self._dedup = MessageDeduplicator(ttl_seconds=MESSAGE_DEDUP_TTL_SECONDS)
 
         self._account_id = str(extra.get("account_id") or os.getenv("WEIXIN_ACCOUNT_ID", "")).strip()
@@ -1221,6 +1225,14 @@ class WeixinAdapter(BasePlatformAdapter):
             except asyncio.CancelledError:
                 pass
         self._poll_task = None
+        # Cancel any in-flight fire-and-forget tasks (inbound processing,
+        # typing-ticket fetches) so they don't keep writing after the
+        # HTTP sessions close.
+        if self._bg_tasks:
+            for task in list(self._bg_tasks):
+                task.cancel()
+            await asyncio.gather(*self._bg_tasks, return_exceptions=True)
+            self._bg_tasks.clear()
         if self._poll_session and not self._poll_session.closed:
             await self._poll_session.close()
         self._poll_session = None
@@ -1230,6 +1242,19 @@ class WeixinAdapter(BasePlatformAdapter):
         self._release_platform_lock()
         self._mark_disconnected()
         logger.info("[%s] Disconnected", self.name)
+
+    def _spawn_bg(self, coro) -> None:
+        """Start a fire-and-forget coroutine and track it for cleanup.
+
+        Python's event loop keeps only a weak reference to tasks
+        returned by ``asyncio.create_task``; without a strong reference
+        in ``self._bg_tasks``, an untracked task can be
+        garbage-collected before completing. See:
+        https://docs.python.org/3/library/asyncio-task.html#asyncio.create_task
+        """
+        task = asyncio.create_task(coro)
+        self._bg_tasks.add(task)
+        task.add_done_callback(self._bg_tasks.discard)
 
     async def _poll_loop(self) -> None:
         assert self._poll_session is not None
@@ -1280,7 +1305,7 @@ class WeixinAdapter(BasePlatformAdapter):
                     _save_sync_buf(self._hermes_home, self._account_id, sync_buf)
 
                 for message in response.get("msgs") or []:
-                    asyncio.create_task(self._process_message_safe(message))
+                    self._spawn_bg(self._process_message_safe(message))
             except asyncio.CancelledError:
                 break
             except Exception as exc:
@@ -1320,7 +1345,7 @@ class WeixinAdapter(BasePlatformAdapter):
         context_token = str(message.get("context_token") or "").strip()
         if context_token:
             self._token_store.set(self._account_id, sender_id, context_token)
-        asyncio.create_task(self._maybe_fetch_typing_ticket(sender_id, context_token or None))
+        self._spawn_bg(self._maybe_fetch_typing_ticket(sender_id, context_token or None))
 
         item_list = message.get("item_list") or []
         text = _extract_text(item_list)

@@ -758,3 +758,59 @@ class TestWeixinVoiceSending:
         assert voice_item["encode_type"] == 6
         assert voice_item["sample_rate"] == 24000
         assert voice_item["bits_per_sample"] == 16
+
+
+class TestWeixinBackgroundTaskTracking:
+    """Regression: fire-and-forget tasks spawned during poll_loop /
+    message processing must be tracked in ``_bg_tasks`` so Python's weak
+    reference tracking cannot garbage-collect them mid-flight.
+    """
+
+    def test_spawn_bg_tracks_task_and_discards_on_completion(self):
+        async def _run():
+            adapter = _make_adapter()
+            assert len(adapter._bg_tasks) == 0
+
+            gate = asyncio.Event()
+
+            async def work():
+                await gate.wait()
+
+            adapter._spawn_bg(work())
+            # While the coroutine is awaiting the gate, the task must be
+            # strongly referenced by _bg_tasks — without this, the event
+            # loop only holds a weak ref and the task can be GC'd.
+            assert len(adapter._bg_tasks) == 1
+
+            gate.set()
+            # Let the done-callback run (it discards the task from the set).
+            for _ in range(5):
+                await asyncio.sleep(0)
+                if len(adapter._bg_tasks) == 0:
+                    break
+            assert len(adapter._bg_tasks) == 0
+
+        asyncio.run(_run())
+
+    def test_spawn_bg_captures_multiple_concurrent_tasks(self):
+        async def _run():
+            adapter = _make_adapter()
+            gates = [asyncio.Event() for _ in range(5)]
+
+            async def work(g):
+                await g.wait()
+
+            for g in gates:
+                adapter._spawn_bg(work(g))
+
+            assert len(adapter._bg_tasks) == 5
+
+            for g in gates:
+                g.set()
+            for _ in range(10):
+                await asyncio.sleep(0)
+                if len(adapter._bg_tasks) == 0:
+                    break
+            assert len(adapter._bg_tasks) == 0
+
+        asyncio.run(_run())
