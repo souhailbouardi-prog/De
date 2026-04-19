@@ -158,6 +158,30 @@ uv venv venv --python 3.11
 source venv/bin/activate
 uv pip install -e ".[all,dev]"
 python -m pytest tests/ -q
+make validate-skills
+```
+
+Skill validator helpers:
+
+```bash
+# Validate one skill while editing
+python scripts/quick_validate.py ~/.hermes/skills/my-skill
+python scripts/quick_validate.py ~/.hermes/skills/my-skill --json
+
+# Validate all bundled repo skills
+python scripts/validate_all_skills.py skills
+python scripts/validate_all_skills.py skills --json
+
+# Makefile shortcuts
+make validate-skill SKILL=~/.hermes/skills/my-skill
+make validate-skills
+```
+
+Optional local hook setup:
+
+```bash
+pip install pre-commit
+pre-commit install
 ```
 
 > **RL Training (optional):** To work on the RL/Tinker-Atropos integration:

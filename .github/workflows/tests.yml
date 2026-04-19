@@ -47,6 +47,11 @@ jobs:
           OPENAI_API_KEY: ""
           NOUS_API_KEY: ""
 
+      - name: Validate bundled skills
+        run: |
+          source .venv/bin/activate
+          python scripts/validate_all_skills.py skills
+
   e2e:
     runs-on: ubuntu-latest
     timeout-minutes: 10

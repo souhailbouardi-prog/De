@@ -1,0 +1,9 @@
+repos:
+  - repo: local
+    hooks:
+      - id: hermes-validate-skills
+        name: Validate Hermes skills
+        entry: python scripts/validate_all_skills.py skills
+        language: system
+        pass_filenames: false
+        stages: [pre-commit]
