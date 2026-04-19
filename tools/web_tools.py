@@ -13,6 +13,7 @@ Available tools:
 - web_crawl_tool: Crawl websites with specific instructions
 
 Backend compatibility:
+- Brave: https://api.search.brave.com (search only; extract/crawl require Firecrawl as fallback)
 - Exa: https://exa.ai (search, extract)
 - Firecrawl: https://docs.firecrawl.dev/introduction (search, extract, crawl; direct or derived firecrawl-gateway.<domain> for Nous Subscribers)
 - Parallel: https://docs.parallel.ai (search, extract)
@@ -88,7 +89,7 @@ def _get_backend() -> str:
     keys manually without running setup.
     """
     configured = (_load_web_config().get("backend") or "").lower().strip()
-    if configured in ("parallel", "firecrawl", "tavily", "exa"):
+    if configured in ("parallel", "firecrawl", "tavily", "exa", "brave"):
         return configured
 
     # Fallback for manual / legacy config — pick the highest-priority
@@ -99,6 +100,7 @@ def _get_backend() -> str:
         ("parallel", _has_env("PARALLEL_API_KEY")),
         ("tavily", _has_env("TAVILY_API_KEY")),
         ("exa", _has_env("EXA_API_KEY")),
+        ("brave", _has_env("BRAVE_API_KEY")),
     )
     for backend, available in backend_candidates:
         if available:
@@ -117,6 +119,8 @@ def _is_backend_available(backend: str) -> bool:
         return check_firecrawl_api_key()
     if backend == "tavily":
         return _has_env("TAVILY_API_KEY")
+    if backend == "brave":
+        return _has_env("BRAVE_API_KEY")
     return False
 
 # ─── Firecrawl Client ────────────────────────────────────────────────────────
@@ -360,6 +364,81 @@ def _normalize_tavily_documents(response: dict, fallback_url: str = "") -> List[
             "metadata": {"sourceURL": url_str},
         })
     return documents
+
+
+# ─── Brave Search Client ─────────────────────────────────────────────────────
+
+_BRAVE_DEFAULT_BASE_URL = "https://api.search.brave.com/res/v1"
+
+
+def _get_brave_base_url() -> str:
+    """Return the Brave API base URL, honouring the ``BRAVE_API_URL`` override.
+
+    The override is read at call time (not at import time) so tests and
+    runtime config changes take effect without reloading the module.
+    """
+    return (os.getenv("BRAVE_API_URL") or _BRAVE_DEFAULT_BASE_URL).rstrip("/")
+
+
+def _brave_search(query: str, limit: int = 5) -> dict:
+    """Call the Brave Search API and return results in the standard format.
+
+    Brave exposes search only. ``web_extract_tool`` falls back to Firecrawl
+    automatically when ``FIRECRAWL_API_KEY`` is configured, and returns a
+    clear ``tool_error`` otherwise. ``web_crawl_tool`` is gated by the
+    existing ``check_firecrawl_api_key()`` guard in that function.
+
+    Auth is via the ``X-Subscription-Token`` header. ``search_lang`` is
+    intentionally *not* set — Brave auto-detects the query language, which
+    gives better results for non-English users than pinning to a single
+    locale. Callers that need a specific locale can send ``BRAVE_API_URL``
+    to a proxy that injects the parameter.
+    """
+    api_key = os.getenv("BRAVE_API_KEY")
+    if not api_key:
+        raise ValueError(
+            "BRAVE_API_KEY environment variable not set. "
+            "Get your API key at https://api-dashboard.search.brave.com/"
+        )
+    url = f"{_get_brave_base_url()}/web/search"
+    headers = {
+        "X-Subscription-Token": api_key,
+        "Accept": "application/json",
+        "Accept-Encoding": "gzip",
+    }
+    params = {
+        "q": query,
+        "count": max(1, min(limit, 20)),
+    }
+    logger.info("Brave search: '%s' (limit: %d)", query, params["count"])
+    response = httpx.get(url, headers=headers, params=params, timeout=60)
+    response.raise_for_status()
+    return _normalize_brave_search_results(response.json())
+
+
+def _normalize_brave_search_results(response: dict) -> dict:
+    """Normalize Brave /web/search response to the standard web search format.
+
+    Brave returns ``{web: {results: [{title, url, description, extra_snippets, ...}]}}``.
+    We map to ``{success, data: {web: [{title, url, description, position}]}}``
+    and merge up to two ``extra_snippets`` into the description so the caller
+    gets the richer context Brave provides without changing the output shape.
+    """
+    raw_results = (response.get("web") or {}).get("results") or []
+    web_results = []
+    for i, result in enumerate(raw_results):
+        description = result.get("description", "") or ""
+        extra = result.get("extra_snippets") or []
+        if extra:
+            joined_extra = " ".join(s for s in extra[:2] if s)
+            description = f"{description} {joined_extra}".strip() if description else joined_extra
+        web_results.append({
+            "title": result.get("title", ""),
+            "url": result.get("url", ""),
+            "description": description,
+            "position": i + 1,
+        })
+    return {"success": True, "data": {"web": web_results}}
 
 
 def _to_plain_object(value: Any) -> Any:
@@ -1102,6 +1181,15 @@ def web_search_tool(query: str, limit: int = 5) -> str:
             _debug.save()
             return result_json
 
+        if backend == "brave":
+            response_data = _brave_search(query, limit)
+            debug_call_data["results_count"] = len(response_data.get("data", {}).get("web", []))
+            result_json = json.dumps(response_data, indent=2, ensure_ascii=False)
+            debug_call_data["final_response_size"] = len(result_json)
+            _debug.log_call("web_search_tool", debug_call_data)
+            _debug.save()
+            return result_json
+
         if backend == "tavily":
             logger.info("Tavily search: '%s' (limit: %d)", query, limit)
             raw = _tavily_request("search", {
@@ -1240,6 +1328,20 @@ async def web_extract_tool(
             results = []
         else:
             backend = _get_backend()
+
+            # Brave has no extract API. Fall back to Firecrawl when it is
+            # configured; otherwise emit a clear error with remediation
+            # steps rather than a cryptic failure.
+            if backend == "brave":
+                if check_firecrawl_api_key():
+                    logger.info("Brave backend has no extract — routing extract to Firecrawl")
+                    backend = "firecrawl"
+                else:
+                    return tool_error(
+                        "Brave backend supports web_search only. Configure FIRECRAWL_API_KEY "
+                        "for extract, or set web.backend to firecrawl/tavily/exa/parallel.",
+                        success=False,
+                    )
 
             if backend == "parallel":
                 results = await _parallel_extract(safe_urls)
@@ -1922,9 +2024,9 @@ def check_firecrawl_api_key() -> bool:
 def check_web_api_key() -> bool:
     """Check whether the configured web backend is available."""
     configured = _load_web_config().get("backend", "").lower().strip()
-    if configured in ("exa", "parallel", "firecrawl", "tavily"):
+    if configured in ("exa", "parallel", "firecrawl", "tavily", "brave"):
         return _is_backend_available(configured)
-    return any(_is_backend_available(backend) for backend in ("exa", "parallel", "firecrawl", "tavily"))
+    return any(_is_backend_available(backend) for backend in ("exa", "parallel", "firecrawl", "tavily", "brave"))
 
 
 def check_auxiliary_model() -> bool:
@@ -1959,6 +2061,8 @@ if __name__ == "__main__":
             print("   Using Parallel API (https://parallel.ai)")
         elif backend == "tavily":
             print("   Using Tavily API (https://tavily.com)")
+        elif backend == "brave":
+            print("   Using Brave Search API (https://api.search.brave.com)")
         else:
             if firecrawl_url_available:
                 print(f"   Using self-hosted Firecrawl: {os.getenv('FIRECRAWL_API_URL').strip().rstrip('/')}")
@@ -1971,7 +2075,7 @@ if __name__ == "__main__":
     else:
         print("❌ No web search backend configured")
         print(
-            "Set EXA_API_KEY, PARALLEL_API_KEY, TAVILY_API_KEY, FIRECRAWL_API_KEY, FIRECRAWL_API_URL"
+            "Set EXA_API_KEY, PARALLEL_API_KEY, TAVILY_API_KEY, BRAVE_API_KEY, FIRECRAWL_API_KEY, FIRECRAWL_API_URL"
             f"{_firecrawl_backend_help_suffix()}"
         )
 
