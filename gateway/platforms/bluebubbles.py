@@ -910,9 +910,14 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         self._background_tasks.add(task)
         task.add_done_callback(self._background_tasks.discard)
 
-        # Fire-and-forget read receipt
+        # Fire-and-forget read receipt — tracked in _background_tasks so
+        # the event loop's weak-reference tracking of asyncio.create_task()
+        # does not garbage-collect it before the receipt reaches the
+        # BlueBubbles server (Python docs warn about this pattern).
         if self.send_read_receipts and session_chat_id:
-            asyncio.create_task(self.mark_read(session_chat_id))
+            mark_read_task = asyncio.create_task(self.mark_read(session_chat_id))
+            self._background_tasks.add(mark_read_task)
+            mark_read_task.add_done_callback(self._background_tasks.discard)
 
         return web.Response(text="ok")
 
