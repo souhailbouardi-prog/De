@@ -211,6 +211,24 @@ class TestFileHandleClosedOnError:
         assert adapter._bridge_log_fh is None
 
 
+class TestSendVoice:
+    """Regression tests for native WhatsApp audio sending."""
+
+    @pytest.mark.asyncio
+    async def test_send_voice_routes_to_bridge_audio_media(self):
+        adapter = _make_adapter()
+        adapter._send_media_to_bridge = AsyncMock(
+            return_value=MagicMock(success=True, message_id="wa-audio-1")
+        )
+
+        result = await adapter.send_voice("chat-123", "/tmp/voice.ogg", caption="hello")
+
+        assert result.success is True
+        adapter._send_media_to_bridge.assert_awaited_once_with(
+            "chat-123", "/tmp/voice.ogg", "audio", "hello"
+        )
+
+
 class TestBridgeRuntimeFailure:
     """Verify runtime bridge death is surfaced as a fatal adapter error."""
 

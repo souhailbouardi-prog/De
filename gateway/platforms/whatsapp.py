@@ -781,6 +781,23 @@ class WhatsAppAdapter(BasePlatformAdapter):
             file_name or os.path.basename(file_path),
         )
 
+    async def send_voice(
+        self,
+        chat_id: str,
+        audio_path: str,
+        caption: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        **kwargs,
+    ) -> SendResult:
+        """Send an audio file natively via the WhatsApp bridge.
+
+        OGG/Opus files are treated by the Node bridge as PTT voice notes
+        (ptt=true); MP3/WAV/M4A are sent as normal audio attachments.
+        """
+        del reply_to, metadata, kwargs
+        return await self._send_media_to_bridge(chat_id, audio_path, "audio", caption)
+
     async def send_typing(self, chat_id: str, metadata=None) -> None:
         """Send typing indicator via bridge."""
         if not self._running or not self._http_session:
