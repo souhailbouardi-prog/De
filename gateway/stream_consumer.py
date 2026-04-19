@@ -92,7 +92,8 @@ class GatewayStreamConsumer:
         self._accumulated = ""
         self._message_id: Optional[str] = None
         self._already_sent = False
-        self._edit_supported = True  # Disabled when progressive edits are no longer usable
+        self._adapter_can_edit = getattr(adapter, "SUPPORTS_MESSAGE_EDITING", True)
+        self._edit_supported = self._adapter_can_edit
         self._last_edit_time = 0.0
         self._last_sent_text = ""   # Track last-sent text to skip redundant edits
         self._fallback_final_send = False
@@ -311,6 +312,14 @@ class GatewayStreamConsumer:
                             and self._accumulated)
                         or len(self._accumulated) >= self.cfg.buffer_threshold
                     )
+
+                # For platforms that cannot edit messages (QQ, WeChat, etc.),
+                # skip all intermediate sends — only flush on got_done or
+                # commentary so the user sees one complete message instead of
+                # a broken pair.
+                if not self._adapter_can_edit and should_edit and self._accumulated:
+                    if not got_done and commentary_text is None:
+                        should_edit = False
 
                 current_update_visible = False
                 if should_edit and self._accumulated:
