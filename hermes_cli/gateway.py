@@ -1197,7 +1197,7 @@ def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) 
     restart_timeout = max(60, int(_get_restart_drain_timeout() or 0))
 
     if system:
-        username, group_name, home_dir = _system_service_identity(run_as_user)
+        username, _group_name, home_dir = _system_service_identity(run_as_user)
         hermes_home = _hermes_home_for_target_user(home_dir)
         profile_arg = _profile_arg(hermes_home)
         # Remap all paths that may resolve under the calling user's home
@@ -1222,7 +1222,6 @@ StartLimitBurst=5
 [Service]
 Type=simple
 User={username}
-Group={group_name}
 ExecStart={python_path} -m hermes_cli.main{f" {profile_arg}" if profile_arg else ""} gateway run --replace
 WorkingDirectory={working_dir}
 Environment="HOME={home_dir}"
@@ -1281,6 +1280,19 @@ def _normalize_service_definition(text: str) -> str:
     return "\n".join(line.rstrip() for line in text.strip().splitlines())
 
 
+def _normalize_systemd_unit_for_comparison(text: str) -> str:
+    """Normalize dynamic systemd fields so staleness checks stay stable."""
+    import re
+
+    normalized = _normalize_service_definition(text)
+    return re.sub(
+        r'^(Environment="PATH=).*(\")$',
+        r"\1__HERMES_PATH__\2",
+        normalized,
+        flags=re.M,
+    )
+
+
 def _normalize_launchd_plist_for_comparison(text: str) -> str:
     """Normalize launchd plist text for staleness checks.
 
@@ -1308,7 +1320,7 @@ def systemd_unit_is_current(system: bool = False) -> bool:
     installed = unit_path.read_text(encoding="utf-8")
     expected_user = _read_systemd_user_from_unit(unit_path) if system else None
     expected = generate_systemd_unit(system=system, run_as_user=expected_user)
-    return _normalize_service_definition(installed) == _normalize_service_definition(expected)
+    return _normalize_systemd_unit_for_comparison(installed) == _normalize_systemd_unit_for_comparison(expected)
 
 
 

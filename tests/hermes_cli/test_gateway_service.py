@@ -105,10 +105,47 @@ class TestGeneratedSystemdUnits:
 
         assert "ExecStart=" in unit
         assert "ExecStop=" not in unit
+        assert "Group=" not in unit
         assert "ExecReload=/bin/kill -USR1 $MAINPID" in unit
         assert f"RestartForceExitStatus={GATEWAY_SERVICE_RESTART_EXIT_CODE}" in unit
         assert "TimeoutStopSec=60" in unit
         assert "WantedBy=multi-user.target" in unit
+
+    def test_system_unit_relies_on_users_default_group(self, monkeypatch):
+        monkeypatch.setattr(
+            gateway_cli,
+            "_system_service_identity",
+            lambda run_as_user=None: ("alice", "2023", "/home/alice"),
+        )
+        monkeypatch.setattr(
+            gateway_cli,
+            "_build_user_local_paths",
+            lambda home, existing: [],
+        )
+
+        unit = gateway_cli.generate_systemd_unit(system=True, run_as_user="alice")
+
+        assert "User=alice" in unit
+        assert "Group=" not in unit
+
+
+class TestSystemdUnitNormalization:
+    def test_systemd_unit_is_current_ignores_path_differences(self, tmp_path, monkeypatch):
+        unit_path = tmp_path / "hermes-gateway.service"
+        installed = """[Service]
+Environment="PATH=/one:/two"
+ExecStart=/bin/true
+"""
+        expected = """[Service]
+Environment="PATH=/three:/four"
+ExecStart=/bin/true
+"""
+        unit_path.write_text(installed, encoding="utf-8")
+
+        monkeypatch.setattr(gateway_cli, "get_systemd_unit_path", lambda system=False: unit_path)
+        monkeypatch.setattr(gateway_cli, "generate_systemd_unit", lambda system=False, run_as_user=None: expected)
+
+        assert gateway_cli.systemd_unit_is_current() is True
 
 
 class TestGatewayStopCleanup:
