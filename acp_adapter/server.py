@@ -550,7 +550,7 @@ class HermesACPAgent(acp.Agent):
             logger.exception("Executor error for session %s", session_id)
             return PromptResponse(stop_reason="end_turn")
 
-        if result.get("messages"):
+        if "messages" in result:
             state.history = result["messages"]
             # Persist updated history so sessions survive process restarts.
             self.session_manager.save_session(session_id)
