@@ -350,6 +350,7 @@ class TestCardActionCallbackResponse:
         mock_submit.assert_not_called()
 
     def test_returns_card_for_approve_action(self, _patch_callback_card_types):
+        import json
         adapter = _make_adapter()
         adapter._loop = MagicMock()
         adapter._loop.is_closed = MagicMock(return_value=False)
@@ -365,12 +366,15 @@ class TestCardActionCallbackResponse:
         assert response is not None
         assert response.card is not None
         assert response.card.type == "raw"
-        card = response.card.data
+        # card.data must be a JSON string, not a dict (Feishu API requirement)
+        assert isinstance(response.card.data, str)
+        card = json.loads(response.card.data)
         assert card["header"]["template"] == "green"
         assert "Approved once" in card["header"]["title"]["content"]
         assert "Bob" in card["elements"][0]["content"]
 
     def test_returns_card_for_deny_action(self, _patch_callback_card_types):
+        import json
         adapter = _make_adapter()
         adapter._loop = MagicMock()
         adapter._loop.is_closed = MagicMock(return_value=False)
@@ -382,7 +386,9 @@ class TestCardActionCallbackResponse:
             response = adapter._on_card_action_trigger(data)
 
         assert response.card is not None
-        card = response.card.data
+        # card.data must be a JSON string, not a dict (Feishu API requirement)
+        assert isinstance(response.card.data, str)
+        card = json.loads(response.card.data)
         assert card["header"]["template"] == "red"
         assert "Denied" in card["header"]["title"]["content"]
 
@@ -412,6 +418,7 @@ class TestCardActionCallbackResponse:
         assert response.card is None
 
     def test_falls_back_to_open_id_when_name_not_cached(self, _patch_callback_card_types):
+        import json
         adapter = _make_adapter()
         adapter._loop = MagicMock()
         adapter._loop.is_closed = MagicMock(return_value=False)
@@ -423,10 +430,12 @@ class TestCardActionCallbackResponse:
         with patch("asyncio.run_coroutine_threadsafe", side_effect=_close_submitted_coro):
             response = adapter._on_card_action_trigger(data)
 
-        card = response.card.data
+        assert isinstance(response.card.data, str)
+        card = json.loads(response.card.data)
         assert "ou_unknown" in card["elements"][0]["content"]
 
     def test_ignores_expired_cached_name(self, _patch_callback_card_types):
+        import json
         adapter = _make_adapter()
         adapter._loop = MagicMock()
         adapter._loop.is_closed = MagicMock(return_value=False)
@@ -439,6 +448,7 @@ class TestCardActionCallbackResponse:
         with patch("asyncio.run_coroutine_threadsafe", side_effect=_close_submitted_coro):
             response = adapter._on_card_action_trigger(data)
 
-        card = response.card.data
+        assert isinstance(response.card.data, str)
+        card = json.loads(response.card.data)
         assert "Old Name" not in card["elements"][0]["content"]
         assert "ou_expired" in card["elements"][0]["content"]
