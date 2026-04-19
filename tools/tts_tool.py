@@ -2,13 +2,14 @@
 """
 Text-to-Speech Tool Module
 
-Supports seven TTS providers:
+Supports eight TTS providers:
 - Edge TTS (default, free, no API key): Microsoft Edge neural voices
 - ElevenLabs (premium): High-quality voices, needs ELEVENLABS_API_KEY
 - OpenAI TTS: Good quality, needs OPENAI_API_KEY
 - MiniMax TTS: High-quality with voice cloning, needs MINIMAX_API_KEY
 - Mistral (Voxtral TTS): Multilingual, native Opus, needs MISTRAL_API_KEY
 - Google Gemini TTS: Controllable, 30 prebuilt voices, needs GEMINI_API_KEY
+- Volcengine (Doubao) TTS: ByteDance's high-quality Chinese TTS, needs VOLC_APPID and VOLC_TOKEN
 - NeuTTS (local, free, no API key): On-device TTS via neutts_cli, needs neutts installed
 
 Output formats:
@@ -107,6 +108,13 @@ DEFAULT_GEMINI_TTS_BASE_URL = "https://generativelanguage.googleapis.com/v1beta"
 GEMINI_TTS_SAMPLE_RATE = 24000
 GEMINI_TTS_CHANNELS = 1
 GEMINI_TTS_SAMPLE_WIDTH = 2  # 16-bit PCM (L16)
+# Volcengine (Doubao) TTS defaults
+DEFAULT_VOLCENGINE_VOICE_TYPE = "zh_female_vv_uranus_bigtts"
+DEFAULT_VOLCENGINE_CLUSTER = "volcano_tts"
+DEFAULT_VOLCENGINE_ENCODING = "mp3"
+DEFAULT_VOLCENGINE_RATE = 24000
+DEFAULT_VOLCENGINE_SPEED_RATIO = 1.0
+DEFAULT_VOLCENGINE_BASE_URL = "https://openspeech.bytedance.com/api/v1/tts"
 
 def _get_default_output_dir() -> str:
     from hermes_constants import get_hermes_dir
@@ -683,6 +691,97 @@ def _generate_gemini_tts(text: str, output_path: str, tts_config: Dict[str, Any]
 
 
 # ===========================================================================
+# Volcengine (Doubao) TTS
+# ===========================================================================
+def _generate_volcengine_tts(text: str, output_path: str, tts_config: Dict[str, Any]) -> str:
+    """Generate speech using Volcengine (Doubao) TTS API.
+    
+    Uses HTTP non-streaming API: https://openspeech.bytedance.com/api/v1/tts
+    Outputs MP3 format.
+    """
+    import uuid
+    import requests
+    
+    volc_config = tts_config.get("volcengine", {})
+    
+    # Get credentials from config or environment
+    appid = volc_config.get("appid") or os.getenv("VOLC_APPID")
+    token = volc_config.get("token") or os.getenv("VOLC_TOKEN")
+    
+    if not appid or not token:
+        raise ValueError(
+            "Volcengine TTS requires appid and token. "
+            "Set VOLC_APPID and VOLC_TOKEN environment variables, "
+            "or configure tts.volcengine.appid and tts.volcengine.token in config.yaml"
+        )
+    
+    # Get voice settings
+    voice_type = volc_config.get("voice_type", DEFAULT_VOLCENGINE_VOICE_TYPE)
+    cluster = volc_config.get("cluster", DEFAULT_VOLCENGINE_CLUSTER)
+    encoding = volc_config.get("encoding", DEFAULT_VOLCENGINE_ENCODING)
+    rate = volc_config.get("rate", DEFAULT_VOLCENGINE_RATE)
+    speed_ratio = volc_config.get("speed_ratio", DEFAULT_VOLCENGINE_SPEED_RATIO)
+    base_url = volc_config.get("base_url", DEFAULT_VOLCENGINE_BASE_URL)
+    
+    # Generate unique request ID
+    reqid = str(uuid.uuid4())
+    
+    # Build request payload
+    payload = {
+        "app": {
+            "appid": appid,
+            "token": "access_token",  # Fake token, actual auth is in header
+            "cluster": cluster,
+        },
+        "user": {
+            "uid": "uid123"  # Can be any non-empty string
+        },
+        "audio": {
+            "voice_type": voice_type,
+            "encoding": encoding,
+            "rate": rate,
+            "speed_ratio": speed_ratio,
+        },
+        "request": {
+            "reqid": reqid,
+            "text": text,
+            "operation": "query",
+        }
+    }
+    
+    # Auth header: Bearer;token (note the semicolon)
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer;{token}"
+    }
+    
+    response = requests.post(base_url, json=payload, headers=headers, timeout=60)
+    
+    if response.status_code != 200:
+        raise RuntimeError(f"Volcengine TTS HTTP error: {response.status_code} - {response.text[:300]}")
+    
+    result = response.json()
+    code = result.get("code")
+    
+    if code != 3000:
+        message = result.get("message", "Unknown error")
+        raise RuntimeError(f"Volcengine TTS API error (code {code}): {message}")
+    
+    # Decode base64 audio data
+    audio_data = result.get("data")
+    if not audio_data:
+        raise RuntimeError("Volcengine TTS returned no audio data")
+    
+    audio_bytes = base64.b64decode(audio_data)
+    
+    # Write to output file
+    with open(output_path, "wb") as f:
+        f.write(audio_bytes)
+    
+    return output_path
+
+
+# ===========================================================================
 # NeuTTS (local, on-device TTS via neutts_cli)
 # ===========================================================================
 
@@ -877,6 +976,10 @@ def text_to_speech_tool(
             logger.info("Generating speech with NeuTTS (local)...")
             _generate_neutts(text, file_str, tts_config)
 
+        elif provider == "volcengine":
+            logger.info("Generating speech with Volcengine (Doubao) TTS...")
+            _generate_volcengine_tts(text, file_str, tts_config)
+
         else:
             # Default: Edge TTS (free), with NeuTTS as local fallback
             edge_available = True
@@ -992,6 +1095,8 @@ def check_tts_requirements() -> bool:
     if os.getenv("XAI_API_KEY"):
         return True
     if os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY"):
+        return True
+    if os.getenv("VOLC_APPID") and os.getenv("VOLC_TOKEN"):
         return True
     try:
         _import_mistral_client()

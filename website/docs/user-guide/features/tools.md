@@ -145,13 +145,22 @@ All container backends run with security hardening:
 
 Docker can optionally receive an explicit env allowlist via `terminal.docker_forward_env`, but forwarded variables are visible to commands inside the container and should be treated as exposed to that session.
 
-## Background Process Management
+## Unified Execution Mode
 
-Start background processes and manage them:
+The `terminal` tool uses a unified execution mode that handles both quick and long-running commands automatically:
+
+- **Commands completing within 5 seconds** return results immediately
+- **Commands exceeding 5 seconds** are automatically moved to background execution
+- You'll be automatically notified when backgrounded commands complete
 
 ```python
-terminal(command="pytest -v tests/", background=true)
-# Returns: {"session_id": "proc_abc123", "pid": 12345}
+# Quick commands return immediately
+terminal(command="ls -la")
+# Returns: {"output": "file1\nfile2\n...", "exit_code": 0}
+
+# Long commands auto-background
+terminal(command="pytest -v tests/")
+# Returns: {"session_id": "proc_abc123", "pid": 12345, "status": "auto_backgrounded"}
 
 # Then manage with the process tool:
 process(action="list")       # Show all running processes
@@ -162,7 +171,14 @@ process(action="kill", session_id="proc_abc123")   # Terminate
 process(action="write", session_id="proc_abc123", data="y")  # Send input
 ```
 
-PTY mode (`pty=true`) enables interactive CLI tools like Codex and Claude Code.
+PTY mode (`pty=true`) enables interactive CLI tools like Codex and Claude Code. Note that PTY is only used when commands auto-background; quick commands execute without PTY.
+
+Watch patterns let you get notified when specific text appears in output:
+
+```python
+terminal(command="python server.py", watch_patterns=["listening on port", "ERROR"])
+# You'll be notified when any pattern matches
+```
 
 ## Sudo Support
 

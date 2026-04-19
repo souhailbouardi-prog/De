@@ -176,6 +176,23 @@ SKILLS_GUIDANCE = (
     "Skills that aren't maintained become liabilities."
 )
 
+SKILL_MODIFICATION_GUIDANCE = (
+    "Modifying a skill is different from using a skill:\n"
+    "- Using a skill (executing existing functionality): only read SKILL.md\n"
+    "- Modifying a skill (development/iteration): in addition to SKILL.md, you MUST also check "
+    "the following documents in the same directory:\n"
+    "  * REQUIREMENTS.md — functional requirements, acceptance criteria\n"
+    "  * TODO.md — pending tasks and known issues\n"
+    "  * CHANGELOG.md — change history and version records\n"
+    "If these files exist, load them with skill_view(name, file_path='REQUIREMENTS.md') etc. "
+    "and follow their requirements completely.\n"
+    "⚠️ After completing modifications, you MUST update these documents:\n"
+    "  - REQUIREMENTS.md — mark completed requirements, record new requirements\n"
+    "  - TODO.md — update task status, remove completed ones, add newly discovered\n"
+    "  - CHANGELOG.md — record what was changed, why, and when\n"
+    "Form the habit: modify skill → check requirements → execute → update docs. Avoid omissions and historical amnesia."
+)
+
 TOOL_USE_ENFORCEMENT_GUIDANCE = (
     "# Tool-use enforcement\n"
     "You MUST use your tools to take action — do not describe what you would do "

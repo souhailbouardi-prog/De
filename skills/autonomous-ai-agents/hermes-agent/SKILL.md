@@ -460,8 +460,8 @@ Run additional Hermes processes as fully independent subprocesses — separate s
 ```
 terminal(command="hermes chat -q 'Research GRPO papers and write summary to ~/research/grpo.md'", timeout=300)
 
-# Background for long tasks:
-terminal(command="hermes chat -q 'Set up CI/CD for ~/myapp'", background=true)
+# Long tasks auto-background automatically (after 5s timeout):
+terminal(command="hermes chat -q 'Set up CI/CD for ~/myapp'")
 ```
 
 ### Interactive PTY Mode (via tmux)

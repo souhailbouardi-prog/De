@@ -70,13 +70,13 @@ Force a specific model:
 terminal(command="opencode run 'Refactor auth module' --model openrouter/anthropic/claude-sonnet-4", workdir="~/project")
 ```
 
-## Interactive Sessions (Background)
+## Interactive Sessions (Auto-Background)
 
-For iterative work requiring multiple exchanges, start the TUI in background:
+For iterative work requiring multiple exchanges, start the TUI (auto-backgrounds after 5s):
 
 ```
-terminal(command="opencode", workdir="~/project", background=true, pty=true)
-# Returns session_id
+terminal(command="opencode", workdir="~/project", pty=true)
+# Returns session_id (auto-backgrounded)
 
 # Send a prompt
 process(action="submit", session_id="<id>", data="Implement OAuth refresh flow and add tests")
@@ -114,8 +114,8 @@ process(action="kill", session_id="<id>")
 After exiting, OpenCode prints a session ID. Resume with:
 
 ```
-terminal(command="opencode -c", workdir="~/project", background=true, pty=true)  # Continue last session
-terminal(command="opencode -s ses_abc123", workdir="~/project", background=true, pty=true)  # Specific session
+terminal(command="opencode -c", workdir="~/project", pty=true)  # Continue last session (auto-backgrounds)
+terminal(command="opencode -s ses_abc123", workdir="~/project", pty=true)  # Specific session (auto-backgrounds)
 ```
 
 ## Common Flags
@@ -140,7 +140,7 @@ terminal(command="opencode -s ses_abc123", workdir="~/project", background=true,
    - `terminal(command="opencode --version")`
    - `terminal(command="opencode auth list")`
 2. For bounded tasks, use `opencode run '...'` (no pty needed).
-3. For iterative tasks, start `opencode` with `background=true, pty=true`.
+3. For iterative tasks, start `opencode` with `pty=true` (auto-backgrounds after 5s).
 4. Monitor long tasks with `process(action="poll"|"log")`.
 5. If OpenCode asks for input, respond via `process(action="submit", ...)`.
 6. Exit with `process(action="write", data="\x03")` or `process(action="kill")`.
@@ -165,8 +165,8 @@ terminal(command="REVIEW=$(mktemp -d) && git clone https://github.com/user/repo.
 Use separate workdirs/worktrees to avoid collisions:
 
 ```
-terminal(command="opencode run 'Fix issue #101 and commit'", workdir="/tmp/issue-101", background=true, pty=true)
-terminal(command="opencode run 'Add parser regression tests and commit'", workdir="/tmp/issue-102", background=true, pty=true)
+terminal(command="opencode run 'Fix issue #101 and commit'", workdir="/tmp/issue-101", pty=true)
+terminal(command="opencode run 'Add parser regression tests and commit'", workdir="/tmp/issue-102", pty=true)
 process(action="list")
 ```
 
@@ -211,7 +211,7 @@ Success criteria:
 ## Rules
 
 1. Prefer `opencode run` for one-shot automation — it's simpler and doesn't need pty.
-2. Use interactive background mode only when iteration is needed.
+2. Use interactive mode only when iteration is needed (it will auto-background).
 3. Always scope OpenCode sessions to a single repo/workdir.
 4. For long tasks, provide progress updates from `process` logs.
 5. Report concrete outcomes (files changed, tests, remaining risks).

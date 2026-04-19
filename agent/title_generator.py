@@ -39,7 +39,6 @@ def generate_title(user_message: str, assistant_response: str, timeout: float = 
             task="title_generation",
             messages=messages,
             max_tokens=30,
-            temperature=0.3,
             timeout=timeout,
         )
         title = (response.choices[0].message.content or "").strip()

@@ -12,7 +12,8 @@ Environment Selection (via TERMINAL_ENV environment variable):
 
 Features:
 - Multiple execution backends (local, docker, modal)
-- Background task support
+- Unified execution mode: commands that complete within 5 seconds return immediately;
+  longer commands are automatically moved to background with auto-notification
 - VM/container lifecycle management
 - Automatic cleanup after inactivity
 
@@ -23,11 +24,12 @@ Cloud sandbox note:
 Usage:
     from terminal_tool import terminal_tool
 
-    # Execute a simple command
+    # Execute a command (fast commands return immediately)
     result = terminal_tool("ls -la")
 
-    # Execute in background
-    result = terminal_tool("python server.py", background=True)
+    # Long commands auto-background with notification
+    result = terminal_tool("python long_task.py")
+    # Returns: {"session_id": "proc_xxx", "status": "auto_backgrounded", ...}
 """
 
 import importlib.util
@@ -519,13 +521,15 @@ Do NOT use sed/awk to edit files — use patch instead.
 Do NOT use echo/cat heredoc to create files — use write_file instead.
 Reserve terminal for: builds, installs, git, processes, scripts, network, package managers, and anything that needs a shell.
 
-Foreground (default): Commands return INSTANTLY when done, even if the timeout is high. Set timeout=300 for long builds/scripts — you'll still get the result in seconds if it's fast. Prefer foreground for short commands.
-Background: Set background=true to get a session_id. Two patterns:
-  (1) Long-lived processes that never exit (servers, watchers).
-  (2) Long-running tasks with notify_on_complete=true — you can keep working on other things and the system auto-notifies you when the task finishes. Great for test suites, builds, deployments, or anything that takes more than a minute.
-Use process(action="poll") for progress checks, process(action="wait") to block until done.
+Unified Execution Mode:
+- Commands that complete within 5 seconds return results immediately
+- Commands exceeding 5 seconds are automatically moved to background execution
+- You will be automatically notified when backgrounded commands complete
+- Use process(action="poll") to check status, process(action="log") to view output, process(action="kill") to terminate
+
 Working directory: Use 'workdir' for per-command cwd.
 PTY mode: Set pty=true for interactive CLI tools (Codex, Claude Code, Python REPL).
+Watch patterns: Set watch_patterns=["ERROR", "listening on port"] to get notified when specific text appears in output.
 
 Do NOT use vim/nano/interactive tools without pty=true — they hang without a pseudo-terminal. Pipe git output to cat if it might page.
 """
@@ -1105,42 +1109,44 @@ def _command_requires_pipe_stdin(command: str) -> bool:
 
 def terminal_tool(
     command: str,
-    background: bool = False,
     timeout: Optional[int] = None,
     task_id: Optional[str] = None,
     force: bool = False,
     workdir: Optional[str] = None,
     pty: bool = False,
-    notify_on_complete: bool = False,
     watch_patterns: Optional[List[str]] = None,
 ) -> str:
     """
     Execute a command in the configured terminal environment.
 
+    All commands run in a unified non-blocking mode:
+    - Commands that complete within 5 seconds return results immediately
+    - Longer commands automatically move to background with auto-notification
+    - Use process(action="poll") to check status or process(action="kill") to terminate
+
     Args:
         command: The command to execute
-        background: Whether to run in background (default: False)
-        timeout: Command timeout in seconds (default: from config)
+        timeout: Maximum time to wait for command completion in seconds (default: from config)
         task_id: Unique identifier for environment isolation (optional)
         force: If True, skip dangerous command check (use after user confirms)
         workdir: Working directory for this command (optional, uses session cwd if not set)
         pty: If True, use pseudo-terminal for interactive CLI tools (local backend only)
-        notify_on_complete: If True and background=True, auto-notify the agent when the process exits
-        watch_patterns: List of strings to watch for in background output; fires a notification on first match per pattern. Use ONLY for mid-process signals (errors, readiness markers) that appear before exit. For end-of-run markers use notify_on_complete instead — stacking both produces duplicate, delayed notifications.
+        watch_patterns: List of strings to watch for in output; triggers notification on match
 
     Returns:
-        str: JSON string with output, exit_code, and error fields
+        str: JSON string with output, exit_code, session_id (if backgrounded), and error fields
 
     Examples:
-        # Execute a simple command
+        # Execute a command (fast commands return immediately)
         >>> result = terminal_tool(command="ls -la /tmp")
 
-        # Run a background task
-        >>> result = terminal_tool(command="python server.py", background=True)
-
-        # With custom timeout
-        >>> result = terminal_tool(command="long_task.sh", timeout=300)
+        # Long commands auto-background with notification
+        >>> result = terminal_tool(command="python long_task.py")
+        # Returns: {"output": "Command auto-backgrounded...", "session_id": "proc_xxx", ...}
         
+        # Check status later
+        >>> process(action="poll", session_id="proc_xxx")
+
         # Force run after user confirmation
         # Note: force parameter is internal only, not exposed to model API
     """
@@ -1183,17 +1189,6 @@ def terminal_tool(
         cwd = overrides.get("cwd") or config["cwd"]
         default_timeout = config["timeout"]
         effective_timeout = timeout or default_timeout
-
-        # Reject foreground commands where the model explicitly requests
-        # a timeout above FOREGROUND_MAX_TIMEOUT — nudge it toward background.
-        if not background and timeout and timeout > FOREGROUND_MAX_TIMEOUT:
-            return json.dumps({
-                "error": (
-                    f"Foreground timeout {timeout}s exceeds the maximum of "
-                    f"{FOREGROUND_MAX_TIMEOUT}s. Use background=true with "
-                    f"notify_on_complete=true for long-running commands."
-                ),
-            }, ensure_ascii=False)
 
         # Start cleanup thread
         _start_cleanup_thread()
@@ -1340,146 +1335,64 @@ def terminal_tool(
             effective_pty = False
             pty_disabled_reason = (
                 "PTY disabled for this command because it expects piped stdin/EOF "
-                "(for example gh auth login --with-token). For local background "
-                "processes, call process(action='close') after writing so it receives "
-                "EOF."
+                "(for example gh auth login --with-token). Call process(action='close') "
+                "after writing so it receives EOF."
             )
 
-        if background:
-            # Spawn a tracked background process via the process registry.
-            # For local backends: uses subprocess.Popen with output buffering.
-            # For non-local backends: runs inside the sandbox via env.execute().
-            from tools.approval import get_current_session_key
-            from tools.process_registry import process_registry
-
-            session_key = get_current_session_key(default="")
-            effective_cwd = workdir or cwd
-            try:
-                if env_type == "local":
-                    proc_session = process_registry.spawn_local(
-                        command=command,
-                        cwd=effective_cwd,
-                        task_id=effective_task_id,
-                        session_key=session_key,
-                        env_vars=env.env if hasattr(env, 'env') else None,
-                        use_pty=effective_pty,
-                    )
-                else:
-                    proc_session = process_registry.spawn_via_env(
-                        env=env,
-                        command=command,
-                        cwd=effective_cwd,
-                        task_id=effective_task_id,
-                        session_key=session_key,
-                    )
-
-                result_data = {
-                    "output": "Background process started",
-                    "session_id": proc_session.id,
-                    "pid": proc_session.pid,
-                    "exit_code": 0,
-                    "error": None,
-                }
-                if approval_note:
-                    result_data["approval"] = approval_note
-                if pty_disabled_reason:
-                    result_data["pty_note"] = pty_disabled_reason
-
-                # Populate routing metadata on the session so that
-                # watch-pattern and completion notifications can be
-                # routed back to the correct chat/thread.
-                if background and (notify_on_complete or watch_patterns):
-                    from gateway.session_context import get_session_env as _gse
-                    _gw_platform = _gse("HERMES_SESSION_PLATFORM", "")
-                    if _gw_platform:
-                        _gw_chat_id = _gse("HERMES_SESSION_CHAT_ID", "")
-                        _gw_thread_id = _gse("HERMES_SESSION_THREAD_ID", "")
-                        _gw_user_id = _gse("HERMES_SESSION_USER_ID", "")
-                        _gw_user_name = _gse("HERMES_SESSION_USER_NAME", "")
-                        proc_session.watcher_platform = _gw_platform
-                        proc_session.watcher_chat_id = _gw_chat_id
-                        proc_session.watcher_user_id = _gw_user_id
-                        proc_session.watcher_user_name = _gw_user_name
-                        proc_session.watcher_thread_id = _gw_thread_id
-
-                # Mark for agent notification on completion
-                if notify_on_complete and background:
-                    proc_session.notify_on_complete = True
-                    result_data["notify_on_complete"] = True
-
-                    # In gateway mode, auto-register a fast watcher so the
-                    # gateway can detect completion and trigger a new agent
-                    # turn.  CLI mode uses the completion_queue directly.
-                    if proc_session.watcher_platform:
-                        proc_session.watcher_interval = 5
-                        process_registry.pending_watchers.append({
-                            "session_id": proc_session.id,
-                            "check_interval": 5,
-                            "session_key": session_key,
-                            "platform": proc_session.watcher_platform,
-                            "chat_id": proc_session.watcher_chat_id,
-                            "user_id": proc_session.watcher_user_id,
-                            "user_name": proc_session.watcher_user_name,
-                            "thread_id": proc_session.watcher_thread_id,
-                            "notify_on_complete": True,
-                        })
-
-                # Set watch patterns for output monitoring
-                if watch_patterns and background:
-                    proc_session.watch_patterns = list(watch_patterns)
-                    result_data["watch_patterns"] = proc_session.watch_patterns
-
-                return json.dumps(result_data, ensure_ascii=False)
-            except Exception as e:
-                return json.dumps({
-                    "output": "",
-                    "exit_code": -1,
-                    "error": f"Failed to start background process: {str(e)}"
-                }, ensure_ascii=False)
-        else:
-            # Run foreground command with retry logic
-            max_retries = 3
-            retry_count = 0
-            result = None
-            
-            while retry_count <= max_retries:
-                try:
-                    execute_kwargs = {"timeout": effective_timeout}
-                    if workdir:
-                        execute_kwargs["cwd"] = workdir
-                    result = env.execute(command, **execute_kwargs)
-                except Exception as e:
-                    error_str = str(e).lower()
-                    if "timeout" in error_str:
-                        return json.dumps({
-                            "output": "",
-                            "exit_code": 124,
-                            "error": f"Command timed out after {effective_timeout} seconds"
-                        }, ensure_ascii=False)
-                    
-                    # Retry on transient errors
-                    if retry_count < max_retries:
-                        retry_count += 1
-                        wait_time = 2 ** retry_count
-                        logger.warning("Execution error, retrying in %ds (attempt %d/%d) - Command: %s - Error: %s: %s - Task: %s, Backend: %s",
-                                       wait_time, retry_count, max_retries, _safe_command_preview(command), type(e).__name__, e, effective_task_id, env_type)
-                        time.sleep(wait_time)
-                        continue
-                    
-                    logger.error("Execution failed after %d retries - Command: %s - Error: %s: %s - Task: %s, Backend: %s",
-                                 max_retries, _safe_command_preview(command), type(e).__name__, e, effective_task_id, env_type)
-                    return json.dumps({
-                        "output": "",
-                        "exit_code": -1,
-                        "error": f"Command execution failed: {type(e).__name__}: {str(e)}"
-                    }, ensure_ascii=False)
-                
-                # Got a result
-                break
-            
-            # Extract output
-            output = result.get("output", "")
-            returncode = result.get("returncode", 0)
+        # Unified execution: try 5-second quick completion, auto-background if slow
+        AUTO_BACKGROUND_TIMEOUT = 5  # seconds to wait before auto-backgrounding
+        
+        from tools.approval import get_current_session_key
+        from tools.process_registry import process_registry
+        
+        session_key = get_current_session_key(default="")
+        effective_cwd = workdir or cwd
+        
+        # Step 1: Try quick execution with 5-second timeout
+        quick_result = None
+        try:
+            execute_kwargs = {"timeout": AUTO_BACKGROUND_TIMEOUT}
+            if workdir:
+                execute_kwargs["cwd"] = workdir
+            quick_result = env.execute(command, **execute_kwargs)
+            # Check if the command timed out (exit_code 124 means timeout)
+            if quick_result.get("returncode") == 124:
+                # Timeout - will proceed to background mode
+                quick_result = None
+        except Exception as e:
+            error_str = str(e).lower()
+            # If it's a timeout-related exception, proceed to background mode
+            if "timeout" not in error_str:
+                # Other errors - retry up to 3 times
+                max_retries = 3
+                for retry_count in range(1, max_retries + 1):
+                    wait_time = 2 ** retry_count
+                    logger.warning("Execution error, retrying in %ds (attempt %d/%d) - Command: %s - Error: %s: %s - Task: %s, Backend: %s",
+                                   wait_time, retry_count, max_retries, _safe_command_preview(command), type(e).__name__, e, effective_task_id, env_type)
+                    time.sleep(wait_time)
+                    try:
+                        quick_result = env.execute(command, **execute_kwargs)
+                        # Check again for timeout exit code
+                        if quick_result.get("returncode") == 124:
+                            quick_result = None
+                            break  # Will proceed to background
+                        break
+                    except Exception as retry_e:
+                        if retry_count == max_retries:
+                            logger.error("Execution failed after %d retries - Command: %s - Error: %s: %s - Task: %s, Backend: %s",
+                                         max_retries, _safe_command_preview(command), type(e).__name__, retry_e, effective_task_id, env_type,
+                                         exc_info=True)
+                            return json.dumps({
+                                "output": "",
+                                "exit_code": -1,
+                                "error": f"Command execution failed: {type(retry_e).__name__}: {str(retry_e)}"
+                            }, ensure_ascii=False)
+                        e = retry_e
+        
+        # Step 2: If quick execution succeeded, return result immediately
+        if quick_result is not None:
+            output = quick_result.get("output", "")
+            returncode = quick_result.get("returncode", 0)
             
             # Add helpful message for sudo failures in messaging context
             output = _handle_sudo_failure(output, env_type)
@@ -1487,8 +1400,8 @@ def terminal_tool(
             # Truncate output if too long, keeping both head and tail
             MAX_OUTPUT_CHARS = 50000
             if len(output) > MAX_OUTPUT_CHARS:
-                head_chars = int(MAX_OUTPUT_CHARS * 0.4)  # 40% head (error messages often appear early)
-                tail_chars = MAX_OUTPUT_CHARS - head_chars  # 60% tail (most recent/relevant output)
+                head_chars = int(MAX_OUTPUT_CHARS * 0.4)
+                tail_chars = MAX_OUTPUT_CHARS - head_chars
                 omitted = len(output) - head_chars - tail_chars
                 truncated_notice = (
                     f"\n\n... [OUTPUT TRUNCATED - {omitted} chars omitted "
@@ -1496,17 +1409,15 @@ def terminal_tool(
                 )
                 output = output[:head_chars] + truncated_notice + output[-tail_chars:]
 
-            # Strip ANSI escape sequences so the model never sees terminal
-            # formatting — prevents it from copying escapes into file writes.
+            # Strip ANSI escape sequences
             from tools.ansi_strip import strip_ansi
             output = strip_ansi(output)
 
-            # Redact secrets from command output (catches env/printenv leaking keys)
+            # Redact secrets from command output
             from agent.redact import redact_sensitive_text
             output = redact_sensitive_text(output.strip()) if output else ""
 
             # Interpret non-zero exit codes that aren't real errors
-            # (e.g. grep=1 means "no matches", diff=1 means "files differ")
             exit_note = _interpret_exit_code(command, returncode)
 
             result_dict = {
@@ -1520,6 +1431,100 @@ def terminal_tool(
                 result_dict["exit_code_meaning"] = exit_note
 
             return json.dumps(result_dict, ensure_ascii=False)
+        
+        # Step 3: Command is taking too long - auto-background it
+        logger.info("Command exceeded %ds threshold, auto-backgrounding: %s", AUTO_BACKGROUND_TIMEOUT, _safe_command_preview(command))
+        
+        try:
+            if env_type == "local":
+                proc_session = process_registry.spawn_local(
+                    command=command,
+                    cwd=effective_cwd,
+                    task_id=effective_task_id,
+                    session_key=session_key,
+                    env_vars=env.env if hasattr(env, 'env') else None,
+                    use_pty=effective_pty,
+                )
+            else:
+                proc_session = process_registry.spawn_via_env(
+                    env=env,
+                    command=command,
+                    cwd=effective_cwd,
+                    task_id=effective_task_id,
+                    session_key=session_key,
+                )
+
+            # Populate routing metadata for notifications
+            from gateway.session_context import get_session_env as _gse
+            _gw_platform = _gse("HERMES_SESSION_PLATFORM", "")
+            if _gw_platform:
+                _gw_chat_id = _gse("HERMES_SESSION_CHAT_ID", "")
+                _gw_thread_id = _gse("HERMES_SESSION_THREAD_ID", "")
+                _gw_user_id = _gse("HERMES_SESSION_USER_ID", "")
+                _gw_user_name = _gse("HERMES_SESSION_USER_NAME", "")
+                proc_session.watcher_platform = _gw_platform
+                proc_session.watcher_chat_id = _gw_chat_id
+                proc_session.watcher_user_id = _gw_user_id
+                proc_session.watcher_user_name = _gw_user_name
+                proc_session.watcher_thread_id = _gw_thread_id
+
+            # Always enable auto-notification for auto-backgrounded commands
+            proc_session.notify_on_complete = True
+            
+            # Register watcher for gateway notification
+            if proc_session.watcher_platform:
+                proc_session.watcher_interval = 5
+                process_registry.pending_watchers.append({
+                    "session_id": proc_session.id,
+                    "check_interval": 5,
+                    "session_key": session_key,
+                    "platform": proc_session.watcher_platform,
+                    "chat_id": proc_session.watcher_chat_id,
+                    "user_id": proc_session.watcher_user_id,
+                    "user_name": proc_session.watcher_user_name,
+                    "thread_id": proc_session.watcher_thread_id,
+                    "notify_on_complete": True,
+                })
+
+            # Set watch patterns if provided
+            if watch_patterns:
+                proc_session.watch_patterns = list(watch_patterns)
+
+            result_data = {
+                "output": (
+                    f"Command is taking longer than {AUTO_BACKGROUND_TIMEOUT} seconds. "
+                    f"It has been automatically moved to background execution.\n\n"
+                    f"Session ID: {proc_session.id}\n"
+                    f"PID: {proc_session.pid}\n\n"
+                    f"You can:\n"
+                    f"  - Check status: process(action='poll', session_id='{proc_session.id}')\n"
+                    f"  - View output: process(action='log', session_id='{proc_session.id}')\n"
+                    f"  - Kill process: process(action='kill', session_id='{proc_session.id}')\n\n"
+                    f"You will be automatically notified when the command completes."
+                ),
+                "session_id": proc_session.id,
+                "pid": proc_session.pid,
+                "status": "auto_backgrounded",
+                "exit_code": None,
+                "error": None,
+                "notify_on_complete": True,
+            }
+            if approval_note:
+                result_data["approval"] = approval_note
+            if pty_disabled_reason:
+                result_data["pty_note"] = pty_disabled_reason
+            if watch_patterns:
+                result_data["watch_patterns"] = proc_session.watch_patterns
+
+            return json.dumps(result_data, ensure_ascii=False)
+            
+        except Exception as e:
+            logger.error("Failed to auto-background command: %s - Command: %s", e, _safe_command_preview(command))
+            return json.dumps({
+                "output": "",
+                "exit_code": -1,
+                "error": f"Command timed out and failed to move to background: {str(e)}"
+            }, ensure_ascii=False)
 
     except Exception as e:
         import traceback
@@ -1662,11 +1667,12 @@ if __name__ == "__main__":
     print("  - terminal_tool: Execute commands in sandboxed environments")
 
     print("\nUsage Examples:")
-    print("  # Execute a command")
+    print("  # Execute a command (fast commands return immediately)")
     print("  result = terminal_tool(command='ls -la')")
     print("  ")
-    print("  # Run a background task")
-    print("  result = terminal_tool(command='python server.py', background=True)")
+    print("  # Long commands auto-background with notification")
+    print("  result = terminal_tool(command='python long_task.py')")
+    print("  # Returns: session_id, use process(action='poll') to check status")
 
     print("\nEnvironment Variables:")
     default_img = "nikolaik/python-nodejs:python3.11-nodejs20"
@@ -1697,14 +1703,9 @@ TERMINAL_SCHEMA = {
                 "type": "string",
                 "description": "The command to execute on the VM"
             },
-            "background": {
-                "type": "boolean",
-                "description": "Run the command in the background. Two patterns: (1) Long-lived processes that never exit (servers, watchers). (2) Long-running tasks paired with notify_on_complete=true — you can keep working and get notified when the task finishes. For short commands, prefer foreground with a generous timeout instead.",
-                "default": False
-            },
             "timeout": {
                 "type": "integer",
-                "description": f"Max seconds to wait (default: 180, foreground max: {FOREGROUND_MAX_TIMEOUT}). Returns INSTANTLY when command finishes — set high for long tasks, you won't wait unnecessarily. Foreground timeout above {FOREGROUND_MAX_TIMEOUT}s is rejected; use background=true for longer commands.",
+                "description": "Maximum time to wait for command completion in seconds (default: 180). Commands exceeding 5 seconds are automatically moved to background execution.",
                 "minimum": 1
             },
             "workdir": {
@@ -1716,15 +1717,10 @@ TERMINAL_SCHEMA = {
                 "description": "Run in pseudo-terminal (PTY) mode for interactive CLI tools like Codex, Claude Code, or Python REPL. Only works with local and SSH backends. Default: false.",
                 "default": False
             },
-            "notify_on_complete": {
-                "type": "boolean",
-                "description": "When true (and background=true), you'll be automatically notified when the process finishes — no polling needed. Use this for tasks that take a while (tests, builds, deployments) so you can keep working on other things in the meantime.",
-                "default": False
-            },
             "watch_patterns": {
                 "type": "array",
                 "items": {"type": "string"},
-                "description": "Strings to watch for in background process output. Fires a notification the first time each pattern matches a line of output. **Use ONLY for mid-process signals** you want to react to before the process exits — errors, readiness markers, intermediate step markers (e.g. [\"ERROR\", \"Traceback\", \"listening on port\"]). Do NOT use for end-of-run markers (summary headers, 'DONE', 'PASS' printed right before exit) — use `notify_on_complete` for that instead. Stacking end-of-run patterns on top of `notify_on_complete` produces duplicate, delayed notifications that arrive after you've already moved on, since delivery is asynchronous and continues after the process exits."
+                "description": "List of strings to watch for in command output. When any pattern matches a line of output, you'll be notified with the matching text. Use for monitoring logs, watching for errors, or waiting for specific events (e.g. [\"ERROR\", \"FAIL\", \"listening on port\"])."
             }
         },
         "required": ["command"]
@@ -1735,12 +1731,10 @@ TERMINAL_SCHEMA = {
 def _handle_terminal(args, **kw):
     return terminal_tool(
         command=args.get("command"),
-        background=args.get("background", False),
         timeout=args.get("timeout"),
         task_id=kw.get("task_id"),
         workdir=args.get("workdir"),
         pty=args.get("pty", False),
-        notify_on_complete=args.get("notify_on_complete", False),
         watch_patterns=args.get("watch_patterns"),
     )
 
