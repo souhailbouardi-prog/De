@@ -2396,6 +2396,159 @@ class AIAgent:
         
         return None
 
+    def _extract_tool_calls_from_reasoning(
+        self,
+        reasoning_text: str,
+        valid_tool_names: set = None,
+    ) -> list:
+        """Extract tool calls embedded inside reasoning/thinking content.
+
+        Some models (notably GLM-5.x via Z.AI) emit tool calls inside
+        ``reasoning_content`` or ``<thinking>`` blocks instead of the
+        standard ``delta.tool_calls`` SSE field.  The Hermes streaming
+        parser accumulates reasoning text but never inspects it for tool
+        calls, causing the model's intended tool calls to be silently
+        dropped.
+
+        This method scans reasoning text for tool-call-like patterns and
+        returns a list of dicts matching the internal tool_calls_acc
+        schema::
+
+            {"id": ..., "type": "function", "function": {"name": ..., "arguments": ...}}
+
+        Recognised formats (case-insensitive):
+
+        1. **JSON objects** containing ``"name"`` and ``"arguments"``
+           (or ``"parameters"``) keys — common in GLM-5.x reasoning.
+        2. **XML-style tags** like ``<tool_call name="...">`` or
+           ``<function_call>`` with JSON bodies — common in Qwen
+           thinking blocks.
+
+        Args:
+            reasoning_text: The raw reasoning/thinking content string.
+            valid_tool_names: Set of valid tool names to filter against.
+                If None, all extracted calls are returned.
+
+        Returns:
+            List of tool-call dicts.  Empty list if nothing found.
+        """
+        if not reasoning_text or not reasoning_text.strip():
+            return []
+
+        results = []
+        seen_ids = set()
+        call_counter = 0
+
+        # --- Pattern 1: JSON objects with "name" and "arguments"/"parameters" ---
+        # Matches {"name": "tool_name", "arguments": {...}} and variations.
+        # Use a loose scan: find all top-level {...} that look like tool calls.
+        json_pattern = re.compile(
+            r'\{\s*"name"\s*:\s*"([^"]+)"\s*,\s*"'
+            r'(?:arguments|parameters)'
+            r'"\s*:\s*(\{[^}]*\})'
+            r'\s*\}',
+            re.DOTALL,
+        )
+        for match in json_pattern.finditer(reasoning_text):
+            tool_name = match.group(1)
+            args_str = match.group(2)
+            if valid_tool_names and tool_name not in valid_tool_names:
+                continue
+            call_id = f"reasoning_tc_{call_counter}"
+            call_counter += 1
+            if call_id in seen_ids:
+                continue
+            seen_ids.add(call_id)
+            # Ensure arguments is valid JSON
+            try:
+                json.loads(args_str)
+            except json.JSONDecodeError:
+                # Try wrapping fix — sometimes the inner JSON is truncated
+                args_str = json.dumps({"_raw": args_str})
+            results.append({
+                "id": call_id,
+                "type": "function",
+                "function": {"name": tool_name, "arguments": args_str},
+            })
+
+        # --- Pattern 2: XML-style <tool_call name="..."> with JSON body ---
+        xml_pattern = re.compile(
+            r'<tool_call[^>]*\bname\s*=\s*"([^"]+)"[^>]*>'
+            r'(.*?)</tool_call\s*>',
+            re.DOTALL | re.IGNORECASE,
+        )
+        for match in xml_pattern.finditer(reasoning_text):
+            tool_name = match.group(1)
+            body = match.group(2).strip()
+            if valid_tool_names and tool_name not in valid_tool_names:
+                continue
+            call_id = f"reasoning_tc_{call_counter}"
+            call_counter += 1
+            if call_id in seen_ids:
+                continue
+            seen_ids.add(call_id)
+            # Body might be the arguments JSON directly
+            args_str = body if body else "{}"
+            try:
+                parsed = json.loads(args_str)
+                args_str = json.dumps(parsed)
+            except json.JSONDecodeError:
+                args_str = "{}"
+            results.append({
+                "id": call_id,
+                "type": "function",
+                "function": {"name": tool_name, "arguments": args_str},
+            })
+
+        # --- Pattern 3: <function_call> JSON wrapper ---
+        fc_pattern = re.compile(
+            r'<function_call>\s*(\{.*?\})\s*</function_call\s*>',
+            re.DOTALL | re.IGNORECASE,
+        )
+        for match in fc_pattern.finditer(reasoning_text):
+            body = match.group(1).strip()
+            try:
+                obj = json.loads(body)
+                tool_name = obj.get("name", "")
+                if not tool_name:
+                    continue
+                if valid_tool_names and tool_name not in valid_tool_names:
+                    continue
+                args = obj.get("arguments") or obj.get("parameters") or {}
+                call_id = f"reasoning_tc_{call_counter}"
+                call_counter += 1
+                if call_id in seen_ids:
+                    continue
+                seen_ids.add(call_id)
+                results.append({
+                    "id": call_id,
+                    "type": "function",
+                    "function": {"name": tool_name, "arguments": json.dumps(args)},
+                })
+            except json.JSONDecodeError:
+                continue
+
+        if results:
+            # Deduplicate by (tool_name, arguments) — multiple patterns
+            # can match the same embedded tool call.
+            _seen = set()
+            _unique = []
+            for r in results:
+                _key = (r["function"]["name"], r["function"]["arguments"])
+                if _key not in _seen:
+                    _seen.add(_key)
+                    _unique.append(r)
+            results = _unique
+
+            logger.info(
+                "Extracted %d tool call(s) from reasoning content "
+                "(names: %s) — model emitted tool calls inside thinking block",
+                len(results),
+                [r["function"]["name"] for r in results],
+            )
+
+        return results
+
     def _cleanup_task_resources(self, task_id: str) -> None:
         """Clean up VM and browser resources for a given task.
 
@@ -5930,11 +6083,45 @@ class AIAgent:
                         ),
                     ))
 
+            # --- Reasoning-embedded tool call recovery ---
+            # Some models (GLM-5.x, Qwen3.5) emit tool calls inside
+            # reasoning_content / <thinking> blocks instead of the
+            # standard delta.tool_calls field.  When mock_tool_calls
+            # is empty but reasoning contains tool-call-like structures,
+            # extract and promote them so the agent loop can execute them.
+            full_reasoning = "".join(reasoning_parts) or None
+            if not mock_tool_calls and full_reasoning:
+                _recovered = self._extract_tool_calls_from_reasoning(
+                    full_reasoning,
+                    valid_tool_names=self.valid_tool_names or None,
+                )
+                if _recovered:
+                    mock_tool_calls = []
+                    for tc_dict in _recovered:
+                        mock_tool_calls.append(SimpleNamespace(
+                            id=tc_dict["id"],
+                            type=tc_dict["type"],
+                            extra_content=None,
+                            function=SimpleNamespace(
+                                name=tc_dict["function"]["name"],
+                                arguments=tc_dict["function"]["arguments"],
+                            ),
+                        ))
+                    # Model intended a tool call — override finish_reason
+                    # so the agent loop takes the tool-call branch.
+                    finish_reason = "tool_calls"
+                    self._vprint(
+                        f"{self.log_prefix}🔧 Recovered {len(mock_tool_calls)} tool "
+                        f"call(s) from reasoning content (model emitted inside "
+                        f"thinking block)",
+                        force=True,
+                    )
+
             effective_finish_reason = finish_reason or "stop"
             if has_truncated_tool_args:
                 effective_finish_reason = "length"
 
-            full_reasoning = "".join(reasoning_parts) or None
+            # full_reasoning already set above (reasoning-embedded recovery)
             mock_message = SimpleNamespace(
                 role=role,
                 content=full_content,
