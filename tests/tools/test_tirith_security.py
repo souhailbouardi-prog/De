@@ -996,11 +996,13 @@ class TestHermesHomeIsolation:
         assert hermes_home is not None, "HERMES_HOME should be set by conftest"
         assert "hermes_test" in hermes_home, "Should point to test temp dir"
 
-    def test_get_hermes_home_fallback(self):
+    def test_get_hermes_home_fallback(self, monkeypatch):
         """Without HERMES_HOME set, falls back to ~/.hermes."""
         from tools.tirith_security import _get_hermes_home
-        with patch.dict(os.environ, {}, clear=True):
-            # Remove HERMES_HOME entirely
-            os.environ.pop("HERMES_HOME", None)
-            result = _get_hermes_home()
+        # Only remove HERMES_HOME — clearing all of os.environ would also
+        # strip HOME, which makes os.path.expanduser('~') fall back to the
+        # passwd-db home (the real invoking user) instead of the test HOME
+        # set by the runner.  The test's intent is "no HERMES_HOME" only.
+        monkeypatch.delenv("HERMES_HOME", raising=False)
+        result = _get_hermes_home()
         assert result == os.path.join(os.path.expanduser("~"), ".hermes")
