@@ -165,6 +165,307 @@ class TestGatewayStopCleanup:
         assert kill_calls == [False]
 
 
+class TestGatewayRestartAll:
+    def test_restart_all_restarts_active_service_units_and_only_kills_manual_leftovers(self, monkeypatch):
+        monkeypatch.setattr(gateway_cli, "supports_systemd_services", lambda: True)
+        monkeypatch.setattr(gateway_cli, "is_macos", lambda: False)
+        monkeypatch.setattr(gateway_cli, "_ensure_user_systemd_env", lambda: None)
+        monkeypatch.setattr(gateway_cli.time, "sleep", lambda _seconds: None)
+        monkeypatch.setattr(gateway_cli, "_get_service_pids", lambda all_profiles=False: {301, 302})
+
+        def fake_find_gateway_pids(exclude_pids=None, all_profiles=False):
+            assert exclude_pids == {301, 302}
+            assert all_profiles is True
+            return [901]
+
+        monkeypatch.setattr(gateway_cli, "find_gateway_pids", fake_find_gateway_pids)
+
+        kill_calls = []
+        monkeypatch.setattr(gateway_cli.os, "kill", lambda pid, sig: kill_calls.append((pid, sig)))
+
+        run_calls = []
+
+        def fake_run(cmd, capture_output=False, text=False, timeout=None, **kwargs):
+            run_calls.append(cmd)
+            if cmd[:3] == ["systemctl", "--user", "list-units"]:
+                return SimpleNamespace(
+                    returncode=0,
+                    stdout=(
+                        "hermes-gateway.service loaded active running\n"
+                        "hermes-gateway-alpha.service loaded active running\n"
+                    ),
+                    stderr="",
+                )
+            if cmd[:2] == ["systemctl", "list-units"]:
+                return SimpleNamespace(
+                    returncode=0,
+                    stdout="hermes-gateway-beta.service loaded active running\n",
+                    stderr="",
+                )
+            if "is-active" in cmd:
+                return SimpleNamespace(returncode=0, stdout="active\n", stderr="")
+            if "restart" in cmd:
+                return SimpleNamespace(returncode=0, stdout="", stderr="")
+            raise AssertionError(f"Unexpected command: {cmd}")
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        restarted_services, killed_pids = gateway_cli.restart_all_gateways()
+
+        assert restarted_services == [
+            "hermes-gateway",
+            "hermes-gateway-alpha",
+            "hermes-gateway-beta",
+        ]
+        assert killed_pids == {901}
+        assert kill_calls == [(901, gateway_cli.signal.SIGTERM)]
+        assert [cmd for cmd in run_calls if "restart" in cmd] == [
+            ["systemctl", "--user", "restart", "hermes-gateway"],
+            ["systemctl", "--user", "restart", "hermes-gateway-alpha"],
+            ["systemctl", "restart", "hermes-gateway-beta"],
+        ]
+
+    def test_get_service_pids_collects_all_launchd_gateway_labels(self, monkeypatch):
+        monkeypatch.setattr(gateway_cli, "supports_systemd_services", lambda: False)
+        monkeypatch.setattr(gateway_cli, "is_macos", lambda: True)
+        monkeypatch.setattr(
+            gateway_cli,
+            "_list_launchd_gateway_labels",
+            lambda: ["ai.hermes.gateway", "ai.hermes.gateway-alpha"],
+        )
+
+        def fake_run(cmd, capture_output=False, text=False, timeout=None, **kwargs):
+            if cmd == ["launchctl", "list", "ai.hermes.gateway"]:
+                return SimpleNamespace(returncode=0, stdout="111\t0\tai.hermes.gateway\n", stderr="")
+            if cmd == ["launchctl", "list", "ai.hermes.gateway-alpha"]:
+                return SimpleNamespace(returncode=0, stdout="222\t0\tai.hermes.gateway-alpha\n", stderr="")
+            raise AssertionError(f"Unexpected command: {cmd}")
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        assert gateway_cli._get_service_pids(all_profiles=True) == {111, 222}
+
+    def test_restart_all_restarts_all_launchd_gateway_labels(self, monkeypatch):
+        monkeypatch.setattr(gateway_cli, "supports_systemd_services", lambda: False)
+        monkeypatch.setattr(gateway_cli, "is_macos", lambda: True)
+        monkeypatch.setattr(
+            gateway_cli,
+            "_list_launchd_gateway_labels",
+            lambda: ["ai.hermes.gateway", "ai.hermes.gateway-alpha"],
+        )
+        monkeypatch.setattr(gateway_cli, "_get_service_pids", lambda all_profiles=False: {401, 402})
+
+        def fake_find_gateway_pids(exclude_pids=None, all_profiles=False):
+            assert exclude_pids == {401, 402}
+            assert all_profiles is True
+            return [901]
+
+        monkeypatch.setattr(gateway_cli, "find_gateway_pids", fake_find_gateway_pids)
+
+        kill_calls = []
+        monkeypatch.setattr(gateway_cli.os, "kill", lambda pid, sig: kill_calls.append((pid, sig)))
+
+        run_calls = []
+
+        def fake_run(cmd, capture_output=False, text=False, timeout=None, check=False, **kwargs):
+            run_calls.append(cmd)
+            if cmd == ["launchctl", "list", "ai.hermes.gateway"]:
+                return SimpleNamespace(returncode=0, stdout="111\t0\tai.hermes.gateway\n", stderr="")
+            if cmd == ["launchctl", "list", "ai.hermes.gateway-alpha"]:
+                return SimpleNamespace(returncode=0, stdout="222\t0\tai.hermes.gateway-alpha\n", stderr="")
+            if cmd == ["launchctl", "kickstart", "-k", "gui/501/ai.hermes.gateway-alpha"]:
+                return SimpleNamespace(returncode=0, stdout="", stderr="")
+            raise AssertionError(f"Unexpected command: {cmd}")
+
+        monkeypatch.setattr(gateway_cli, "get_launchd_label", lambda: "ai.hermes.gateway")
+        monkeypatch.setattr(gateway_cli, "_launchd_domain", lambda: "gui/501")
+        monkeypatch.setattr(gateway_cli, "launchd_restart", lambda: None)
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        restarted_services, killed_pids = gateway_cli.restart_all_gateways()
+
+        assert restarted_services == ["ai.hermes.gateway", "ai.hermes.gateway-alpha"]
+        assert killed_pids == {901}
+        assert kill_calls == [(901, gateway_cli.signal.SIGTERM)]
+        assert [cmd for cmd in run_calls if cmd[:2] == ["launchctl", "kickstart"]] == [
+            ["launchctl", "kickstart", "-k", "gui/501/ai.hermes.gateway-alpha"],
+        ]
+
+    def test_gateway_command_restart_all_delegates_to_restart_all_gateways(self, monkeypatch):
+        restart_all_calls = []
+        monkeypatch.setattr(
+            gateway_cli,
+            "restart_all_gateways",
+            lambda fail_on_service_error=False: restart_all_calls.append(fail_on_service_error) or (["hermes-gateway"], set()),
+        )
+        monkeypatch.setattr(
+            gateway_cli,
+            "systemd_stop",
+            lambda system=False: (_ for _ in ()).throw(AssertionError("legacy stop path should not run")),
+        )
+        monkeypatch.setattr(
+            gateway_cli,
+            "systemd_start",
+            lambda system=False: (_ for _ in ()).throw(AssertionError("legacy start path should not run")),
+        )
+        monkeypatch.setattr(
+            gateway_cli,
+            "kill_gateway_processes",
+            lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("legacy kill path should not run")),
+        )
+
+        gateway_cli.gateway_command(SimpleNamespace(gateway_command="restart", system=False, all=True))
+
+        assert restart_all_calls == [True]
+
+    def test_gateway_command_restart_all_exits_nonzero_when_service_restart_fails(self, monkeypatch):
+        monkeypatch.setattr(gateway_cli, "supports_systemd_services", lambda: False)
+        monkeypatch.setattr(gateway_cli, "is_macos", lambda: False)
+        monkeypatch.setattr(gateway_cli, "_has_current_profile_manual_gateway", lambda: False)
+        monkeypatch.setattr(
+            gateway_cli,
+            "restart_all_gateways",
+            lambda fail_on_service_error=False: (_ for _ in ()).throw(RuntimeError("restart failed")),
+        )
+
+        try:
+            gateway_cli.gateway_command(SimpleNamespace(gateway_command="restart", system=False, all=True))
+        except SystemExit as exc:
+            assert exc.code == 1
+        else:
+            raise AssertionError("Expected restart --all failure to exit nonzero")
+
+    def test_gateway_command_restart_all_keeps_current_manual_gateway_running_when_other_service_restart_fails(self, monkeypatch):
+        wait_calls = []
+        run_calls = []
+
+        monkeypatch.setattr(gateway_cli, "supports_systemd_services", lambda: False)
+        monkeypatch.setattr(gateway_cli, "is_macos", lambda: False)
+        monkeypatch.setattr(gateway_cli, "_has_current_profile_manual_gateway", lambda: True)
+        monkeypatch.setattr(gateway_cli, "_wait_for_gateway_exit", lambda timeout=10.0, force_after=5.0: wait_calls.append((timeout, force_after)))
+        monkeypatch.setattr(gateway_cli, "run_gateway", lambda verbose=0: run_calls.append(verbose))
+        monkeypatch.setattr(
+            gateway_cli,
+            "restart_all_gateways",
+            lambda fail_on_service_error=False: (_ for _ in ()).throw(RuntimeError("restart failed")),
+        )
+
+        try:
+            gateway_cli.gateway_command(SimpleNamespace(gateway_command="restart", system=False, all=True))
+        except SystemExit as exc:
+            assert exc.code == 1
+        else:
+            raise AssertionError("Expected restart --all to stay nonzero when another service restart fails")
+
+        assert wait_calls == [(10.0, 5.0)]
+        assert run_calls == [0]
+
+    def test_gateway_command_restart_all_restarts_current_manual_gateway_when_no_service_is_configured(self, monkeypatch):
+        restart_all_calls = []
+        run_calls = []
+        wait_calls = []
+
+        monkeypatch.setattr(gateway_cli, "supports_systemd_services", lambda: False)
+        monkeypatch.setattr(gateway_cli, "is_macos", lambda: False)
+        monkeypatch.setattr(gateway_cli, "_has_current_profile_manual_gateway", lambda: True)
+        monkeypatch.setattr(
+            gateway_cli,
+            "restart_all_gateways",
+            lambda fail_on_service_error=False: restart_all_calls.append(fail_on_service_error) or ([], {321, 654}),
+        )
+        monkeypatch.setattr(gateway_cli, "_wait_for_gateway_exit", lambda timeout=10.0, force_after=5.0: wait_calls.append((timeout, force_after)))
+        monkeypatch.setattr(gateway_cli, "run_gateway", lambda verbose=0: run_calls.append(verbose))
+
+        gateway_cli.gateway_command(SimpleNamespace(gateway_command="restart", system=False, all=True))
+
+        assert restart_all_calls == [True]
+        assert wait_calls == [(10.0, 5.0)]
+        assert run_calls == [0]
+
+    def test_gateway_command_restart_all_restarts_current_manual_gateway_when_service_file_exists_but_service_is_down(self, tmp_path, monkeypatch):
+        restart_all_calls = []
+        run_calls = []
+
+        unit_path = tmp_path / "hermes-gateway.service"
+        unit_path.write_text("[Unit]\nDescription=Gateway\n", encoding="utf-8")
+
+        monkeypatch.setattr(gateway_cli, "supports_systemd_services", lambda: True)
+        monkeypatch.setattr(gateway_cli, "is_macos", lambda: False)
+        monkeypatch.setattr(gateway_cli, "get_systemd_unit_path", lambda system=False: unit_path)
+        monkeypatch.setattr(gateway_cli, "_any_systemd_service_running", lambda: False)
+        monkeypatch.setattr(gateway_cli, "_has_current_profile_manual_gateway", lambda: True)
+        monkeypatch.setattr(
+            gateway_cli,
+            "restart_all_gateways",
+            lambda fail_on_service_error=False: restart_all_calls.append(fail_on_service_error) or ([], {321}),
+        )
+        monkeypatch.setattr(gateway_cli, "_wait_for_gateway_exit", lambda timeout=10.0, force_after=5.0: None)
+        monkeypatch.setattr(gateway_cli, "run_gateway", lambda verbose=0: run_calls.append(verbose))
+
+        gateway_cli.gateway_command(SimpleNamespace(gateway_command="restart", system=False, all=True))
+
+        assert restart_all_calls == [True]
+        assert run_calls == [0]
+
+    def test_gateway_command_restart_all_does_not_start_manual_gateway_when_system_scope_service_is_already_running(self, tmp_path, monkeypatch):
+        restart_all_calls = []
+        run_calls = []
+
+        user_unit = tmp_path / "hermes-gateway-user.service"
+        system_unit = tmp_path / "hermes-gateway-system.service"
+        user_unit.write_text("[Unit]\nDescription=User Gateway\n", encoding="utf-8")
+        system_unit.write_text("[Unit]\nDescription=System Gateway\n", encoding="utf-8")
+
+        monkeypatch.setattr(gateway_cli, "supports_systemd_services", lambda: True)
+        monkeypatch.setattr(gateway_cli, "is_macos", lambda: False)
+        monkeypatch.setattr(gateway_cli, "get_systemd_unit_path", lambda system=False: system_unit if system else user_unit)
+
+        def fake_run_systemctl(args, system=False, capture_output=True, text=True, timeout=10, check=False):
+            if args == ["is-active", gateway_cli.get_service_name()] and system:
+                return SimpleNamespace(returncode=0, stdout="active\n", stderr="")
+            if args == ["is-active", gateway_cli.get_service_name()] and not system:
+                return SimpleNamespace(returncode=3, stdout="inactive\n", stderr="")
+            raise AssertionError(f"Unexpected systemctl call: args={args}, system={system}")
+
+        monkeypatch.setattr(gateway_cli, "_run_systemctl", fake_run_systemctl)
+        monkeypatch.setattr(gateway_cli, "_has_current_profile_manual_gateway", lambda: True)
+        monkeypatch.setattr(
+            gateway_cli,
+            "restart_all_gateways",
+            lambda fail_on_service_error=False: restart_all_calls.append(fail_on_service_error) or (["hermes-gateway"], set()),
+        )
+        monkeypatch.setattr(gateway_cli, "run_gateway", lambda verbose=0: run_calls.append(verbose))
+
+        gateway_cli.gateway_command(SimpleNamespace(gateway_command="restart", system=False, all=True))
+
+        assert restart_all_calls == [True]
+        assert run_calls == []
+
+    def test_gateway_command_restart_all_does_not_start_current_manual_gateway_from_other_profile_service_pids(self, monkeypatch):
+        restart_all_calls = []
+        run_calls = []
+
+        monkeypatch.setattr(gateway_cli, "supports_systemd_services", lambda: False)
+        monkeypatch.setattr(gateway_cli, "is_macos", lambda: False)
+        monkeypatch.setattr(gateway_cli, "_has_current_profile_manual_gateway", lambda: False)
+        monkeypatch.setattr(
+            gateway_cli,
+            "find_gateway_pids",
+            lambda exclude_pids=None, all_profiles=False: [777] if not all_profiles else [777, 888],
+        )
+        monkeypatch.setattr(
+            gateway_cli,
+            "restart_all_gateways",
+            lambda fail_on_service_error=False: restart_all_calls.append(fail_on_service_error) or (["hermes-gateway-other"], set()),
+        )
+        monkeypatch.setattr(gateway_cli, "run_gateway", lambda verbose=0: run_calls.append(verbose))
+
+        gateway_cli.gateway_command(SimpleNamespace(gateway_command="restart", system=False, all=True))
+
+        assert restart_all_calls == [True]
+        assert run_calls == []
+
+
 class TestLaunchdServiceRecovery:
     def test_get_restart_drain_timeout_prefers_env_then_config_then_default(self, monkeypatch):
         monkeypatch.delenv("HERMES_RESTART_DRAIN_TIMEOUT", raising=False)

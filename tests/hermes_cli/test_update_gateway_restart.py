@@ -812,7 +812,7 @@ class TestFindGatewayPidsExclude:
 
         monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
         monkeypatch.setattr("os.getpid", lambda: 999)
-        monkeypatch.setattr(gateway_cli, "_get_service_pids", lambda: set())
+        monkeypatch.setattr(gateway_cli, "_get_service_pids", lambda all_profiles=False: set())
         monkeypatch.setattr(gateway_cli, "_profile_arg", lambda hermes_home=None: "--profile orcha")
 
         pids = gateway_cli.find_gateway_pids()

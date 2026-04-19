@@ -250,7 +250,7 @@ def test_install_linux_gateway_from_setup_system_choice_as_root_installs(monkeyp
 
 
 def test_find_gateway_pids_falls_back_to_pid_file_when_process_scan_fails(monkeypatch):
-    monkeypatch.setattr(gateway, "_get_service_pids", lambda: set())
+    monkeypatch.setattr(gateway, "_get_service_pids", lambda all_profiles=False: set())
     monkeypatch.setattr(gateway, "is_windows", lambda: False)
     monkeypatch.setattr("gateway.status.get_running_pid", lambda: 321)
 
@@ -262,6 +262,40 @@ def test_find_gateway_pids_falls_back_to_pid_file_when_process_scan_fails(monkey
     monkeypatch.setattr(gateway.subprocess, "run", fake_run)
 
     assert gateway.find_gateway_pids() == [321]
+
+
+def test_find_gateway_pids_ignores_other_profile_systemd_services_by_default(monkeypatch):
+    monkeypatch.setattr(gateway, "supports_systemd_services", lambda: True)
+    monkeypatch.setattr(gateway, "is_macos", lambda: False)
+    monkeypatch.setattr(gateway, "is_windows", lambda: False)
+    monkeypatch.setattr(gateway, "get_service_name", lambda: "hermes-gateway-current")
+    monkeypatch.setattr("gateway.status.get_running_pid", lambda: None)
+    monkeypatch.setattr(gateway, "_scan_gateway_pids", lambda exclude_pids=None, all_profiles=False: [])
+
+    def fake_run(cmd, **kwargs):
+        if cmd[:3] == ["systemctl", "--user", "list-units"]:
+            return SimpleNamespace(returncode=0, stdout="hermes-gateway-other.service loaded active running\n", stderr="")
+        if cmd[:2] == ["systemctl", "list-units"]:
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        if cmd == ["systemctl", "--user", "show", "hermes-gateway-other.service", "--property=MainPID", "--value"]:
+            return SimpleNamespace(returncode=0, stdout="555\n", stderr="")
+        if cmd == ["systemctl", "--user", "show", "hermes-gateway-current.service", "--property=MainPID", "--value"]:
+            return SimpleNamespace(returncode=0, stdout="0\n", stderr="")
+        if cmd == ["systemctl", "show", "hermes-gateway-current.service", "--property=MainPID", "--value"]:
+            return SimpleNamespace(returncode=0, stdout="0\n", stderr="")
+        raise AssertionError(f"Unexpected command: {cmd}")
+
+    monkeypatch.setattr(gateway.subprocess, "run", fake_run)
+
+    assert gateway.find_gateway_pids() == []
+
+
+def test_has_current_profile_manual_gateway_excludes_service_managed_pids(monkeypatch):
+    monkeypatch.setattr(gateway, "_get_service_pids", lambda all_profiles=False: {777})
+    monkeypatch.setattr("gateway.status.get_running_pid", lambda: 777)
+    monkeypatch.setattr(gateway, "_scan_gateway_pids", lambda exclude_pids=None, all_profiles=False: [777])
+
+    assert gateway._has_current_profile_manual_gateway() is False
 
 
 # ---------------------------------------------------------------------------
