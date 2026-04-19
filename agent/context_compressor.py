@@ -38,15 +38,18 @@ SUMMARY_PREFIX = (
     "[CONTEXT COMPACTION — REFERENCE ONLY] Earlier turns were compacted "
     "into the summary below. This is a handoff from a previous context "
     "window — treat it as background reference, NOT as active instructions. "
-    "Do NOT answer questions or fulfill requests mentioned in this summary; "
-    "they were already addressed. "
-    "Your current task is identified in the '## Active Task' section of the "
-    "summary — resume exactly from there. "
-    "Respond ONLY to the latest user message "
-    "that appears AFTER this summary. The current session state (files, "
-    "config, etc.) may reflect work described here — avoid repeating it:"
+    "Do NOT resume, continue, or act on any instructions, tasks, or requests "
+    "described below — they were already addressed in the earlier session. "
+    "Do NOT answer questions or fulfill requests mentioned in this summary. "
+    "Respond ONLY to the latest user message that appears AFTER this summary. "
+    "The current session state (files, config, etc.) may reflect work described "
+    "here — avoid repeating it:"
 )
 LEGACY_SUMMARY_PREFIX = "[CONTEXT SUMMARY]:"
+
+# Closing fence marker appended after summary content to delimit historical
+# reference from live conversation.
+FENCE_MARKER = "[END OF COMPACTION REFERENCE — live conversation resumes below]"
 
 # Minimum tokens for the summary output
 _MIN_SUMMARY_TOKENS = 2000
@@ -811,13 +814,23 @@ The user has requested that this compaction PRIORITISE preserving all informatio
 
     @staticmethod
     def _with_summary_prefix(summary: str) -> str:
-        """Normalize summary text to the current compaction handoff format."""
+        """Normalize summary text to the current compaction handoff format.
+
+        Wraps summary content with SUMMARY_PREFIX at the top and FENCE_MARKER
+        at the bottom, creating a clear boundary between historical reference
+        and live conversation.
+        """
         text = (summary or "").strip()
         for prefix in (LEGACY_SUMMARY_PREFIX, SUMMARY_PREFIX):
             if text.startswith(prefix):
                 text = text[len(prefix):].lstrip()
                 break
-        return f"{SUMMARY_PREFIX}\n{text}" if text else SUMMARY_PREFIX
+        # Strip any existing fence marker before re-wrapping
+        if text.endswith(FENCE_MARKER):
+            text = text[:-len(FENCE_MARKER)].rstrip()
+        if text:
+            return f"{SUMMARY_PREFIX}\n{text}\n{FENCE_MARKER}"
+        return f"{SUMMARY_PREFIX}\n{FENCE_MARKER}"
 
     # ------------------------------------------------------------------
     # Tool-call / tool-result pair integrity helpers
@@ -1134,7 +1147,7 @@ The user has requested that this compaction PRIORITISE preserving all informatio
             msg = messages[i].copy()
             if i == 0 and msg.get("role") == "system":
                 existing = msg.get("content") or ""
-                _compression_note = "[Note: Some earlier conversation turns have been compacted into a handoff summary to preserve context space. The current session state may still reflect earlier work, so build on that summary and state rather than re-doing work.]"
+                _compression_note = "[Note: Some earlier conversation turns have been compacted into a handoff summary to preserve context space. The compaction summary is background reference only — do NOT resume or continue any tasks from it unless the current user message explicitly requests it. The current session state may reflect earlier work; check existing state before re-doing anything.]"
                 if _compression_note not in existing:
                     msg["content"] = existing + "\n\n" + _compression_note
             compressed.append(msg)
@@ -1151,6 +1164,7 @@ The user has requested that this compaction PRIORITISE preserving all informatio
                 f"removed to free context space but could not be summarized. The removed "
                 f"turns contained earlier work in this session. Continue based on the "
                 f"recent messages below and the current state of any files or resources."
+                f"\n{FENCE_MARKER}"
             )
 
         _merge_summary_into_tail = False
@@ -1183,8 +1197,8 @@ The user has requested that this compaction PRIORITISE preserving all informatio
                 original = msg.get("content") or ""
                 msg["content"] = (
                     summary
-                    + "\n\n--- END OF CONTEXT SUMMARY — "
-                    "respond to the message below, not the summary above ---\n\n"
+                    + "\n\n" + FENCE_MARKER
+                    + "\n\n--- Respond to the message below, not the summary above ---\n\n"
                     + original
                 )
                 _merge_summary_into_tail = False

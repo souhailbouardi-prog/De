@@ -8982,7 +8982,7 @@ class AIAgent:
                 elif isinstance(r, str) and r.strip():
                     _ctx_parts.append(r)
             if _ctx_parts:
-                _plugin_user_context = "\n\n".join(_ctx_parts)
+                _plugin_user_context = sanitize_context("\n\n".join(_ctx_parts)).strip()
         except Exception as exc:
             logger.warning("pre_llm_call hook failed: %s", exc)
 

@@ -3,7 +3,7 @@
 import pytest
 from unittest.mock import patch, MagicMock
 
-from agent.context_compressor import ContextCompressor, SUMMARY_PREFIX
+from agent.context_compressor import ContextCompressor, SUMMARY_PREFIX, FENCE_MARKER
 
 
 @pytest.fixture()
@@ -168,9 +168,9 @@ class TestNonStringContent:
 
         with patch("agent.context_compressor.call_llm", return_value=mock_response):
             summary = c._generate_summary(messages)
-        # None content → empty string → standardized compaction handoff prefix added
+        # None content → empty string → standardized compaction handoff prefix + fence
         assert summary is not None
-        assert summary == SUMMARY_PREFIX
+        assert summary == f"{SUMMARY_PREFIX}\n{FENCE_MARKER}"
 
     def test_summary_call_does_not_force_temperature(self):
         mock_response = MagicMock()
@@ -245,11 +245,11 @@ class TestSummaryFailureCooldown:
 class TestSummaryPrefixNormalization:
     def test_legacy_prefix_is_replaced(self):
         summary = ContextCompressor._with_summary_prefix("[CONTEXT SUMMARY]: did work")
-        assert summary == f"{SUMMARY_PREFIX}\ndid work"
+        assert summary == f"{SUMMARY_PREFIX}\ndid work\n{FENCE_MARKER}"
 
     def test_existing_new_prefix_is_not_duplicated(self):
         summary = ContextCompressor._with_summary_prefix(f"{SUMMARY_PREFIX}\ndid work")
-        assert summary == f"{SUMMARY_PREFIX}\ndid work"
+        assert summary == f"{SUMMARY_PREFIX}\ndid work\n{FENCE_MARKER}"
 
 
 class TestCompressWithClient:
@@ -905,3 +905,70 @@ class TestTruncateToolCallArgsJson:
         parsed = _json.loads(shrunk)
         assert parsed["path"] == "~/.hermes/skills/shopping/browser-setup-notes.md"
         assert parsed["content"].endswith("...[truncated]")
+
+
+
+
+
+class TestFenceMarkers:
+    """Tests for strengthened fence markers (SUMMARY_PREFIX, FENCE_MARKER, _compression_note)."""
+
+    def test_summary_prefix_contains_do_not_act(self):
+        """SUMMARY_PREFIX must contain explicit DO-NOT-ACT warning."""
+        assert "Do NOT resume" in SUMMARY_PREFIX
+        # The phrase "resume, continue, or act" appears as a single clause
+        assert "resume, continue, or act" in SUMMARY_PREFIX
+
+    def test_summary_prefix_does_not_use_weak_semicolon(self):
+        """Old prefix used semicolon after 'requests mentioned' —
+        new prefix must use period + separate sentence for emphasis."""
+        # Old: "Do NOT answer questions or fulfill requests mentioned in this summary;"
+        # New: "Do NOT answer questions or fulfill requests mentioned in this summary."
+        assert "mentioned in this summary." in SUMMARY_PREFIX
+        assert "mentioned in this summary;" not in SUMMARY_PREFIX
+
+    def test_fence_marker_defined(self):
+        """FENCE_MARKER must be a non-empty string."""
+        assert FENCE_MARKER
+        assert isinstance(FENCE_MARKER, str)
+
+    def test_fence_marker_delimiter_content(self):
+        """FENCE_MARKER must contain clear delimiting language."""
+        assert "END OF COMPACTION REFERENCE" in FENCE_MARKER
+        assert "live conversation resumes" in FENCE_MARKER
+
+    def test_with_summary_prefix_wraps_with_fence(self):
+        """_with_summary_prefix must wrap content with both prefix and fence."""
+        result = ContextCompressor._with_summary_prefix("did work")
+        assert result.startswith(SUMMARY_PREFIX)
+        assert result.endswith(FENCE_MARKER)
+        assert "did work" in result
+        # Content is between prefix and fence
+        body = result[len(SUMMARY_PREFIX):result.index(FENCE_MARKER)]
+        assert "did work" in body
+
+    def test_with_summary_prefix_empty_body_still_has_fence(self):
+        """Empty body still gets both prefix and fence — no naked prefix."""
+        result = ContextCompressor._with_summary_prefix("")
+        assert result == f"{SUMMARY_PREFIX}\n{FENCE_MARKER}"
+
+    def test_with_summary_prefix_idempotent(self):
+        """Double-wrapping should not produce nested prefixes or fences."""
+        first = ContextCompressor._with_summary_prefix("did work")
+        second = ContextCompressor._with_summary_prefix(first)
+        assert second == first
+
+    def test_compression_note_does_not_say_build_on(self):
+        """The compression note injected into system prompt must NOT say
+        'build on that summary' — that encourages resuming stale tasks."""
+        _compression_note = (
+            "[Note: Some earlier conversation turns have been compacted into a "
+            "handoff summary to preserve context space. The compaction summary "
+            "is background reference only — do NOT resume or continue any tasks "
+            "from it unless the current user message explicitly requests it. "
+            "The current session state may reflect earlier work; check existing "
+            "state before re-doing anything.]"
+        )
+        assert "build on" not in _compression_note.lower()
+        assert "reference only" in _compression_note.lower()
+        assert "do NOT resume" in _compression_note

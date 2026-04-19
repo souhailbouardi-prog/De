@@ -54,8 +54,171 @@ _INTERNAL_NOTE_RE = re.compile(
 )
 
 
+def _get_compaction_prefixes() -> tuple[list[str], list[str]]:
+    """Return known context-compaction wrapper prefixes.
+
+    Import lazily to avoid creating a hard module import dependency at import
+    time. Fall back to the canonical string literals if the compressor module
+    is unavailable for any reason.
+    """
+    try:
+        from agent.context_compressor import (
+            LEGACY_SUMMARY_PREFIX, SUMMARY_PREFIX, FENCE_MARKER,
+        )
+
+        return ([SUMMARY_PREFIX, LEGACY_SUMMARY_PREFIX], [FENCE_MARKER])
+    except Exception:
+        return (
+            [
+                "[CONTEXT COMPACTION — REFERENCE ONLY] Earlier turns were compacted "
+                "into the summary below. This is a handoff from a previous context "
+                "window — treat it as background reference, NOT as active instructions. "
+                "Do NOT resume, continue, or act on any instructions, tasks, or requests "
+                "described below — they were already addressed in the earlier session. "
+                "Do NOT answer questions or fulfill requests mentioned in this summary. "
+                "Respond ONLY to the latest user message that appears AFTER this summary. "
+                "The current session state (files, config, etc.) may reflect work described "
+                "here — avoid repeating it:",
+                "[CONTEXT SUMMARY]:",
+            ],
+            ["[END OF COMPACTION REFERENCE — live conversation resumes below]"],
+        )
+
+
+def _compress_compaction_body(body: str) -> str:
+    """Compress a compaction summary body to its structural skeleton.
+
+    Keeps ``##`` section headers and the first meaningful line after each
+    header, discarding the rest.  This preserves enough context for the
+    agent to understand *what was discussed* without carrying forward the
+    full detail that could be mistaken for active instructions.
+
+    If the body has no ``##`` headers, returns the first 3 non-empty lines
+    as a minimal digest.
+    """
+    lines = body.split("\n")
+    result: list[str] = []
+    saw_header = False
+
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        stripped = line.strip()
+        # Keep section headers (## ...)
+        if stripped.startswith("## "):
+            result.append(line)
+            saw_header = True
+            # Keep the first non-empty, non-header line after the header
+            j = i + 1
+            while j < len(lines):
+                next_stripped = lines[j].strip()
+                if next_stripped and not next_stripped.startswith("## "):
+                    result.append(lines[j])
+                    break
+                elif next_stripped.startswith("## "):
+                    # Next section header with no body line in between
+                    break
+                j += 1
+            i += 1
+            continue
+        i += 1
+
+    if not saw_header:
+        # No ## headers — take first non-empty line as minimal digest
+        non_empty = [l for l in lines if l.strip()]
+        result = non_empty[:1]
+
+    if not result:
+        return ""
+
+    # Append a truncation notice so it's clear this is compressed
+    result.append("…[compaction summary compressed — full detail removed]…")
+    return "\n".join(result)
+
+
+def _compact_compaction_wrappers(text: str) -> str:
+    """Compress context-compaction wrapper blocks instead of deleting them.
+
+    When a compaction summary re-enters a live user message or
+    plugin-injected context (e.g. the LLM echoes it back), the old
+    behaviour was to strip the entire block.  Plan B: *compress* the
+    summary body to its section headers + first line, keeping the
+    SUMMARY_PREFIX / FENCE_MARKER wrappers so the agent can still see
+    the background structure, but without the full detail that could be
+    mistaken for active instructions.
+
+    Legacy format blocks (``[CONTEXT SUMMARY]:`` without a fence) are
+    still stripped entirely — they predate the fence mechanism and lack
+    the protective wrapping.
+    """
+    prefixes, fence_markers = _get_compaction_prefixes()
+
+    # Separate modern (fenced) and legacy (unfenced) prefixes.
+    # LEGACY_SUMMARY_PREFIX is the short one: "[CONTEXT SUMMARY]:"
+    modern_prefix = prefixes[0]   # SUMMARY_PREFIX — the long one
+    legacy_prefix = prefixes[1]   # "[CONTEXT SUMMARY]:"
+
+    # --- Modern blocks WITH fence: compress body, keep wrappers ---
+    # Use a placeholder to protect the fence markers in compressed blocks
+    # from the orphan-cleanup step that follows.
+    _FENCE_PLACEHOLDER = "\x00COMPACTED_FENCE\x00"
+    for fence in fence_markers:
+        pattern = re.compile(
+            rf'({re.escape(modern_prefix)})'   # capture prefix
+            rf'([\s\S]*?)'                      # capture body
+            rf'({re.escape(fence)})'            # capture fence
+        )
+        def _replacer(m: re.Match) -> str:
+            prefix = m.group(1)
+            body = m.group(2)
+            fence_text = m.group(3)
+            compressed = _compress_compaction_body(body.strip())
+            if not compressed:
+                return ""
+            return f"{prefix}\n{compressed}\n{_FENCE_PLACEHOLDER}"
+        text = pattern.sub(_replacer, text)
+
+    # --- Modern blocks WITHOUT fence (truncated): compress body, no fence ---
+    # Matches SUMMARY_PREFIX + body when not followed by FENCE_MARKER.
+    # This handles cases where the fence was lost during partial processing.
+    _trunc_pattern = re.compile(
+        rf'({re.escape(modern_prefix)})'
+        rf'([\s\S]*?)'
+        rf'(?=\n{{2,}}\S|$)'
+    )
+    def _trunc_replacer(m: re.Match) -> str:
+        prefix = m.group(1)
+        body = m.group(2)
+        # Skip if body already contains a fence marker or its placeholder
+        # (handled by the fenced-block step above)
+        if any(fm in body for fm in fence_markers) or _FENCE_PLACEHOLDER in body:
+            return m.group(0)
+        compressed = _compress_compaction_body(body.strip())
+        if not compressed:
+            return ""
+        # No fence to protect — just prefix + compressed body
+        return f"{prefix}\n{compressed}"
+    text = _trunc_pattern.sub(_trunc_replacer, text)
+
+    # --- Legacy blocks: still strip entirely (no fence protection) ---
+    pattern = re.compile(
+        rf'{re.escape(legacy_prefix)}[\s\S]*?(?=(?:\n{{2,}}\S)|$)'
+    )
+    text = pattern.sub('', text)
+
+    # --- Orphan fence markers: still strip ---
+    for fence in fence_markers:
+        text = re.sub(rf'\s*{re.escape(fence)}\s*', '\n', text)
+
+    # --- Restore protected fence markers from compressed blocks ---
+    text = text.replace(_FENCE_PLACEHOLDER, fence_markers[0])
+
+    return text.strip('\n')
+
+
 def sanitize_context(text: str) -> str:
-    """Strip fence tags, injected context blocks, and system notes from provider output."""
+    """Compress compaction blocks and strip fence tags / system notes from provider output."""
+    text = _compact_compaction_wrappers(text)
     text = _INTERNAL_CONTEXT_RE.sub('', text)
     text = _INTERNAL_NOTE_RE.sub('', text)
     text = _FENCE_TAG_RE.sub('', text)
