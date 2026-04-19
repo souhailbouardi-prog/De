@@ -37,6 +37,7 @@
       imports = [
         ./nix/packages.nix
         ./nix/nixosModules.nix
+        ./nix/homeManagerModules.nix
         ./nix/checks.nix
         ./nix/devShell.nix
       ];
