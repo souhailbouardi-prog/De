@@ -660,7 +660,7 @@ def _load_auth_store(auth_file: Optional[Path] = None) -> Dict[str, Any]:
         return {"version": AUTH_STORE_VERSION, "providers": {}}
 
     try:
-        raw = json.loads(auth_file.read_text())
+        raw = json.loads(auth_file.read_text(encoding="utf-8"))
     except Exception:
         return {"version": AUTH_STORE_VERSION, "providers": {}}
 

@@ -2,6 +2,7 @@
 
 import json
 import os
+from pathlib import Path
 import pytest
 
 
@@ -83,3 +84,42 @@ def test_claude_code_oauth_token_does_not_count_as_explicit(tmp_path, monkeypatc
 
     from hermes_cli.auth import is_provider_explicitly_configured
     assert is_provider_explicitly_configured("anthropic") is False
+
+
+def test_load_auth_store_reads_utf8_regardless_of_locale(tmp_path, monkeypatch):
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir(parents=True, exist_ok=True)
+    auth_file = hermes_home / "auth.json"
+    auth_file.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "active_provider": "anthropic",
+                "providers": {
+                    "anthropic": {
+                        "label": "kişisel",
+                    }
+                },
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    original_read_text = Path.read_text
+
+    def fake_read_text(self, *args, **kwargs):
+        if self == auth_file and kwargs.get("encoding") != "utf-8":
+            raise UnicodeDecodeError("cp1252", b"\x81", 0, 1, "invalid start byte")
+        return original_read_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", fake_read_text)
+
+    from hermes_cli.auth import _load_auth_store
+
+    store = _load_auth_store()
+
+    assert store["active_provider"] == "anthropic"
+    assert store["providers"]["anthropic"]["label"] == "kişisel"
