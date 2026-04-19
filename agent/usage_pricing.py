@@ -393,6 +393,8 @@ def resolve_billing_route(
 
     if provider_name == "openai-codex":
         return BillingRoute(provider="openai-codex", model=model, base_url=base_url or "", billing_mode="subscription_included")
+    if provider_name == "vertex" or "aiplatform.googleapis.com" in base:
+        return BillingRoute(provider="google", model=model.split("/")[-1] if model else "", base_url=base_url or "", billing_mode="official_docs_snapshot")
     if provider_name == "openrouter" or "openrouter.ai" in base:
         return BillingRoute(provider="openrouter", model=model, base_url=base_url or "", billing_mode="official_models_api")
     if provider_name == "anthropic":

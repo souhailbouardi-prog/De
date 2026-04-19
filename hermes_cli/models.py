@@ -139,6 +139,15 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "gemini-2.5-flash",
         "gemini-2.5-flash-lite",
     ],
+    "vertex": [
+        "gemini-3.1-pro-preview",
+        "gemini-3-pro-preview",
+        "gemini-3-flash-preview",
+        "gemini-3.1-flash-lite-preview",
+        "gemini-2.5-pro",
+        "gemini-2.5-flash",
+        "gemini-2.5-flash-lite",
+    ],
     "zai": [
         "glm-5.1",
         "glm-5",
@@ -569,6 +578,7 @@ CANONICAL_PROVIDERS: list[ProviderEntry] = [
     ProviderEntry("opencode-go",    "OpenCode Go",              "OpenCode Go (open models, $10/month subscription)"),
     ProviderEntry("ai-gateway",     "Vercel AI Gateway",        "Vercel AI Gateway (200+ models, pay-per-use)"),
     ProviderEntry("bedrock",        "AWS Bedrock",              "AWS Bedrock (Claude, Nova, Llama, DeepSeek — IAM or API key)"),
+    ProviderEntry("vertex",         "Google Vertex AI",         "Google Vertex AI (Enterprise Gemini models via GCP)"),
 ]
 
 # Derived dicts — used throughout the codebase

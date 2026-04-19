@@ -4,6 +4,7 @@
 
 # Core dependencies
 openai
+google-auth
 python-dotenv
 fire
 httpx
