@@ -348,3 +348,71 @@ class TestPoolRotationCycle:
         )
         assert recovered is False
         assert has_retried is False
+
+
+# ---------------------------------------------------------------------------
+# 7. Auth exhaustion notification via _emit_status
+# ---------------------------------------------------------------------------
+
+class TestAuthExhaustionNotification:
+    """Verify _emit_status is called when all credentials are 401-exhausted.
+
+    Same-provider key rotation should remain silent — the notification only
+    fires when mark_exhausted_and_rotate() returns None (no credentials left).
+    """
+
+    def _make_agent(self, *, next_entry=None):
+        """Minimal AIAgent with a credential pool that returns next_entry on rotate."""
+        from run_agent import AIAgent
+        from agent.error_classifier import FailoverReason
+
+        with patch.object(AIAgent, "__init__", lambda self, **kw: None):
+            agent = AIAgent()
+
+        pool = MagicMock()
+        pool.has_credentials.return_value = True
+        pool.try_refresh_current.return_value = None  # refresh always fails
+        pool.mark_exhausted_and_rotate.return_value = next_entry
+        agent._credential_pool = pool
+        agent._swap_credential = MagicMock()
+        agent.log_prefix = ""
+        agent.provider = "kimi-coding"
+        agent._emit_status = MagicMock()
+
+        return agent, pool
+
+    def test_emits_notification_when_all_credentials_exhausted(self):
+        """When pool is fully exhausted on 401, _emit_status must fire."""
+        from agent.error_classifier import FailoverReason
+
+        agent, _ = self._make_agent(next_entry=None)  # no credentials left
+
+        recovered, _ = agent._recover_with_credential_pool(
+            status_code=401,
+            has_retried_429=False,
+            classified_reason=FailoverReason.auth,
+        )
+
+        assert recovered is False
+        agent._emit_status.assert_called_once()
+        msg = agent._emit_status.call_args[0][0]
+        assert "kimi-coding" in msg
+        assert "401" in msg
+        assert "hermes auth reset" in msg
+
+    def test_silent_when_rotation_to_next_credential_succeeds(self):
+        """When a next credential is available, rotation is silent — no _emit_status."""
+        from agent.error_classifier import FailoverReason
+
+        next_entry = MagicMock()
+        next_entry.id = "cred-2"
+        agent, _ = self._make_agent(next_entry=next_entry)
+
+        recovered, _ = agent._recover_with_credential_pool(
+            status_code=401,
+            has_retried_429=False,
+            classified_reason=FailoverReason.auth,
+        )
+
+        assert recovered is True
+        agent._emit_status.assert_not_called()

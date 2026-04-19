@@ -5365,6 +5365,18 @@ class AIAgent:
                 )
                 self._swap_credential(next_entry)
                 return True, False
+            # All credentials for this provider are exhausted due to an auth
+            # failure.  Emit a plain-language notification so gateway users
+            # (Telegram, Discord, etc.) know their primary AI is unavailable
+            # and what to do about it.  Same-provider key rotation (above)
+            # remains silent — the message only fires when rotation fails.
+            _provider_label = getattr(self, "provider", "unknown")
+            self._emit_status(
+                f"⚠️ Primary AI ({_provider_label}) is unavailable — the API key "
+                f"may be invalid or expired (HTTP {rotate_status}). Switched to "
+                f"fallback if one is configured. To restore: check your API key "
+                f"and run `hermes auth reset {_provider_label}`."
+            )
 
         return False, has_retried_429
 
