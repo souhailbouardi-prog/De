@@ -1,5 +1,6 @@
 """Tests for hermes_state.py — SessionDB SQLite CRUD, FTS5 search, export."""
 
+import json
 import time
 import pytest
 from pathlib import Path
@@ -742,6 +743,156 @@ class TestDeleteAndExport:
         exports = db.export_all(source="cli")
         assert len(exports) == 1
         assert exports[0]["source"] == "cli"
+
+
+# =========================================================================
+# Export sanitization (ported from anomalyco/opencode#22489)
+# =========================================================================
+
+class TestSanitizeSessionExport:
+    """Validate that sanitize_session_export redacts user content while
+    preserving structural metadata useful for analysis."""
+
+    def test_redacts_message_content(self, db):
+        from hermes_state import sanitize_session_export
+
+        db.create_session(session_id="s1", source="cli", model="test", system_prompt="secret prompt")
+        db.set_session_title("s1", "my confidential task")
+        db.append_message("s1", role="user", content="what is my password?")
+        db.append_message("s1", role="assistant", content="Here's your secret: XYZ")
+
+        raw = db.export_session("s1")
+        sanitized = sanitize_session_export(raw)
+
+        # Structural / metric fields are preserved.
+        assert sanitized["id"] == "s1"
+        assert sanitized["source"] == "cli"
+        assert sanitized["model"] == "test"
+        assert len(sanitized["messages"]) == 2
+        for msg in sanitized["messages"]:
+            assert "role" in msg
+            assert msg["role"] in ("user", "assistant")
+            assert "id" in msg
+            assert "timestamp" in msg
+
+        # Content is redacted.
+        assert "password" not in json.dumps(sanitized)
+        assert "XYZ" not in json.dumps(sanitized)
+        assert "confidential" not in json.dumps(sanitized)
+        assert "secret prompt" not in json.dumps(sanitized)
+        for msg in sanitized["messages"]:
+            assert msg["content"].startswith("[redacted:content:")
+
+        # Title and system_prompt are redacted.
+        assert sanitized["title"].startswith("[redacted:title:")
+        assert sanitized["system_prompt"].startswith("[redacted:system-prompt:")
+
+    def test_redacts_reasoning_and_tool_calls(self, db):
+        from hermes_state import sanitize_session_export
+
+        db.create_session(session_id="s1", source="cli")
+        db.append_message(
+            "s1",
+            role="assistant",
+            content="let me search",
+            reasoning="user asked about their private API key",
+            tool_calls=[{
+                "id": "tc_1",
+                "type": "function",
+                "function": {
+                    "name": "terminal",
+                    "arguments": '{"command": "cat /etc/passwd"}',
+                },
+            }],
+        )
+        db.append_message(
+            "s1",
+            role="tool",
+            content="root:x:0:0:root:/root:/bin/bash",
+            tool_call_id="tc_1",
+            tool_name="terminal",
+        )
+
+        raw = db.export_session("s1")
+        sanitized = sanitize_session_export(raw)
+        dumped = json.dumps(sanitized)
+
+        # No leaked content.
+        assert "private API key" not in dumped
+        assert "/etc/passwd" not in dumped
+        assert "root:x:0:0" not in dumped
+        assert "cat" not in dumped  # the command body should not leak
+
+        # Tool call structure preserved (id, type, function name).
+        asst = sanitized["messages"][0]
+        assert asst["tool_calls"][0]["id"] == "tc_1"
+        assert asst["tool_calls"][0]["type"] == "function"
+        assert asst["tool_calls"][0]["function"]["name"] == "terminal"
+        assert asst["tool_calls"][0]["function"]["arguments"].startswith("[redacted:tool-input:")
+
+        # Reasoning field redacted but present.
+        assert asst["reasoning"].startswith("[redacted:reasoning:")
+
+        # Tool response metadata preserved (tool_call_id, tool_name).
+        tool_msg = sanitized["messages"][1]
+        assert tool_msg["tool_call_id"] == "tc_1"
+        assert tool_msg["tool_name"] == "terminal"
+        assert tool_msg["content"].startswith("[redacted:content:")
+
+    def test_preserves_empty_values(self, db):
+        """Empty/None content should pass through untouched so consumers
+        don't treat sanitization as 'there was hidden data here'."""
+        from hermes_state import sanitize_session_export
+
+        db.create_session(session_id="s1", source="cli")
+        db.append_message("s1", role="user", content="")
+        raw = db.export_session("s1")
+        sanitized = sanitize_session_export(raw)
+
+        # Empty content stays empty (not a fake redaction token).
+        assert sanitized["messages"][0]["content"] in ("", None)
+
+    def test_does_not_mutate_input(self, db):
+        from hermes_state import sanitize_session_export
+
+        db.create_session(session_id="s1", source="cli")
+        db.append_message("s1", role="user", content="original text")
+        raw = db.export_session("s1")
+        original_content = raw["messages"][0]["content"]
+
+        sanitize_session_export(raw)
+
+        # Original dict is unchanged.
+        assert raw["messages"][0]["content"] == original_content
+
+    def test_redacts_reasoning_details_blocks(self):
+        """reasoning_details is a list of typed blocks — preserve type, redact payload."""
+        from hermes_state import sanitize_session_export
+
+        session = {
+            "id": "s1",
+            "source": "cli",
+            "messages": [{
+                "id": "m1",
+                "role": "assistant",
+                "content": "done",
+                "reasoning_details": [
+                    {"type": "reasoning.text", "text": "sensitive internal thought"},
+                    {"type": "reasoning.encrypted", "data": "encrypted_blob_XYZ"},
+                ],
+            }],
+        }
+        sanitized = sanitize_session_export(session)
+        dumped = json.dumps(sanitized)
+
+        assert "sensitive internal thought" not in dumped
+        assert "encrypted_blob_XYZ" not in dumped
+        # Block types preserved.
+        blocks = sanitized["messages"][0]["reasoning_details"]
+        assert blocks[0]["type"] == "reasoning.text"
+        assert blocks[0]["text"].startswith("[redacted:reasoning-text:")
+        assert blocks[1]["type"] == "reasoning.encrypted"
+        assert blocks[1]["data"].startswith("[redacted:reasoning-data:")
 
 
 # =========================================================================

@@ -1215,6 +1215,23 @@ class SessionDB:
             results.append({**session, "messages": messages})
         return results
 
+    # ---------------------------------------------------------------
+    # Export sanitization
+    # ---------------------------------------------------------------
+    #
+    # When users share session exports for debugging or training, the
+    # raw JSON contains every user message, tool output, and reasoning
+    # trace — which often includes file contents, command output, env
+    # variables, paths, and other confidential information.
+    #
+    # ``sanitize_session_export`` produces a deep copy of the export
+    # with all content fields replaced by opaque ``[redacted:<kind>:<id>]``
+    # tokens. Structural metadata (IDs, roles, timestamps, token counts,
+    # tool names, finish reasons, model info, cost data) is preserved
+    # so that the shape of a conversation is still analysable.
+    #
+    # Inspired by anomalyco/opencode#22489 (opencode's ``export --sanitize``).
+
     def clear_messages(self, session_id: str) -> None:
         """Delete all messages for a session and reset its counters."""
         def _do(conn):
@@ -1291,3 +1308,136 @@ class SessionDB:
             return len(session_ids)
 
         return self._execute_write(_do)
+
+
+# =========================================================================
+# Session export sanitization
+# =========================================================================
+#
+# Ported from anomalyco/opencode#22489 — users often want to share a
+# session export for bug reports, feature requests, or training data
+# collection, but the raw export contains every user prompt, tool
+# output, file content, and reasoning trace. ``sanitize_session_export``
+# replaces content fields with opaque tokens while preserving the
+# conversation's structure and metrics.
+
+# Message-level content fields that are always redacted on a message.
+_REDACT_MSG_STRING_FIELDS = (
+    "content",
+    "reasoning",
+)
+
+# Session-level fields that can contain user-facing text.
+_REDACT_SESSION_STRING_FIELDS = (
+    "system_prompt",
+    "title",
+)
+
+
+def _redact_token(kind: str, id_: Any, value: Any) -> Any:
+    """Produce an opaque redaction token. Preserves empty/None values."""
+    if value in (None, "", b""):
+        return value
+    return f"[redacted:{kind}:{id_}]"
+
+
+def _redact_tool_call(call: Any, msg_id: Any, index: int) -> Any:
+    """Redact arguments inside a tool_call while preserving structure (id, name)."""
+    if not isinstance(call, dict):
+        return call
+    out = dict(call)
+    tcid = out.get("id") or f"{msg_id}-{index}"
+    fn = out.get("function")
+    if isinstance(fn, dict):
+        new_fn = dict(fn)
+        if "arguments" in new_fn and new_fn["arguments"] not in (None, "", "{}"):
+            new_fn["arguments"] = _redact_token("tool-input", tcid, new_fn["arguments"])
+        out["function"] = new_fn
+    # Some schemas put args at the top level rather than under ``function``.
+    if "arguments" in out and out["arguments"] not in (None, "", "{}"):
+        out["arguments"] = _redact_token("tool-input", tcid, out["arguments"])
+    return out
+
+
+def _redact_reasoning_details(details: Any, msg_id: Any) -> Any:
+    """Redact text inside OpenAI / Anthropic reasoning_details blocks.
+
+    ``reasoning_details`` is a list of dicts with shapes like::
+
+        {"type": "reasoning.text", "text": "..."}
+        {"type": "reasoning.encrypted", "data": "..."}
+        {"type": "reasoning.summary", "summary": "..."}
+
+    We preserve the block type/structure and redact the inner payload.
+    """
+    if not isinstance(details, list):
+        return details
+    out = []
+    for idx, block in enumerate(details):
+        if not isinstance(block, dict):
+            out.append(block)
+            continue
+        new_block = dict(block)
+        for key in ("text", "data", "summary", "content"):
+            if key in new_block and new_block[key] not in (None, ""):
+                new_block[key] = _redact_token(f"reasoning-{key}", f"{msg_id}-{idx}", new_block[key])
+        out.append(new_block)
+    return out
+
+
+def _redact_message(msg: Dict[str, Any]) -> Dict[str, Any]:
+    """Return a sanitized copy of a single message row."""
+    if not isinstance(msg, dict):
+        return msg
+    msg_id = msg.get("id", "msg")
+    out = dict(msg)
+
+    # Plain string content fields.
+    for field in _REDACT_MSG_STRING_FIELDS:
+        if field in out and out[field] not in (None, ""):
+            out[field] = _redact_token(field.replace("_", "-"), msg_id, out[field])
+
+    # Tool calls: keep structure (id, name) but redact arguments.
+    tcs = out.get("tool_calls")
+    if isinstance(tcs, list):
+        out["tool_calls"] = [_redact_tool_call(tc, msg_id, i) for i, tc in enumerate(tcs)]
+
+    # Reasoning details: preserve block structure, redact text/data.
+    if "reasoning_details" in out:
+        out["reasoning_details"] = _redact_reasoning_details(out["reasoning_details"], msg_id)
+
+    # Codex reasoning items follow the same shape as reasoning_details.
+    if "codex_reasoning_items" in out:
+        out["codex_reasoning_items"] = _redact_reasoning_details(out["codex_reasoning_items"], msg_id)
+
+    return out
+
+
+def sanitize_session_export(session: Dict[str, Any]) -> Dict[str, Any]:
+    """Return a deep-sanitized copy of a session export.
+
+    All user-facing content (message text, reasoning, tool arguments and
+    outputs, system prompt, title) is replaced by ``[redacted:<kind>:<id>]``
+    tokens. Structural metadata (ids, timestamps, token counts, tool names,
+    model/provider info, cost data, finish reasons) is preserved so the
+    export remains useful for debugging schema issues, analysing tool-use
+    patterns, or counting sessions without leaking confidential data.
+
+    The input dict is not mutated.
+    """
+    if not isinstance(session, dict):
+        return session
+    sid = session.get("id", "session")
+    out = dict(session)
+
+    # Session-level text fields (title, system prompt).
+    for field in _REDACT_SESSION_STRING_FIELDS:
+        if field in out and out[field] not in (None, ""):
+            out[field] = _redact_token(field.replace("_", "-"), sid, out[field])
+
+    # Messages list: sanitize each row.
+    msgs = out.get("messages")
+    if isinstance(msgs, list):
+        out["messages"] = [_redact_message(m) for m in msgs]
+
+    return out

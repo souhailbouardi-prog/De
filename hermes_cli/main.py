@@ -7762,6 +7762,13 @@ Examples:
     )
     sessions_export.add_argument("--source", help="Filter by source")
     sessions_export.add_argument("--session-id", help="Export a specific session")
+    sessions_export.add_argument(
+        "--sanitize",
+        action="store_true",
+        help="Redact user/model content (message text, reasoning, tool args/output, titles, "
+             "system prompt) before export. Structure and metrics are preserved. "
+             "Use when sharing exports for bug reports or training data.",
+    )
 
     sessions_delete = sessions_subparsers.add_parser(
         "delete", help="Delete a specific session"
@@ -7856,6 +7863,19 @@ Examples:
                     print(f"{preview:<50} {last_active:<13} {s['source']:<6} {sid}")
 
         elif action == "export":
+            sanitize = getattr(args, "sanitize", False)
+            if sanitize:
+                try:
+                    from hermes_state import sanitize_session_export as _sanitize_fn
+                except Exception:
+                    _sanitize_fn = None
+                    print("Warning: sanitize_session_export unavailable — exporting raw data.")
+            else:
+                _sanitize_fn = None
+
+            def _maybe_sanitize(d):
+                return _sanitize_fn(d) if _sanitize_fn else d
+
             if args.session_id:
                 resolved_session_id = db.resolve_session_id(args.session_id)
                 if not resolved_session_id:
@@ -7865,6 +7885,7 @@ Examples:
                 if not data:
                     print(f"Session '{args.session_id}' not found.")
                     return
+                data = _maybe_sanitize(data)
                 line = _json.dumps(data, ensure_ascii=False) + "\n"
                 if args.output == "-":
                     import sys
@@ -7873,19 +7894,21 @@ Examples:
                 else:
                     with open(args.output, "w", encoding="utf-8") as f:
                         f.write(line)
-                    print(f"Exported 1 session to {args.output}")
+                    suffix = " (sanitized)" if sanitize and _sanitize_fn else ""
+                    print(f"Exported 1 session to {args.output}{suffix}")
             else:
                 sessions = db.export_all(source=args.source)
                 if args.output == "-":
                     import sys
 
                     for s in sessions:
-                        sys.stdout.write(_json.dumps(s, ensure_ascii=False) + "\n")
+                        sys.stdout.write(_json.dumps(_maybe_sanitize(s), ensure_ascii=False) + "\n")
                 else:
                     with open(args.output, "w", encoding="utf-8") as f:
                         for s in sessions:
-                            f.write(_json.dumps(s, ensure_ascii=False) + "\n")
-                    print(f"Exported {len(sessions)} sessions to {args.output}")
+                            f.write(_json.dumps(_maybe_sanitize(s), ensure_ascii=False) + "\n")
+                    suffix = " (sanitized)" if sanitize and _sanitize_fn else ""
+                    print(f"Exported {len(sessions)} sessions to {args.output}{suffix}")
 
         elif action == "delete":
             resolved_session_id = db.resolve_session_id(args.session_id)
