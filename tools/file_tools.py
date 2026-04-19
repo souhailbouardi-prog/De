@@ -739,6 +739,11 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
         if result_dict.get("truncated"):
             next_offset = offset + limit
             result_json += f"\n\n[Hint: Results truncated. Use offset={next_offset} to see more, or narrow with a more specific pattern or file_glob.]"
+
+        # Filter search output to reduce token waste (dedup large result sets)
+        from tools.output_filter import filter_search_output
+        result_json = filter_search_output(result_json, pattern=pattern)
+
         return result_json
     except Exception as e:
         return tool_error(str(e))

@@ -863,6 +863,10 @@ def _execute_remote(
     from agent.redact import redact_sensitive_text
     stdout_text = redact_sensitive_text(stdout_text)
 
+    # Filter output to reduce token waste (RTK-inspired 4-layer purification)
+    from tools.output_filter import filter_code_execution_output
+    stdout_text = filter_code_execution_output(stdout_text, script_info="execute_code")
+
     # Build response
     result: Dict[str, Any] = {
         "status": status,

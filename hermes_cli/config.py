@@ -476,8 +476,6 @@ DEFAULT_CONFIG = {
 
     "smart_model_routing": {
         "enabled": False,
-        "max_simple_chars": 160,
-        "max_simple_words": 28,
         "cheap_model": {},
     },
     
@@ -2873,13 +2871,13 @@ _FALLBACK_COMMENT = """
 #
 # ── Smart Model Routing ────────────────────────────────────────────────
 # Optional cheap-vs-strong routing for simple turns.
-# Keeps the primary model for complex work, but can route short/simple
+# Keeps the primary model for complex work, but can route simple
 # messages to a cheaper model across providers.
+# Uses a complexity scoring system (not length thresholds):
+#   score > 0 -> primary model, score <= 0 -> cheap model.
 #
 # smart_model_routing:
 #   enabled: true
-#   max_simple_chars: 160
-#   max_simple_words: 28
 #   cheap_model:
 #     provider: openrouter
 #     model: google/gemini-2.5-flash
@@ -2917,13 +2915,13 @@ _COMMENTED_SECTIONS = """
 #
 # ── Smart Model Routing ────────────────────────────────────────────────
 # Optional cheap-vs-strong routing for simple turns.
-# Keeps the primary model for complex work, but can route short/simple
+# Keeps the primary model for complex work, but can route simple
 # messages to a cheaper model across providers.
+# Uses a complexity scoring system (not length thresholds):
+#   score > 0 -> primary model, score <= 0 -> cheap model.
 #
 # smart_model_routing:
 #   enabled: true
-#   max_simple_chars: 160
-#   max_simple_words: 28
 #   cheap_model:
 #     provider: openrouter
 #     model: google/gemini-2.5-flash

@@ -1505,6 +1505,11 @@ def terminal_tool(
             from agent.redact import redact_sensitive_text
             output = redact_sensitive_text(output.strip()) if output else ""
 
+            # Filter terminal output to reduce token waste (RTK-inspired 4-layer
+            # purification: smart filter → group aggregate → dedup merge → truncate)
+            from tools.output_filter import filter_terminal_output
+            output = filter_terminal_output(output, command=command)
+
             # Interpret non-zero exit codes that aren't real errors
             # (e.g. grep=1 means "no matches", diff=1 means "files differ")
             exit_note = _interpret_exit_code(command, returncode)

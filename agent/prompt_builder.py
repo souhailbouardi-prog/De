@@ -16,6 +16,7 @@ from hermes_constants import get_hermes_home, get_skills_dir, is_wsl
 from typing import Optional
 
 from agent.skill_utils import (
+    extract_enforcement_rules,
     extract_skill_conditions,
     extract_skill_description,
     get_all_skills_dirs,
@@ -168,6 +169,29 @@ SKILLS_GUIDANCE = (
     "When using a skill and finding it outdated, incomplete, or wrong, "
     "patch it immediately with skill_manage(action='patch') — don't wait to be asked. "
     "Skills that aren't maintained become liabilities."
+)
+
+# Information Lifecycle Management (ILM) — context budget enforcement.
+# Injected into system prompt when output filter is enabled.  This is the
+# second-strongest enforcement tier (below code-level hard constraints in
+# output_filter.py, above skill/memory/documentation tiers).
+ILM_GUIDANCE = (
+    "# Information Lifecycle Management (ILM)\n"
+    "Context is a scarce resource. Every character you let into the context window "
+    "displaces something else. Apply these rules ruthlessly:\n"
+    "<ilm_rules>\n"
+    "- Source control: use delegate_task or execute_code for bulk processing — "
+    "they digest information at the source and return only conclusions. Never "
+    "bring raw data into context when a subagent can process it.\n"
+    "- Instant routing: after consuming any tool output, immediately decide: "
+    "(1) discard if no longer needed, (2) write key findings to a task file "
+    "if needed later, (3) save as a skill if it's a reusable pattern. "
+    "Do NOT accumulate intermediate data in context.\n"
+    "- Task files are the single source of truth. Store only pointers in context "
+    "(e.g., '结论在 ~/tasks/xxx.md 第N行'), never the data itself.\n"
+    "- When a tool returns more output than needed, extract only what matters "
+    "and move on. The output filter enforces hard per-tool limits at code level.\n"
+    "</ilm_rules>"
 )
 
 TOOL_USE_ENFORCEMENT_GUIDANCE = (
@@ -523,6 +547,7 @@ def _build_snapshot_entry(
         "description": description,
         "platforms": [str(p).strip() for p in platforms if str(p).strip()],
         "conditions": extract_skill_conditions(frontmatter),
+        "enforcement": extract_enforcement_rules(frontmatter),
     }
 
 
@@ -633,6 +658,8 @@ def build_skills_system_prompt(
 
     skills_by_category: dict[str, list[tuple[str, str]]] = {}
     category_descriptions: dict[str, str] = {}
+    # Collect enforcement rules from all skills for system-level constraints
+    enforcement_rules: dict[str, dict] = {}
 
     if snapshot is not None:
         # Fast path: use pre-parsed metadata from disk
@@ -656,6 +683,9 @@ def build_skills_system_prompt(
             skills_by_category.setdefault(category, []).append(
                 (frontmatter_name, entry.get("description", ""))
             )
+            # Collect enforcement rules if present
+            if "enforcement" in entry and isinstance(entry["enforcement"], dict):
+                enforcement_rules[skill_name] = entry["enforcement"]
         category_descriptions = {
             str(k): str(v)
             for k, v in (snapshot.get("category_descriptions") or {}).items()
@@ -681,6 +711,9 @@ def build_skills_system_prompt(
             skills_by_category.setdefault(entry["category"], []).append(
                 (entry["frontmatter_name"], entry["description"])
             )
+            # Collect enforcement rules if present
+            if "enforcement" in entry and isinstance(entry["enforcement"], dict):
+                enforcement_rules[skill_name] = entry["enforcement"]
 
         # Read category-level DESCRIPTION.md files
         for desc_file in iter_skill_index_files(skills_dir, "DESCRIPTION.md"):
@@ -737,6 +770,9 @@ def build_skills_system_prompt(
                 skills_by_category.setdefault(entry["category"], []).append(
                     (frontmatter_name, entry["description"])
                 )
+                # Collect enforcement rules if present
+                if "enforcement" in entry and isinstance(entry["enforcement"], dict):
+                    enforcement_rules[skill_name] = entry["enforcement"]
             except Exception as e:
                 logger.debug("Error reading external skill %s: %s", skill_file, e)
 
@@ -775,6 +811,54 @@ def build_skills_system_prompt(
                 else:
                     index_lines.append(f"    - {name}")
 
+        # Build enforcement constraints section if any skills have enforcement rules
+        enforcement_section = ""
+        if enforcement_rules:
+            enforcement_lines = []
+            enforcement_lines.append("## Skill Enforcement Constraints (MUST FOLLOW)")
+            enforcement_lines.append("The following skills define system-level behavioral constraints that MUST be followed when those skills are loaded or relevant to the task:")
+            enforcement_lines.append("")
+            
+            for skill_name, rules in sorted(enforcement_rules.items()):
+                enforcement_lines.append(f"### {skill_name}")
+                
+                # Tool call rhythm constraints
+                if "tool_call_rhythm" in rules:
+                    rhythm = rules["tool_call_rhythm"]
+                    if "max_calls_per_round" in rhythm:
+                        enforcement_lines.append(f"- **Tool call rhythm**: Max {rhythm['max_calls_per_round']} tool calls per round before requiring text output")
+                    if rhythm.get("require_text_after_tools"):
+                        enforcement_lines.append("- **Text after tools**: After consecutive tool calls, MUST output text before next tool calls")
+                
+                # Preconditions
+                if "preconditions" in rules:
+                    precond = rules["preconditions"]
+                    if precond.get("require_plan_before_action"):
+                        enforcement_lines.append("- **Plan before action**: MUST create a plan with time estimation before starting execution")
+                
+                # Quality gates
+                if "quality_gates" in rules and isinstance(rules["quality_gates"], list):
+                    enforcement_lines.append("- **Quality gates**:")
+                    for gate in rules["quality_gates"]:
+                        if isinstance(gate, dict):
+                            name = gate.get("name", "Unnamed gate")
+                            check = gate.get("check", "")
+                            enforcement_lines.append(f"  - {name}: {check}")
+                
+                # Constraints
+                if "constraints" in rules:
+                    constr = rules["constraints"]
+                    if "max_keywords_per_dimension" in constr:
+                        enforcement_lines.append(f"- **Keyword limit**: Max {constr['max_keywords_per_dimension']} keywords per dimension (no sampling, must cover all)")
+                    if "min_deep_reading_count" in constr:
+                        enforcement_lines.append(f"- **Deep reading**: At least {constr['min_deep_reading_count']} deep reading per dimension")
+                    if constr.get("require_arxiv_html"):
+                        enforcement_lines.append("- **Arxiv format**: MUST use arxiv HTML format for papers (not PDF)")
+                
+                enforcement_lines.append("")
+            
+            enforcement_section = "\n".join(enforcement_lines) + "\n\n"
+        
         result = (
             "## Skills (mandatory)\n"
             "Before replying, scan the skills below. If a skill matches or is even partially relevant "
@@ -796,6 +880,7 @@ def build_skills_system_prompt(
             + "\n".join(index_lines) + "\n"
             "</available_skills>\n"
             "\n"
+            + enforcement_section +
             "Only proceed without loading a skill if genuinely none are relevant to the task."
         )
 

@@ -80,7 +80,7 @@ from agent.retry_utils import jittered_backoff
 from agent.error_classifier import classify_api_error, FailoverReason
 from agent.prompt_builder import (
     DEFAULT_AGENT_IDENTITY, PLATFORM_HINTS,
-    MEMORY_GUIDANCE, SESSION_SEARCH_GUIDANCE, SKILLS_GUIDANCE,
+    MEMORY_GUIDANCE, SESSION_SEARCH_GUIDANCE, SKILLS_GUIDANCE, ILM_GUIDANCE,
     build_nous_subscription_prompt,
 )
 from agent.model_metadata import (
@@ -3675,6 +3675,15 @@ class AIAgent:
         if tool_guidance:
             prompt_parts.append(" ".join(tool_guidance))
 
+        # ILM guidance: inject when output filter tools are loaded (code-level
+        # enforcement exists in output_filter.py, this adds the behavioral rule)
+        _has_filter_tools = any(
+            name in self.valid_tool_names
+            for name in ("terminal", "execute_code", "browser", "web_extract", "search_files")
+        )
+        if _has_filter_tools:
+            prompt_parts.append(ILM_GUIDANCE)
+
         nous_subscription_prompt = build_nous_subscription_prompt(self.valid_tool_names)
         if nous_subscription_prompt:
             prompt_parts.append(nous_subscription_prompt)
@@ -3799,6 +3808,18 @@ class AIAgent:
         platform_key = (self.platform or "").lower().strip()
         if platform_key in PLATFORM_HINTS:
             prompt_parts.append(PLATFORM_HINTS[platform_key])
+
+        # Context compaction attention guard: prevent high-frequency terms in
+        # compaction summaries from hijacking the agent's attention and causing
+        # it to hallucinate or summarize topics the user never asked about.
+        prompt_parts.append("""## Context Compaction Guard
+When a context compaction summary appears above, it represents historical work only.
+- DO NOT let high-frequency terms in the summary hijack your attention.
+- Respond ONLY to what the user CURRENTLY asks — do not proactively summarize
+  or comment on topics from the summary unless the user explicitly asks.
+- The summary is for context continuity, not a directive to revisit.
+- High-frequency terms (e.g., "self-evolution", "daily-deep-learning", "enforcement")
+  often appear in summaries but should NOT trigger proactive responses.""")
 
         return "\n\n".join(p.strip() for p in prompt_parts if p.strip())
 

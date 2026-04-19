@@ -1562,6 +1562,10 @@ def browser_snapshot(
         elif len(snapshot_text) > SNAPSHOT_SUMMARIZE_THRESHOLD:
             snapshot_text = _truncate_snapshot(snapshot_text)
         
+        # Filter browser snapshot output to reduce token waste
+        from tools.output_filter import filter_browser_output
+        snapshot_text = filter_browser_output(snapshot_text, browser_action="snapshot")
+        
         response = {
             "success": True,
             "snapshot": snapshot_text,
@@ -2154,6 +2158,9 @@ def browser_vision(question: str, annotate: bool = False, task_id: Optional[str]
         # Redact secrets the vision LLM may have read from the screenshot.
         from agent.redact import redact_sensitive_text
         analysis = redact_sensitive_text(analysis)
+        # Filter vision analysis output to reduce token waste
+        from tools.output_filter import filter_browser_output
+        analysis = filter_browser_output(analysis, browser_action="vision")
         response_data = {
             "success": True,
             "analysis": analysis or "Vision analysis returned no content.",

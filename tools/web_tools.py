@@ -1469,6 +1469,10 @@ async def web_extract_tool(
             result_json = json.dumps(trimmed_response, indent=2, ensure_ascii=False)
             
             cleaned_result = clean_base64_images(result_json)
+            
+            # Filter web_extract output to reduce token waste
+            from tools.output_filter import filter_web_extract_output
+            cleaned_result = filter_web_extract_output(cleaned_result, url=safe_urls[0] if safe_urls else "")
         
         debug_call_data["final_response_size"] = len(cleaned_result)
         debug_call_data["processing_applied"].append("base64_image_removal")

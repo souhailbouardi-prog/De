@@ -312,8 +312,6 @@ def load_cli_config() -> Dict[str, Any]:
         },
         "smart_model_routing": {
             "enabled": False,
-            "max_simple_chars": 160,
-            "max_simple_words": 28,
             "cheap_model": {},
         },
         "agent": {
