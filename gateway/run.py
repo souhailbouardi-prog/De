@@ -5593,7 +5593,7 @@ class GatewayRunner:
             lines.append(f"{auth} `{p['id']}` — {p['label']}{aliases}{marker}")
 
         lines.append("")
-        lines.append("Switch: `/model provider:model-name`")
+        lines.append("Switch: `/model model-name --provider provider`")
         lines.append("Setup: `hermes setup`")
         return "\n".join(lines)
     
