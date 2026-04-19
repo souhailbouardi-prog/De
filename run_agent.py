@@ -7752,6 +7752,11 @@ class AIAgent:
             reset_file_dedup(task_id)
         except Exception:
             pass
+        try:
+            from tools.skills_tool import reset_loaded_skills
+            reset_loaded_skills(task_id)
+        except Exception:
+            pass
 
         logger.info(
             "context compression done: session=%s messages=%d->%d tokens=~%s",

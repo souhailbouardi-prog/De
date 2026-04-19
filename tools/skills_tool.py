@@ -68,6 +68,7 @@ Usage:
 
 import json
 import logging
+import threading
 
 from hermes_constants import get_hermes_home, display_hermes_home
 import os
@@ -102,6 +103,17 @@ _ENV_VAR_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _EXCLUDED_SKILL_DIRS = frozenset((".git", ".github", ".hub"))
 _REMOTE_ENV_BACKENDS = frozenset({"docker", "singularity", "modal", "ssh", "daytona"})
 _secret_capture_callback = None
+
+# ---------------------------------------------------------------------------
+# Per-session skill deduplication state (lazy loading of skills)
+# Tracks which skills have already been loaded in a given task session so that
+# repeated skill_view() calls return a lightweight instruction to the model instead of
+# re-injecting the full SKILL.md body into the conversation context.
+# Keyed by task_id (str); cleared after context compression via
+# reset_loaded_skills().
+# ---------------------------------------------------------------------------
+_loaded_skills: Dict[str, Set[str]] = {}
+_loaded_skills_lock = threading.Lock()
 
 
 def load_env() -> Dict[str, str]:
@@ -524,6 +536,25 @@ def _is_skill_disabled(name: str, platform: str = None) -> bool:
         return False
 
 
+
+def reset_loaded_skills(task_id: str = None) -> None:
+    """Clear the per-session skill deduplication cache.
+
+    Called after context compression — the previously loaded skill content may have
+    been summarized away, so the model needs the full body if it loads the same
+    skill again.  Without this, post-compression skill_view() calls would have to
+    be called with "force:true" by the model. Not critical, but nice to have.
+
+    Call with a *task_id* to clear just that session, or without arguments to
+    clear all sessions (e.g. on gateway shutdown).
+    """
+    with _loaded_skills_lock:
+        if task_id:
+            _loaded_skills.pop(task_id, None)
+        else:
+            _loaded_skills.clear()
+
+
 def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
     """Recursively find all skills in ~/.hermes/skills/ and external dirs.
 
@@ -801,7 +832,7 @@ def _serve_plugin_skill(
     )
 
 
-def skill_view(name: str, file_path: str = None, task_id: str = None) -> str:
+def skill_view(name: str, file_path: str = None, task_id: str = None, force: bool = False) -> str:
     """
     View the content of a skill or a specific file within a skill directory.
 
@@ -810,6 +841,9 @@ def skill_view(name: str, file_path: str = None, task_id: str = None) -> str:
             Qualified names like "plugin:skill" resolve to plugin-provided skills.
         file_path: Optional path to a specific file within the skill (e.g., "references/api.md")
         task_id: Optional task identifier used to probe the active backend
+        force: If True, bypass the per-session deduplication cache and always
+            return the full skill body.  Use when the model suspects the earlier
+            load has been compacted away from the conversation context.
 
     Returns:
         JSON string with skill content or error message
@@ -1008,6 +1042,30 @@ def skill_view(name: str, file_path: str = None, task_id: str = None) -> str:
                 },
                 ensure_ascii=False,
             )
+
+        # Per-session deduplication: if this skill was already loaded in the
+        # current task session, return an instruction to the model instead of
+        # re-injecting the full body.  The caller can pass force=True to bypass
+        # this when the model can't find the skill text because of compaction.
+        effective_task_id = task_id or "default"
+        if not force and not file_path:
+            with _loaded_skills_lock:
+                already_loaded = resolved_name in _loaded_skills.get(effective_task_id, set())
+            if already_loaded:
+                return json.dumps(
+                    {
+                        "success": True,
+                        "already_loaded": True,
+                        "name": resolved_name,
+                        "message": (
+                            f"Skill '{resolved_name}' was already loaded earlier in this session. "
+                            "Refer to its instructions in your context. "
+                            "If you cannot find them (e.g. after context compression), "
+                            "call skill_view again with force=True to reload."
+                        ),
+                    },
+                    ensure_ascii=False,
+                )
 
         # If a specific file path is requested, read that instead
         if file_path and skill_dir:
@@ -1309,6 +1367,11 @@ def skill_view(name: str, file_path: str = None, task_id: str = None) -> str:
         if isinstance(metadata, dict):
             result["metadata"] = metadata
 
+        # Record this skill as loaded for the current session (main SKILL.md only).
+        if not file_path:
+            with _loaded_skills_lock:
+                _loaded_skills.setdefault(effective_task_id, set()).add(skill_name)
+
         return json.dumps(result, ensure_ascii=False)
 
     except Exception as e:
@@ -1393,6 +1456,10 @@ SKILL_VIEW_SCHEMA = {
                 "type": "string",
                 "description": "OPTIONAL: Path to a linked file within the skill (e.g., 'references/api.md', 'templates/config.yaml', 'scripts/validate.py'). Omit to get the main SKILL.md content.",
             },
+            "force": {
+                "type": "boolean",
+                "description": "NOTE: Set to true to reload the full skill content where: you've been told the skill was already loaded, but you can't find it in the session (it may have been compressed away).",
+            },
         },
         "required": ["name"],
     },
@@ -1413,7 +1480,8 @@ registry.register(
     toolset="skills",
     schema=SKILL_VIEW_SCHEMA,
     handler=lambda args, **kw: skill_view(
-        args.get("name", ""), file_path=args.get("file_path"), task_id=kw.get("task_id")
+        args.get("name", ""), file_path=args.get("file_path"), task_id=kw.get("task_id"),
+        force=bool(args.get("force", False))
     ),
     check_fn=check_skills_requirements,
     emoji="📚",

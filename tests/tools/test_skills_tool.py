@@ -1006,3 +1006,96 @@ Do the legacy thing.
         assert result["setup_needed"] is False
         assert result["missing_required_environment_variables"] == []
         assert result["readiness_status"] == "available"
+
+
+class TestSkillViewDeduplication:
+    """Tests for the per-session skill deduplication feature (lazy skill loading)."""
+
+    def _make_skill(self, skills_dir, name, content="# Instructions\nDo the thing."):
+        skill_dir = skills_dir / name
+        skill_dir.mkdir(parents=True, exist_ok=True)
+        (skill_dir / "SKILL.md").write_text(
+            f"---\nname: {name}\ndescription: Test skill {name}\n---\n{content}"
+        )
+
+    def test_first_load_returns_full_content(self, tmp_path):
+        """First skill_view() call returns the full SKILL.md body."""
+        from tools.skills_tool import skill_view, reset_loaded_skills
+        reset_loaded_skills("test-first-load")
+        self._make_skill(tmp_path, "my-skill")
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            result = json.loads(skill_view("my-skill", task_id="test-first-load"))
+        assert result["success"] is True
+        assert result.get("already_loaded") is not True
+        assert "content" in result
+
+    def test_second_load_returns_stub(self, tmp_path):
+        """Second skill_view() call returns the already-loaded stub."""
+        from tools.skills_tool import skill_view, reset_loaded_skills
+        reset_loaded_skills("test-second-load")
+        self._make_skill(tmp_path, "my-skill")
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            skill_view("my-skill", task_id="test-second-load")
+            result = json.loads(skill_view("my-skill", task_id="test-second-load"))
+        assert result["success"] is True
+        assert result.get("already_loaded") is True
+        assert "message" in result
+        assert "force=True" in result["message"]
+
+    def test_force_bypasses_dedup(self, tmp_path):
+        """skill_view() with force=True always returns full content."""
+        from tools.skills_tool import skill_view, reset_loaded_skills
+        reset_loaded_skills("test-force")
+        self._make_skill(tmp_path, "my-skill")
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            skill_view("my-skill", task_id="test-force")
+            result = json.loads(skill_view("my-skill", task_id="test-force", force=True))
+        assert result["success"] is True
+        assert result.get("already_loaded") is not True
+        assert "content" in result
+
+    def test_reset_clears_session_state(self, tmp_path):
+        """reset_loaded_skills() causes the next call to return full content again."""
+        from tools.skills_tool import skill_view, reset_loaded_skills
+        reset_loaded_skills("test-reset")
+        self._make_skill(tmp_path, "my-skill")
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            skill_view("my-skill", task_id="test-reset")
+            reset_loaded_skills("test-reset")
+            result = json.loads(skill_view("my-skill", task_id="test-reset"))
+        assert result["success"] is True
+        assert result.get("already_loaded") is not True
+        assert "content" in result
+
+    def test_dedup_is_per_task_id(self, tmp_path):
+        """Deduplication is scoped to task_id — different sessions are independent."""
+        from tools.skills_tool import skill_view, reset_loaded_skills
+        reset_loaded_skills("session-a")
+        reset_loaded_skills("session-b")
+        self._make_skill(tmp_path, "my-skill")
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            skill_view("my-skill", task_id="session-a")
+            result = json.loads(skill_view("my-skill", task_id="session-b"))
+        assert result["success"] is True
+        assert result.get("already_loaded") is not True
+        assert "content" in result
+
+    def test_file_path_load_not_deduplicated(self, tmp_path):
+        """Linked file loads (file_path set) are never deduplicated."""
+        from tools.skills_tool import skill_view, reset_loaded_skills
+        reset_loaded_skills("test-file-path")
+        skill_dir = tmp_path / "my-skill"
+        skill_dir.mkdir()
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: my-skill\ndescription: Test\n---\n# Instructions"
+        )
+        refs = skill_dir / "references"
+        refs.mkdir()
+        (refs / "api.md").write_text("# API docs")
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            skill_view("my-skill", task_id="test-file-path")
+            result = json.loads(
+                skill_view("my-skill", file_path="references/api.md", task_id="test-file-path")
+            )
+        assert result["success"] is True
+        assert result.get("already_loaded") is not True
