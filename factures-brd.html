@@ -1,0 +1,384 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>BRD Services</title>
+<script src="https://cdn.jsdelivr.net/npm/@emailjs/browser@4/dist/email.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<style>
+:root{--navy:#0d1b4b;--navy2:#1a2e7a;--gold:#c9a84c;--bg:#f0f2f7;--border:#d1d5db;--muted:#6b7280;}
+*{box-sizing:border-box;margin:0;padding:0;}
+body{font-family:'Segoe UI',system-ui,sans-serif;background:var(--bg);color:#111;}
+
+.app-header{background:linear-gradient(135deg,var(--navy),var(--navy2));padding:0 20px;height:64px;display:flex;align-items:center;justify-content:space-between;box-shadow:0 4px 16px rgba(13,27,75,.35);}
+.header-brand{display:flex;align-items:center;gap:12px;}
+.header-logo{width:40px;height:40px;background:var(--gold);border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:1.3rem;font-weight:900;color:var(--navy);}
+.header-title{color:#fff;font-size:1.1rem;font-weight:700;}
+.header-sub{color:rgba(255,255,255,.55);font-size:.72rem;}
+.btn-settings{background:rgba(255,255,255,.15);border:1px solid rgba(255,255,255,.3);color:#fff;padding:8px 14px;border-radius:8px;font-size:.8rem;font-weight:600;cursor:pointer;}
+
+#form-section .wrap{max-width:640px;margin:32px auto;padding:0 16px 60px;}
+.card{background:#fff;border-radius:14px;padding:28px;box-shadow:0 8px 32px rgba(13,27,75,.08);}
+.card-title{font-size:1rem;font-weight:700;color:var(--navy);margin-bottom:20px;padding-bottom:11px;border-bottom:2px solid var(--gold);}
+.div{font-size:.68rem;text-transform:uppercase;letter-spacing:.1em;color:var(--muted);font-weight:700;margin:18px 0 11px;padding-bottom:5px;border-bottom:1px solid var(--border);}
+.row2{display:grid;grid-template-columns:1fr 1fr;gap:12px;}
+.fg{margin-bottom:13px;}
+.fg label{display:block;font-size:.72rem;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.07em;margin-bottom:5px;}
+.fg input,.fg textarea{width:100%;padding:10px 13px;border:2px solid var(--border);border-radius:8px;font-size:.95rem;font-family:inherit;color:#111;background:#fafbfd;outline:none;transition:border-color .15s;}
+.fg input:focus,.fg textarea:focus{border-color:var(--navy2);background:#fff;}
+.fg textarea{resize:vertical;min-height:70px;line-height:1.5;}
+.radio-group{display:flex;gap:10px;}
+.radio-opt{display:flex;align-items:center;gap:8px;background:#f0f3fa;border:2px solid var(--border);border-radius:8px;padding:10px 14px;cursor:pointer;flex:1;font-size:.9rem;font-weight:600;transition:border-color .15s;}
+.radio-opt input{width:17px;height:17px;accent-color:var(--navy);}
+.radio-opt:has(input:checked){border-color:var(--navy);background:#eef0fa;}
+.btn-gen{width:100%;padding:14px;background:linear-gradient(135deg,var(--navy),var(--navy2));color:#fff;border:none;border-radius:9px;font-size:.95rem;font-weight:700;cursor:pointer;margin-top:4px;letter-spacing:.05em;text-transform:uppercase;box-shadow:0 4px 14px rgba(13,27,75,.28);-webkit-tap-highlight-color:transparent;}
+.email-note{font-size:.72rem;color:#15803d;margin-top:4px;font-weight:600;display:none;}
+
+/* TOAST */
+.toast{position:fixed;top:80px;left:50%;transform:translateX(-50%);background:#15803d;color:#fff;padding:12px 24px;border-radius:10px;font-size:.88rem;font-weight:600;box-shadow:0 4px 20px rgba(0,0,0,.2);z-index:9999;display:none;text-align:center;min-width:260px;}
+.toast.err{background:#b91c1c;}
+
+/* SETTINGS MODAL */
+.modal-bg{position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:2000;display:none;align-items:center;justify-content:center;padding:20px;}
+.modal-bg.open{display:flex;}
+.modal{background:#fff;border-radius:14px;padding:28px;max-width:480px;width:100%;box-shadow:0 20px 60px rgba(0,0,0,.25);}
+.modal h2{font-size:1rem;font-weight:700;color:var(--navy);margin-bottom:6px;}
+.modal p{font-size:.78rem;color:#666;line-height:1.6;margin-bottom:18px;}
+.modal ol{font-size:.78rem;color:#444;line-height:2;padding-left:18px;margin-bottom:18px;}
+.modal ol a{color:var(--navy);font-weight:600;}
+.modal .fg{margin-bottom:12px;}
+.modal-btns{display:flex;gap:10px;margin-top:4px;}
+.btn-save{flex:1;padding:11px;background:var(--navy);color:#fff;border:none;border-radius:8px;font-size:.88rem;font-weight:700;cursor:pointer;}
+.btn-cancel{padding:11px 18px;background:#eee;color:#444;border:none;border-radius:8px;font-size:.88rem;font-weight:700;cursor:pointer;}
+.configured-badge{display:none;background:#dcfce7;color:#15803d;font-size:.72rem;font-weight:700;padding:4px 10px;border-radius:6px;margin-bottom:14px;}
+
+/* INVOICE */
+#invoice-section{display:none;min-height:100vh;background:var(--bg);}
+.inv-toolbar{background:var(--navy);padding:10px 16px;display:flex;gap:8px;justify-content:flex-end;position:sticky;top:0;z-index:10;}
+.btn-pdf{padding:9px 18px;background:#15803d;color:#fff;border:none;border-radius:7px;font-size:.82rem;font-weight:700;cursor:pointer;-webkit-tap-highlight-color:transparent;}
+.btn-back{padding:9px 18px;background:#b91c1c;color:#fff;border:none;border-radius:7px;font-size:.82rem;font-weight:700;cursor:pointer;-webkit-tap-highlight-color:transparent;}
+.inv-wrap{max-width:800px;margin:20px auto;padding:0 12px 40px;}
+
+#invoice-doc{background:#fff;padding:32px 42px 26px;font-family:'Georgia',serif;color:#111;font-size:.86rem;line-height:1.5;position:relative;overflow:hidden;}
+#invoice-doc::before{content:"PRO FORMA";position:absolute;top:50%;left:50%;transform:translate(-50%,-50%) rotate(-35deg);font-size:6rem;font-weight:900;color:rgba(201,168,76,.06);letter-spacing:.2em;white-space:nowrap;pointer-events:none;font-family:'Segoe UI',sans-serif;}
+#invoice-doc>*{position:relative;z-index:1;}
+
+.inv-head{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:18px;padding-bottom:14px;border-bottom:3px solid var(--navy);}
+.inv-brand{font-size:1.85rem;font-weight:700;color:var(--navy);font-family:'Segoe UI',sans-serif;line-height:1;}
+.inv-brand-tag{font-size:.63rem;color:var(--gold);font-family:'Segoe UI',sans-serif;font-weight:600;text-transform:uppercase;letter-spacing:.12em;margin-top:4px;}
+.inv-brand-info{font-size:.66rem;color:#666;font-family:'Segoe UI',sans-serif;margin-top:8px;line-height:1.65;}
+.inv-title-block{text-align:right;}
+.inv-pf{display:inline-block;background:var(--gold);color:var(--navy);font-size:.58rem;font-weight:800;letter-spacing:.18em;text-transform:uppercase;padding:3px 9px;border-radius:3px;font-family:'Segoe UI',sans-serif;margin-bottom:5px;}
+.inv-title{font-size:1.55rem;font-weight:700;color:var(--navy);font-family:'Segoe UI',sans-serif;letter-spacing:.04em;}
+.inv-meta{margin-top:5px;font-size:.73rem;color:#555;font-family:'Segoe UI',sans-serif;line-height:1.75;}
+.inv-meta strong{color:#111;}
+
+.inv-client{background:#fefaf2;border-left:3px solid var(--gold);padding:8px 14px;margin-bottom:16px;border-radius:0 5px 5px 0;font-family:'Segoe UI',sans-serif;}
+.inv-client-label{font-size:.57rem;text-transform:uppercase;letter-spacing:.14em;color:#aaa;font-weight:700;margin-bottom:2px;}
+.inv-client-name{font-size:.9rem;font-weight:700;color:#111;}
+.inv-client-addr{font-size:.73rem;color:#666;}
+
+table.inv-t{width:100%;border-collapse:collapse;margin-bottom:12px;}
+table.inv-t thead th{background:var(--navy);color:#fff;padding:8px 11px;text-align:left;font-size:.62rem;text-transform:uppercase;letter-spacing:.09em;font-family:'Segoe UI',sans-serif;font-weight:600;}
+table.inv-t thead th:not(:first-child){text-align:right;}
+table.inv-t tbody td{padding:11px 11px;font-size:.82rem;border-bottom:1px solid #eee;vertical-align:top;}
+table.inv-t tbody td:not(:first-child){text-align:right;font-family:'Segoe UI',sans-serif;}
+table.inv-t tbody td:last-child{font-weight:700;}
+.svc-name{font-weight:700;color:#111;font-family:'Segoe UI',sans-serif;margin-bottom:3px;}
+.svc-desc{font-size:.74rem;color:#666;font-family:'Segoe UI',sans-serif;line-height:1.5;}
+
+.inv-totals{display:flex;justify-content:flex-end;margin-bottom:13px;}
+.inv-totals-inner{width:235px;font-family:'Segoe UI',sans-serif;}
+.t-row{display:flex;justify-content:space-between;font-size:.79rem;padding:4px 0;color:#555;border-bottom:1px solid #eee;}
+.t-row.ttc{font-size:.93rem;font-weight:800;color:var(--navy);border-top:2px solid var(--navy);border-bottom:none;padding-top:7px;margin-top:3px;}
+
+.inv-pay{background:#f5f7fb;border-left:3px solid var(--navy);border-radius:0 5px 5px 0;padding:9px 13px;margin-bottom:16px;font-family:'Segoe UI',sans-serif;font-size:.73rem;color:#444;line-height:1.6;}
+.inv-pay strong{display:block;color:var(--navy);font-size:.75rem;margin-bottom:2px;}
+
+.inv-cgv{border-top:1px solid #ddd;padding-top:10px;font-size:.56rem;color:#aaa;line-height:1.55;font-family:'Segoe UI',sans-serif;}
+.inv-cgv b{font-weight:700;color:#888;}
+.inv-cgv-title{font-size:.59rem;font-weight:700;text-transform:uppercase;letter-spacing:.1em;color:#888;display:block;margin-bottom:5px;}
+.inv-foot{margin-top:9px;padding-top:7px;border-top:1px solid #eee;text-align:center;font-size:.55rem;color:#ccc;font-family:'Segoe UI',sans-serif;letter-spacing:.03em;}
+
+@media print{
+  @page{size:A4 portrait;margin:0;}
+  body{background:#fff;}
+  .app-header,#form-section,.modal-bg,.toast{display:none!important;}
+  #invoice-section{display:block!important;background:#fff;}
+  .inv-toolbar{display:none!important;}
+  .inv-wrap{margin:0;padding:0;max-width:100%;}
+  #invoice-doc{padding:9mm 13mm 7mm;box-shadow:none;}
+  .inv-cgv{columns:2;column-gap:14px;font-size:.49rem;line-height:1.38;}
+  .inv-cgv-title{column-span:all;}
+}
+</style>
+</head>
+<body>
+
+<div class="toast" id="toast"></div>
+
+<!-- SETTINGS MODAL -->
+<div class="modal-bg" id="modal-bg">
+<div class="modal">
+  <h2>⚙️ Configuration envoi email</h2>
+  <p>Pour envoyer les factures automatiquement, créez un compte gratuit sur <strong>EmailJS</strong> (200 emails/mois gratuits).</p>
+  <ol>
+    <li>Va sur <strong>emailjs.com</strong> → crée un compte gratuit</li>
+    <li><strong>Email Services</strong> → Add Service → choisis Gmail → connecte ton compte → note le <strong>Service ID</strong></li>
+    <li><strong>Email Templates</strong> → Create Template → copie-colle le template ci-dessous → note le <strong>Template ID</strong></li>
+    <li><strong>Account</strong> → General → note ta <strong>Public Key</strong></li>
+  </ol>
+  <p style="background:#f0f3fa;padding:10px;border-radius:6px;font-size:.72rem;color:#444;margin-bottom:16px;"><strong>Template à créer sur EmailJS :</strong><br>
+  To : <code>{{to_email}}</code><br>
+  Subject : <code>Facture Pro Forma N° {{invoice_num}} — BRD Services</code><br>
+  Body : <code>Bonjour {{client_name}},<br>Veuillez trouver en pièce jointe votre facture pro forma N° {{invoice_num}} du {{invoice_date}} d'un montant de {{amount_ttc}}.<br>Cordialement, {{chauffeur}} — BRD Services</code><br>
+  Attachment : activer "File upload" avec la variable <code>{{pdf}}</code></p>
+  <div class="configured-badge" id="cfg-badge">✅ EmailJS configuré</div>
+  <div class="fg"><label>Service ID</label><input type="text" id="cfg-service" placeholder="service_xxxxxxx" autocomplete="off"/></div>
+  <div class="fg"><label>Template ID</label><input type="text" id="cfg-template" placeholder="template_xxxxxxx" autocomplete="off"/></div>
+  <div class="fg"><label>Public Key</label><input type="text" id="cfg-key" placeholder="xxxxxxxxxxxxxxxxxxxx" autocomplete="off"/></div>
+  <div class="modal-btns">
+    <button class="btn-cancel" onclick="closeSettings()">Annuler</button>
+    <button class="btn-save" onclick="saveSettings()">Enregistrer</button>
+  </div>
+</div>
+</div>
+
+<header class="app-header">
+  <div class="header-brand">
+    <div class="header-logo">B</div>
+    <div>
+      <div class="header-title">BRD Services</div>
+      <div class="header-sub">Générateur de factures pro forma</div>
+    </div>
+  </div>
+  <button class="btn-settings" onclick="openSettings()">⚙️ Email auto</button>
+</header>
+
+<div id="form-section">
+<div class="wrap">
+<div class="card">
+  <div class="card-title">📄 Nouvelle facture</div>
+
+  <div class="div">Chauffeur</div>
+  <div class="fg">
+    <label>Sélectionner le chauffeur</label>
+    <div class="radio-group">
+      <label class="radio-opt"><input type="radio" name="ch" value="Souhail Bouardi" checked> Souhail Bouardi</label>
+      <label class="radio-opt"><input type="radio" name="ch" value="Ismail Bouardi"> Ismail Bouardi</label>
+    </div>
+  </div>
+
+  <div class="div">Référence</div>
+  <div class="row2">
+    <div class="fg"><label>N° facture</label><input type="text" id="f-num" autocomplete="off" placeholder="2026-001"/></div>
+    <div class="fg"><label>Date</label><input type="date" id="f-date"/></div>
+  </div>
+
+  <div class="div">Client</div>
+  <div class="fg"><label>Nom du client *</label><input type="text" id="f-client" autocomplete="off" placeholder="Nom complet ou raison sociale"/></div>
+  <div class="fg"><label>Adresse</label><input type="text" id="f-addr" placeholder="Adresse, code postal, ville"/></div>
+  <div class="fg">
+    <label>Email client <span id="email-auto-label" style="display:none;color:#15803d;">(facture envoyée automatiquement)</span></label>
+    <input type="email" id="f-email" placeholder="client@email.com" oninput="checkEmailConfig()"/>
+  </div>
+
+  <div class="div">Prestation</div>
+  <div class="fg"><label>Itinéraire / Description *</label><textarea id="f-itin" placeholder="Ex : Aéroport CDG → Paris 8e"></textarea></div>
+  <div class="row2">
+    <div class="fg"><label>Prix H.T. (€) *</label><input type="number" id="f-ht" placeholder="0.00" step="0.01" min="0"/></div>
+    <div class="fg"><label>TVA (%)</label><input type="number" id="f-tva" value="10" step="0.5" min="0"/></div>
+  </div>
+
+  <button class="btn-gen" id="btn-gen" onclick="gen()">Générer la facture</button>
+</div>
+</div>
+</div>
+
+<div id="invoice-section">
+  <div class="inv-toolbar">
+    <button class="btn-pdf" onclick="window.print()">🖨️ PDF / Imprimer</button>
+    <button class="btn-back" onclick="back()">← Nouvelle facture</button>
+  </div>
+  <div class="inv-wrap"><div id="invoice-doc"></div></div>
+</div>
+
+<script>
+var _num='',_date='',_client='',_addr='',_email='',_itin='',_ht=0,_tva=0,_tvaAmt=0,_ttc=0,_ch='Souhail Bouardi';
+
+function getC(){try{var y=new Date().getFullYear();return{y:y,n:parseInt(localStorage.getItem('brd_'+y)||'0')};}catch(e){return{y:new Date().getFullYear(),n:0};}}
+function saveC(y,n){try{localStorage.setItem('brd_'+y,n);}catch(e){}}
+function fmtN(y,n){return y+'-'+String(n).padStart(3,'0');}
+function money(v){return Number(v).toLocaleString('fr-FR',{minimumFractionDigits:2,maximumFractionDigits:2})+'\u00a0€';}
+function fmtD(s){if(!s)return'—';var p=s.split('-');return p[2]+'/'+p[1]+'/'+p[0];}
+
+function getCfg(){try{return{s:localStorage.getItem('ejs_s')||'',t:localStorage.getItem('ejs_t')||'',k:localStorage.getItem('ejs_k')||''};}catch(e){return{s:'',t:'',k:''};}}
+function isConfigured(){var c=getCfg();return c.s&&c.t&&c.k;}
+
+function openSettings(){
+  var c=getCfg();
+  document.getElementById('cfg-service').value=c.s;
+  document.getElementById('cfg-template').value=c.t;
+  document.getElementById('cfg-key').value=c.k;
+  document.getElementById('cfg-badge').style.display=isConfigured()?'block':'none';
+  document.getElementById('modal-bg').classList.add('open');
+}
+function closeSettings(){document.getElementById('modal-bg').classList.remove('open');}
+function saveSettings(){
+  try{
+    localStorage.setItem('ejs_s',document.getElementById('cfg-service').value.trim());
+    localStorage.setItem('ejs_t',document.getElementById('cfg-template').value.trim());
+    localStorage.setItem('ejs_k',document.getElementById('cfg-key').value.trim());
+  }catch(e){}
+  closeSettings();
+  checkEmailConfig();
+  showToast('✅ Configuration enregistrée',false);
+}
+
+function checkEmailConfig(){
+  var hasEmail=document.getElementById('f-email').value.trim().length>0;
+  var hasCfg=isConfigured();
+  document.getElementById('email-auto-label').style.display=(hasEmail&&hasCfg)?'inline':'none';
+}
+
+function showToast(msg,isErr){
+  var t=document.getElementById('toast');
+  t.textContent=msg;
+  t.className='toast'+(isErr?' err':'');
+  t.style.display='block';
+  setTimeout(function(){t.style.display='none';},4000);
+}
+
+window.addEventListener('DOMContentLoaded',function(){
+  document.getElementById('f-date').value=new Date().toISOString().split('T')[0];
+  var c=getC();document.getElementById('f-num').value=fmtN(c.y,c.n+1);
+  checkEmailConfig();
+});
+
+function buildInvoiceHTML(){
+  var ih=_itin.replace(/\n/g,'<br>');
+  return '<div class="inv-head">'+
+    '<div>'+
+      '<div class="inv-brand">BRD Services</div>'+
+      '<div class="inv-brand-tag">Transport &amp; Mise à disposition</div>'+
+      '<div class="inv-brand-info">Chauffeur\u00a0: '+_ch+'<br>SIREN\u00a0: 942\u00a0424\u00a0201<br>SIRET\u00a0: 942\u00a0424\u00a0201\u00a000013<br>N°\u00a0TVA\u00a0: FR35942424201</div>'+
+    '</div>'+
+    '<div class="inv-title-block">'+
+      '<div class="inv-pf">Pro Forma</div>'+
+      '<div class="inv-title">FACTURE</div>'+
+      '<div class="inv-meta"><strong>N°\u00a0'+(_num||'—')+'</strong><br>Date\u00a0: '+fmtD(_date)+'<br>Validité\u00a0: 30 jours</div>'+
+    '</div>'+
+  '</div>'+
+  '<div class="inv-client">'+
+    '<div class="inv-client-label">Client / Destinataire</div>'+
+    '<div class="inv-client-name">'+_client+'</div>'+
+    (_addr?'<div class="inv-client-addr">'+_addr+'</div>':'')+
+  '</div>'+
+  '<table class="inv-t"><thead><tr>'+
+    '<th style="width:50%">Description</th><th>Qté</th><th>Prix unit. H.T.</th><th>TVA</th><th>Total H.T.</th>'+
+  '</tr></thead><tbody><tr>'+
+    '<td><div class="svc-name">Prestation de transport</div><div class="svc-desc">'+ih+'</div></td>'+
+    '<td>1</td><td>'+money(_ht)+'</td><td>'+_tva+'\u00a0%</td><td>'+money(_ht)+'</td>'+
+  '</tr></tbody></table>'+
+  '<div class="inv-totals"><div class="inv-totals-inner">'+
+    '<div class="t-row"><span>Total H.T.</span><span>'+money(_ht)+'</span></div>'+
+    '<div class="t-row"><span>TVA ('+_tva+'\u00a0%)</span><span>'+money(_tvaAmt)+'</span></div>'+
+    '<div class="t-row ttc"><span>TOTAL T.T.C.</span><span>'+money(_ttc)+'</span></div>'+
+  '</div></div>'+
+  '<div class="inv-pay"><strong>Modalités de règlement</strong>'+
+    'Paiement à réception — virement bancaire, espèces ou tout autre moyen convenu.<br>'+
+    'Tout retard entraîne des pénalités au taux légal + indemnité forfaitaire de 40\u00a0€ (art. L.441-10 C. com.).'+
+  '</div>'+
+  '<div class="inv-cgv">'+
+    '<span class="inv-cgv-title">Conditions Générales de Vente — BRD Services</span>'+
+    '<b>1. OBJET —</b> Les présentes CGV s\'appliquent à toutes les prestations de transport réalisées par BRD Services (SIREN 942 424 201). Toute commande implique leur acceptation sans réserve. '+
+    '<b>2. PRESTATIONS —</b> Transferts, mises à disposition, navettes, réalisés par '+_ch+', chauffeur professionnel titulaire de tous agréments VTC requis. '+
+    '<b>3. TARIFS —</b> Prix en euros H.T. et T.T.C. TVA en vigueur à la date de prestation. Frais annexes (péages, parking) refacturés sur justificatifs. '+
+    '<b>4. PAIEMENT —</b> Exigible à réception. Retard : pénalités au taux légal + 40\u00a0€ forfaitaires (art. L.441-10 C. com.). '+
+    '<b>5. ANNULATION —</b> Par écrit. Moins de 24h : 50% dû. Jour même / no-show : 100% dû. '+
+    '<b>6. RESPONSABILITÉ —</b> Force majeure exonère le Prestataire. Dommages au véhicule : responsabilité du Client. '+
+    '<b>7. DONNÉES —</b> Traitement conforme RGPD (UE 2016/679). Données non transmises à des tiers. '+
+    '<b>8. LITIGES —</b> Recherche amiable privilégiée. À défaut : tribunaux du siège de BRD Services. '+
+    '<b>Document pro forma — Ne constitue pas une facture définitive avant règlement effectif.</b>'+
+  '</div>'+
+  '<div class="inv-foot">BRD Services \u2014 SIREN\u00a0942\u00a0424\u00a0201 \u2014 SIRET\u00a0942\u00a0424\u00a0201\u00a000013 \u2014 TVA\u00a0: FR35942424201 \u2014 Chauffeur\u00a0: '+_ch+'</div>';
+}
+
+function gen(){
+  try{
+    _ch=document.querySelector('input[name="ch"]:checked').value;
+    _num=document.getElementById('f-num').value.trim();
+    _date=document.getElementById('f-date').value;
+    _client=document.getElementById('f-client').value.trim();
+    _addr=document.getElementById('f-addr').value.trim();
+    _email=document.getElementById('f-email').value.trim();
+    _itin=document.getElementById('f-itin').value.trim();
+    _ht=parseFloat(document.getElementById('f-ht').value)||0;
+    _tva=parseFloat(document.getElementById('f-tva').value)||10;
+    if(!_client){alert('Nom du client requis.');return;}
+    if(!_itin){alert('Itinéraire requis.');return;}
+    if(_ht<=0){alert('Prix H.T. requis.');return;}
+    _tvaAmt=_ht*(_tva/100);_ttc=_ht+_tvaAmt;
+    var c=getC(),m=_num.match(/(\d{4})-(\d+)/);
+    if(m){var nn=parseInt(m[2]);if(nn>=c.n)saveC(parseInt(m[1]),nn);}
+    document.getElementById('invoice-doc').innerHTML=buildInvoiceHTML();
+    document.getElementById('form-section').style.display='none';
+    document.getElementById('invoice-section').style.display='block';
+    window.scrollTo(0,0);
+    if(_email&&isConfigured()){sendPDFByEmail();}
+  }catch(e){alert('Erreur: '+e.message);}
+}
+
+function sendPDFByEmail(){
+  var doc=document.getElementById('invoice-doc');
+  showToast('⏳ Envoi en cours...',false);
+  html2canvas(doc,{scale:3,useCORS:true,logging:false,backgroundColor:'#ffffff'}).then(function(canvas){
+    var imgData=canvas.toDataURL('image/jpeg',0.95);
+    var pdf=new jspdf.jsPDF('p','mm','a4');
+    var pw=pdf.internal.pageSize.getWidth();
+    var ph=pdf.internal.pageSize.getHeight();
+    var ih=(canvas.height*pw)/canvas.width;
+    if(ih>ph)ih=ph;
+    pdf.addImage(imgData,'JPEG',0,0,pw,ih);
+    var pdfBase64=pdf.output('datauristring');
+    var cfg=getCfg();
+    emailjs.init(cfg.k);
+    emailjs.send(cfg.s,cfg.t,{
+      to_email:_email,
+      client_name:_client,
+      invoice_num:_num,
+      invoice_date:fmtD(_date),
+      amount_ttc:money(_ttc),
+      chauffeur:_ch,
+      itinerary:_itin,
+      amount_ht:money(_ht),
+      tva_rate:_tva,
+      tva_amt:money(_tvaAmt),
+      pdf:pdfBase64
+    }).then(function(){
+      showToast('✅ Facture envoyée à '+_email,false);
+    }).catch(function(err){
+      showToast('❌ Erreur envoi : '+JSON.stringify(err),true);
+    });
+  }).catch(function(e){showToast('❌ Erreur PDF : '+e.message,true);});
+}
+
+function back(){
+  document.getElementById('invoice-section').style.display='none';
+  document.getElementById('form-section').style.display='block';
+  window.scrollTo(0,0);
+  var c=getC();
+  document.getElementById('f-num').value=fmtN(c.y,c.n+1);
+  document.getElementById('f-client').value='';
+  document.getElementById('f-addr').value='';
+  document.getElementById('f-email').value='';
+  document.getElementById('f-itin').value='';
+  document.getElementById('f-ht').value='';
+  document.getElementById('f-date').value=new Date().toISOString().split('T')[0];
+  checkEmailConfig();
+}
+</script>
+</body>
+</html>
