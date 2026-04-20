@@ -111,6 +111,19 @@ table.inv-t tbody td:last-child{font-weight:700;}
 <div class="card">
   <div class="card-title">📄 Nouvelle facture</div>
 
+  <div class="divider">Chauffeur</div>
+  <div class="fg">
+    <label>Sélectionner le chauffeur</label>
+    <div style="display:flex;gap:12px;margin-top:2px;">
+      <label style="display:flex;align-items:center;gap:8px;background:#f0f3fa;border:2px solid var(--border);border-radius:8px;padding:10px 16px;cursor:pointer;flex:1;font-size:.95rem;font-weight:600;" id="lbl-s">
+        <input type="radio" name="chauffeur" id="ch-souhail" value="Souhail Bouardi" checked style="width:18px;height:18px;accent-color:var(--navy);"> Souhail Bouardi
+      </label>
+      <label style="display:flex;align-items:center;gap:8px;background:#f0f3fa;border:2px solid var(--border);border-radius:8px;padding:10px 16px;cursor:pointer;flex:1;font-size:.95rem;font-weight:600;" id="lbl-i">
+        <input type="radio" name="chauffeur" id="ch-ismail" value="Ismail Bouardi" style="width:18px;height:18px;accent-color:var(--navy);"> Ismail Bouardi
+      </label>
+    </div>
+  </div>
+
   <div class="divider">Référence</div>
   <div class="row">
     <div class="fg"><label>N° facture</label><input type="text" id="f-num" autocomplete="off" placeholder="2026-001"/></div>
@@ -146,7 +159,7 @@ table.inv-t tbody td:last-child{font-weight:700;}
 </div>
 
 <script>
-var _num='',_date='',_client='',_addr='',_email='',_itin='',_ht=0,_tva=0,_tvaAmt=0,_ttc=0;
+var _num='',_date='',_client='',_addr='',_email='',_itin='',_ht=0,_tva=0,_tvaAmt=0,_ttc=0,_chauffeur='Souhail Bouardi';
 
 function getC(){try{var y=new Date().getFullYear();return{y:y,n:parseInt(localStorage.getItem('brd_'+y)||'0')};}catch(e){return{y:new Date().getFullYear(),n:0};}}
 function saveC(y,n){try{localStorage.setItem('brd_'+y,n);}catch(e){}}
@@ -161,6 +174,7 @@ window.addEventListener('DOMContentLoaded',function(){
 
 function gen(){
   try{
+    _chauffeur=document.querySelector('input[name="chauffeur"]:checked').value;
     _num=document.getElementById('f-num').value.trim();
     _date=document.getElementById('f-date').value;
     _client=document.getElementById('f-client').value.trim();
@@ -187,7 +201,7 @@ function gen(){
       '<div>'+
         '<div class="inv-brand">BRD Services</div>'+
         '<div class="inv-brand-tag">Transport &amp; Mise à disposition</div>'+
-        '<div class="inv-brand-info">Chauffeur\u00a0: Souhail Bouardi<br>SIREN\u00a0: 942\u00a0424\u00a0201<br>SIRET\u00a0: 942\u00a0424\u00a0201\u00a000013<br>N°\u00a0TVA\u00a0: FR35942424201</div>'+
+        '<div class="inv-brand-info">Chauffeur\u00a0: '+_chauffeur+'<br>SIREN\u00a0: 942\u00a0424\u00a0201<br>SIRET\u00a0: 942\u00a0424\u00a0201\u00a000013<br>N°\u00a0TVA\u00a0: FR35942424201</div>'+
       '</div>'+
       '<div class="inv-title-block">'+
         '<div class="inv-pf">Pro Forma</div>'+
@@ -218,7 +232,7 @@ function gen(){
     '<div class="inv-cgv">'+
       '<span class="inv-cgv-title">Conditions Générales de Vente — BRD Services</span>'+
       '<b>1. OBJET —</b> Les présentes CGV s\'appliquent à toutes les prestations de transport réalisées par BRD Services (SIREN 942 424 201). Toute commande implique leur acceptation sans réserve. '+
-      '<b>2. PRESTATIONS —</b> Transferts, mises à disposition, navettes, réalisés par Souhail Bouardi, chauffeur professionnel titulaire de tous agréments VTC requis. '+
+      '<b>2. PRESTATIONS —</b> Transferts, mises à disposition, navettes, réalisés par '+_chauffeur+', chauffeur professionnel titulaire de tous agréments VTC requis. '+
       '<b>3. TARIFS —</b> Prix en euros H.T. et T.T.C. TVA en vigueur à la date de prestation. Frais annexes (péages, parking) refacturés sur justificatifs. '+
       '<b>4. PAIEMENT —</b> Exigible à réception. Retard : pénalités au taux légal + 40\u00a0€ forfaitaires (art. L.441-10 C. com.). '+
       '<b>5. ANNULATION —</b> Par écrit. Moins de 24h : 50% dû. Jour même / no-show : 100% dû. '+
@@ -227,7 +241,7 @@ function gen(){
       '<b>8. LITIGES —</b> Recherche amiable privilégiée. À défaut : tribunaux du siège de BRD Services. '+
       '<b>Document pro forma — Ne constitue pas une facture définitive avant règlement effectif.</b>'+
     '</div>'+
-    '<div class="inv-foot">BRD Services \u2014 SIREN\u00a0942\u00a0424\u00a0201 \u2014 SIRET\u00a0942\u00a0424\u00a0201\u00a000013 \u2014 TVA\u00a0: FR35942424201 \u2014 Chauffeur\u00a0: Souhail Bouardi</div>';
+    '<div class="inv-foot">BRD Services \u2014 SIREN\u00a0942\u00a0424\u00a0201 \u2014 SIRET\u00a0942\u00a0424\u00a0201\u00a000013 \u2014 TVA\u00a0: FR35942424201 \u2014 Chauffeur\u00a0: '+_chauffeur+'</div>';
 
     document.getElementById('form-section').style.display='none';
     document.getElementById('invoice-section').style.display='block';
